@@ -70,6 +70,9 @@
 - [x] 旧 `test_haha_cc_compat.py` 保留或改为兼容别名测试。
 - [x] 增加 ServerMessage required fields 契约测试。
 - [x] 增加字段白名单测试，避免 RuntimeEvent 私有字段泄漏到 Yuanbao message。
+- [x] `compact_summary`、`goal_event`、`memory_event` 映射为同形 `system_notification`。
+- [x] `assistant_progress`、`tool.progress`、`tool.output`、`command.output` 映射为 `system_notification(task_progress)`。
+- [x] 拒绝只含本地 `toolOutput` 的空 `content_delta` flat 消息。
 
 验收：
 
@@ -80,6 +83,7 @@
 
 - 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_agent_role_and_visibility.py runtime/tests/test_provider_turns.py runtime/tests/test_replay.py -q` 通过，131 passed。
 - 2026-06-03：`python -m pytest runtime/tests/test_collaboration_events.py -q` 通过，2 passed。
+- 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py -q` 通过，26 passed。
 
 ## Batch 3：输出状态机补齐
 
@@ -345,18 +349,20 @@
 
 目标：让现有 team/subagent 能力更像 Claude Code AgentTool。
 
-- [ ] 新增 `agent` tool schema。
-- [ ] 包装现有 `task` tool / SubagentService。
-- [ ] 支持 `agent_type`。
-- [ ] 支持 `prompt`。
-- [ ] 支持 `cwd`。
-- [ ] 支持 `mode`。
-- [ ] 支持 `tool_allowlist`。
-- [ ] 支持 `budget`。
-- [ ] 支持 `plan_mode_required`。
-- [ ] 子 agent 默认只读。
-- [ ] 子 agent 禁止 commit/push。
-- [ ] 增加 AgentTool 调度测试。
+- [x] 新增 `agent` tool schema。
+- [x] 包装现有 `task` tool / SubagentService。
+- [x] 支持 `agent_type`。
+- [x] 支持 `prompt`。
+- [x] 支持 `cwd`。
+- [x] 支持 `mode`。
+- [x] 支持 `tool_allowlist`。
+- [x] 支持 `budget`。
+- [x] 支持 `plan_mode_required`。
+- [x] 子 agent 默认只读。
+- [x] 子 agent 禁止 commit/push。
+- [x] 子 agent 禁止继续调用 `agent` / `task` 二次派发。
+- [x] 父任务对 `agent` / `task` 子任务结果使用同一收敛与 continuation budget 策略。
+- [x] 增加 AgentTool 调度测试。
 
 建议文件：
 
@@ -369,6 +375,18 @@
 
 - 模型能通过 `agent` 派发 reviewer/tester/coder。
 - worker 进度可在 Yuanbao/team message 中展示。
+
+进展：
+
+- 2026-06-03：`agent` 作为 Claude Code 风格 AgentTool 包装接入工具 registry、schema、ReAct special dispatch、tool policy、proposal validator；`task` 兼容保留。
+- 2026-06-03：`agent_type` / `agentType`、`tool_allowlist` / `toolAllowlist`、`cwd`、`mode`、`plan_mode_required`、`budget` 归一化后传入 SubagentService；执行路径和 handler 路径共用同一归一化函数。
+- 2026-06-03：child worker 默认 read-only，且即使 allowlist 误传也会剔除 `agent` / `task`，防止子 agent 递归派发。
+- 2026-06-03：`cwd` 写入 child runtime hints；只读 child 只提示 preferred cwd，不提示 run_command；显式允许 run_command 时才给 pytest/python hint。
+- 2026-06-03：`plan_mode_required` 会让 child 初始 context 进入 plan mode，复用现有 read-only + exit_plan_mode 限制。
+- 2026-06-03：`python -m pytest runtime/tests/test_agent_tool_execution.py runtime/tests/test_task_tool_steps.py runtime/tests/test_tool_policy_resolver.py -q` 通过，38 passed。
+- 2026-06-03：`python -m pytest runtime/tests/test_task_tool_steps.py runtime/tests/test_agent_tool_execution.py runtime/tests/test_tool_policy_resolver.py runtime/tests/test_proposal_validator.py -q` 通过，167 passed。
+- 2026-06-03：`python -m pytest runtime/tests/test_acceptance_scenarios.py runtime/tests/test_llm_proposal_flows.py runtime/tests/test_planner_contract.py -q -k "tool or unsafe or allowedTools or agent_profile"` 通过，18 passed，189 deselected。
+- 2026-06-03：`python -m pytest runtime/tests/test_task_tool_steps.py runtime/tests/test_agent_tool_execution.py runtime/tests/test_tool_policy_resolver.py runtime/tests/test_proposal_validator.py runtime/tests/test_acceptance_scenarios.py runtime/tests/test_llm_proposal_flows.py runtime/tests/test_planner_contract.py runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_p9_release_checks.py -q -k "not low_value_tool_started_stays_quiet and not low_value_tool_activity_starts_assistant_progress and not notebook_stdout_preview"` 通过，430 passed。
 
 ## Batch 11：Team timeline
 
@@ -399,13 +417,13 @@
 
 目标：前端主消费路径使用 Yuanbao 命名。
 
-- [ ] shared 类型改用 `YuanbaoServerMessage`。
-- [ ] event envelope 优先读取 `event.yuanbao`。
-- [ ] 兼容 fallback 到 `event.hahaCc`。
-- [ ] stdio 消息优先处理 `kind: "yuanbao_message"`。
-- [ ] 兼容处理 `kind: "haha_cc_message"`。
-- [ ] RPC 轮询优先使用 `events.yuanbaoAfter`。
-- [ ] 兼容 fallback 到 `events.hahaCcAfter`。
+- [x] shared 类型改用 `YuanbaoServerMessage`。
+- [x] event envelope 优先读取 `event.yuanbao`。
+- [x] 兼容 fallback 到 `event.hahaCc`。
+- [x] stdio 消息优先处理 `kind: "yuanbao_message"`。
+- [x] 兼容处理 `kind: "haha_cc_message"`。
+- [x] RPC 轮询优先使用 `events.yuanbaoAfter`。
+- [x] 兼容 fallback 到 `events.hahaCcAfter`。
 - [ ] UI 文案避免出现 haha/haha-cc，除非是在说明兼容协议来源。
 - [ ] 增加前端事件订阅测试。
 

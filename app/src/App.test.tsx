@@ -94,6 +94,7 @@ function setupRuntimeMocks() {
   const hostStatus: HostStatus = {
     runtimeTransport: "tauri-stdio",
     eventChannel: "agent://event",
+    yuanbaoEventChannel: "yuanbao://message",
     hahaCcEventChannel: "haha-cc://message",
     runtimeRunning: true,
     repoRoot: "D:/py/yuanbao_agent",

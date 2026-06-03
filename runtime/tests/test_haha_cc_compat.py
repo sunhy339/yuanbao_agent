@@ -62,6 +62,7 @@ def test_haha_cc_message_keeps_only_server_message_fields() -> None:
 
 def test_haha_cc_message_rejects_incomplete_server_messages() -> None:
     assert to_haha_cc_server_message(_event("content_start", {"toolName": "read_file"})) is None
+    assert to_haha_cc_server_message(_event("content_delta", {"toolOutput": "stdout only"})) is None
     assert (
         to_haha_cc_server_message(
             _event("permission_request", {"requestId": "approval_1", "toolName": "run_command"})
@@ -315,6 +316,42 @@ def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
                 "currentTask": "tokens budget consumed 50",
             }
         ],
+    }
+
+
+def test_special_chat_events_map_to_haha_cc_system_notifications() -> None:
+    assert to_haha_cc_server_message(_event("compact_summary", {"summary": "Context compacted"})) == {
+        "type": "system_notification",
+        "subtype": "compact_summary",
+        "message": "Context compacted",
+        "data": {"summary": "Context compacted"},
+    }
+    assert to_haha_cc_server_message(_event("goal_event", {"message": "Goal complete"})) == {
+        "type": "system_notification",
+        "subtype": "goal_event",
+        "message": "Goal complete",
+        "data": {"message": "Goal complete"},
+    }
+    assert to_haha_cc_server_message(_event("memory_event", {"message": "Saved memory"})) == {
+        "type": "system_notification",
+        "subtype": "memory_saved",
+        "message": "Saved memory",
+        "data": {"message": "Saved memory"},
+    }
+
+
+def test_progress_events_map_to_haha_cc_task_progress_notifications() -> None:
+    assert to_haha_cc_server_message(_event("assistant_progress", {"summary": "Inspecting repo"})) == {
+        "type": "system_notification",
+        "subtype": "task_progress",
+        "message": "Inspecting repo",
+        "data": {"summary": "Inspecting repo"},
+    }
+    assert to_haha_cc_server_message(_event("tool.output", {"toolName": "run_command", "chunk": "npm ok"})) == {
+        "type": "system_notification",
+        "subtype": "task_progress",
+        "message": "npm ok",
+        "data": {"toolName": "run_command", "chunk": "npm ok"},
     }
 
 

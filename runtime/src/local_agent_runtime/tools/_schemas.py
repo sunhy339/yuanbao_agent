@@ -478,6 +478,98 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "agent",
+        "description": (
+            "Delegate a focused job to a child agent. This is the Claude Code style AgentTool wrapper over the "
+            "runtime child-task system; it records a child task, runs it through the subagent boundary, and returns "
+            "the child result."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "prompt": _string_property(
+                    "Instruction for the child agent.",
+                    examples=["Inspect the current docs structure and summarize missing sections."],
+                ),
+                "agent_type": _string_property(
+                    "Child agent role.",
+                    default="explorer",
+                    examples=["explorer", "analyst", "coder", "reviewer", "summarizer"],
+                ),
+                "agentType": _string_property(
+                    "Camel-case compatibility alias for agent_type.",
+                    default="explorer",
+                ),
+                "title": _string_property(
+                    "Optional short title for the delegated job.",
+                    examples=["Inspect docs structure"],
+                ),
+                "cwd": _string_property(
+                    "Optional preferred working directory for the child agent. The runtime keeps this as child profile metadata.",
+                    examples=["D:/projects/app", "/workspace/app"],
+                ),
+                "mode": {
+                    "type": "string",
+                    "description": "Requested child execution mode.",
+                    "enum": ["read_only", "default", "write", "review", "summarize"],
+                    "default": "read_only",
+                },
+                "tool_allowlist": _child_tool_allowlist_property(),
+                "toolAllowlist": _child_tool_allowlist_property(),
+                "budget": {
+                    "type": "object",
+                    "description": "Optional advisory budget for the child agent.",
+                    "additionalProperties": True,
+                    "properties": {
+                        "maxTokens": {"type": "integer", "minimum": 1},
+                        "remainingTokens": {"type": "integer", "minimum": 0},
+                        "maxToolCalls": {"type": "integer", "minimum": 1},
+                        "tool_allowlist": _child_tool_allowlist_property(),
+                        "toolAllowlist": _child_tool_allowlist_property(),
+                    },
+                },
+                "plan_mode_required": {
+                    "type": "boolean",
+                    "description": "Whether the child agent should plan before writing. Stored as child profile metadata.",
+                    "default": False,
+                },
+                "planModeRequired": {
+                    "type": "boolean",
+                    "description": "Camel-case compatibility alias for plan_mode_required.",
+                    "default": False,
+                },
+                "model": _string_property("Optional child model override."),
+                "sessionId": _string_property(
+                    "Runtime session id injected by the orchestrator; models usually omit this.",
+                ),
+                "taskId": _string_property(
+                    "Parent runtime task id injected by the orchestrator; models usually omit this.",
+                ),
+            },
+            "required": ["prompt"],
+        },
+        "safety": {
+            "level": "medium",
+            "requires_approval": False,
+            "category": "task",
+            "sandboxed": False,
+            "notes": [
+                "Delegates through the same permission-gated subagent dispatch capability as task.",
+                "Children default to the read-only allowlist unless tool_allowlist explicitly includes write or command tools.",
+            ],
+        },
+        "hints": [
+            "Use this for focused investigation, review, summarization, or bounded implementation subtasks.",
+            "Prefer the default read-only allowlist unless the child agent must edit files.",
+        ],
+        "metadata": {
+            "rate_limit": 10,
+            "cost_per_use": 10,
+            "estimated_duration_ms": 30000,
+        },
+    },
+    {
         "name": "task",
         "description": (
             "Create and execute a child collaboration task inline. The runtime records a child task, claims an "

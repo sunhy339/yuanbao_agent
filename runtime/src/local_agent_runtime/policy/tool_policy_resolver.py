@@ -34,6 +34,7 @@ READ_ONLY_TOOLS = frozenset(
     READ_ONLY_TOOL_NAMES
 )
 WRITE_TOOLS = frozenset({"write_file", "apply_patch", "run_command"})
+SUBAGENT_TOOLS = frozenset({"agent", "task"})
 MEMORY_AND_SCRATCHPAD_TOOLS = frozenset({"memory.recall", "memory.remember", "scratchpad.read", "scratchpad.write"})
 CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question", "enter_plan_mode", "exit_plan_mode"})
 VERIFICATION_COMMAND_MARKERS = (
@@ -73,6 +74,7 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "web_fetch": "webFetch",
     "browser": "browserAutomation",
     "computer_use": "computerUse",
+    "agent": "subagents",
     "task": "subagents",
     "notebook": "runCommand",
     "memory.remember": "memoryWrite",
@@ -151,7 +153,7 @@ class ToolPolicyResolver:
                 "phaseDecision": "allowed" if phase_allowed else "denied",
             }
             if phase_allowed:
-                if name == "task":
+                if name in SUBAGENT_TOOLS:
                     detail["toolContinuationPolicy"] = self.tool_continuation_policy(context)
                 continuation_reason = self._task_tool_continuation_block_reason(name, context, tool_results)
                 if continuation_reason:
@@ -372,7 +374,7 @@ class ToolPolicyResolver:
         routing = context.get("routing")
         strategy = routing.get("strategy") if isinstance(routing, dict) else None
         if phase == "planning" and runtime_role in {"root", "planner"} and strategy in self.TASK_TOOL_STRATEGIES:
-            names.add("task")
+            names.update(SUBAGENT_TOOLS)
 
         if phase in {"execution", "recovery"} and runtime_role in {"root", "worker"}:
             names.update(WRITE_TOOLS)
@@ -381,7 +383,7 @@ class ToolPolicyResolver:
             names &= READ_ONLY_TOOLS
 
         if child_allowlist is not None or context.get("_child_worker") is True:
-            child_names = set(child_allowlist or READ_ONLY_TOOLS)
+            child_names = set(child_allowlist or READ_ONLY_TOOLS) - SUBAGENT_TOOLS
             allow_mcp = "mcp__*" in child_names
             names &= {name for name in child_names if name != "mcp__*"}
             if allow_mcp:
@@ -399,7 +401,7 @@ class ToolPolicyResolver:
         if not tool_results:
             return False
         last_result = tool_results[-1]
-        if last_result.get("name") != "task":
+        if last_result.get("name") not in SUBAGENT_TOOLS:
             return False
         result = last_result.get("result")
         return not (isinstance(result, dict) and result.get("status") == "waiting_approval")
@@ -503,7 +505,7 @@ class ToolPolicyResolver:
     def _ready_task_result_count(self, tool_results: list[dict[str, Any]]) -> int:
         count = 0
         for tool_result in tool_results:
-            if tool_result.get("name") != "task":
+            if tool_result.get("name") not in SUBAGENT_TOOLS:
                 continue
             result = tool_result.get("result")
             if isinstance(result, dict) and result.get("status") == "waiting_approval":
@@ -517,7 +519,7 @@ class ToolPolicyResolver:
         context: dict[str, Any],
         tool_results: list[dict[str, Any]],
     ) -> str | None:
-        if tool_name != "task" or not self._allow_tools_after_task_results(context):
+        if tool_name not in SUBAGENT_TOOLS or not self._allow_tools_after_task_results(context):
             return None
         completed_task_calls = self._ready_task_result_count(tool_results)
         if completed_task_calls <= 0:

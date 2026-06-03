@@ -18,6 +18,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const EVENT_CHANNEL: &str = "agent://event";
+const YUANBAO_EVENT_CHANNEL: &str = "yuanbao://message";
 const HAHA_CC_EVENT_CHANNEL: &str = "haha-cc://message";
 const TERMINAL_EVENT_CHANNEL: &str = "terminal://event";
 const RPC_TIMEOUT: Duration = Duration::from_secs(240);
@@ -27,6 +28,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(240);
 struct HostStatus {
     runtime_transport: &'static str,
     event_channel: &'static str,
+    yuanbao_event_channel: &'static str,
     haha_cc_event_channel: &'static str,
     runtime_running: bool,
     repo_root: String,
@@ -415,6 +417,8 @@ struct HahaCcEventsAfterPayload {
     after_seq: Option<u64>,
     limit: Option<u64>,
 }
+
+type YuanbaoEventsAfterPayload = HahaCcEventsAfterPayload;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -1513,6 +1517,13 @@ fn spawn_stdout_pump(
                 continue;
             }
 
+            if payload.get("kind").and_then(Value::as_str) == Some("yuanbao_message") {
+                if let Some(yuanbao_payload) = payload.get("payload").cloned() {
+                    let _ = app_handle.emit(YUANBAO_EVENT_CHANNEL, yuanbao_payload);
+                }
+                continue;
+            }
+
             if payload.get("kind").and_then(Value::as_str) == Some("haha_cc_message") {
                 if let Some(haha_cc_payload) = payload.get("payload").cloned() {
                     let _ = app_handle.emit(HAHA_CC_EVENT_CHANNEL, haha_cc_payload);
@@ -1792,6 +1803,7 @@ fn host_status(state: State<'_, RuntimeManager>) -> Result<HostStatus, String> {
     Ok(HostStatus {
         runtime_transport: "json-rpc-stdio",
         event_channel: EVENT_CHANNEL,
+        yuanbao_event_channel: YUANBAO_EVENT_CHANNEL,
         haha_cc_event_channel: HAHA_CC_EVENT_CHANNEL,
         runtime_running: state.runtime_running(),
         repo_root: root,
@@ -2903,6 +2915,25 @@ async fn trace_list(
 }
 
 #[tauri::command]
+async fn yuanbao_events_after(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: YuanbaoEventsAfterPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "events.yuanbaoAfter".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "afterSeq": payload.after_seq.unwrap_or(0),
+                "limit": payload.limit,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
 async fn haha_cc_events_after(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -3443,6 +3474,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             command_cancel,
             diff_get,
             trace_list,
+            yuanbao_events_after,
             haha_cc_events_after,
             log_export,
             errors_list,

@@ -97,6 +97,10 @@ class TestUnsafeToolValidator:
         reasons = validate_no_unsafe_tools({"allowedTools": ["task"]})
         assert any("Unsafe" in r for r in reasons)
 
+    def test_agent_is_unsafe(self):
+        reasons = validate_no_unsafe_tools({"allowedTools": ["agent"]})
+        assert any("Unsafe" in r for r in reasons)
+
     def test_safe_tools_pass(self):
         reasons = validate_no_unsafe_tools({
             "allowedTools": ["read_file", "search_files", "apply_patch"]

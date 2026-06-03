@@ -70,6 +70,7 @@ def validate_proposal_schema(kind: str, payload: dict[str, Any]) -> list[str]:
 SAFE_BUILTIN_TOOLS = frozenset({
     "list_dir", "search_files", "read_file", "git_status", "git_diff",
     "code_search", "web_fetch", "browser", "run_command", "apply_patch",
+    "agent", "task",
 })
 
 
@@ -90,7 +91,7 @@ def validate_tool_allowlist(payload: dict[str, Any]) -> list[str]:
 # Unsafe tool validator
 # ---------------------------------------------------------------------------
 
-UNSAFE_TOOLS = frozenset({"task"}) | UNSAFE_CHILD_TOOLS
+UNSAFE_TOOLS = frozenset({"agent", "task"}) | UNSAFE_CHILD_TOOLS
 
 
 def validate_no_unsafe_tools(payload: dict[str, Any]) -> list[str]:

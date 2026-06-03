@@ -644,6 +644,7 @@ class PublishingMixin:
             "read_file": "准备读取文件",
             "search_files": "准备搜索文件",
             "write_file": "准备写入文件",
+            "agent": "准备启动子任务",
             "task": "准备启动子任务",
             "computer_use": "准备进行桌面操作",
         }
@@ -794,6 +795,7 @@ class PublishingMixin:
                 "run_command": "命令已完成",
                 "apply_patch": "改动已应用",
                 "write_file": "文件已写入",
+                "agent": "子任务已完成",
                 "task": "子任务已完成",
                 "computer_use": "桌面操作已完成",
             }
@@ -806,6 +808,7 @@ class PublishingMixin:
                 "run_command": "命令被阻止",
                 "apply_patch": "改动被阻止",
                 "write_file": "写入文件被阻止",
+                "agent": "子任务被阻止",
                 "task": "子任务被阻止",
                 "computer_use": "桌面操作被阻止",
             }
@@ -818,6 +821,7 @@ class PublishingMixin:
             "read_file": "读取文件失败",
             "list_files": "列出文件失败",
             "search_files": "搜索文件失败",
+            "agent": "子任务失败",
             "task": "子任务失败",
             "computer_use": "桌面操作失败",
         }

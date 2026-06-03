@@ -154,6 +154,59 @@ def test_task_tool_budget_blocks_after_limit() -> None:
     assert "2/2" in decision.reasons["task"]
 
 
+def test_agent_result_enters_synthesis_by_default() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"strategy": "react_standard"}},
+        tool_results=[{"name": "agent", "result": {"status": "completed"}}],
+        registered_tools=_tools("agent", "task", "read_file"),
+    )
+
+    assert decision.phase == "synthesis"
+    assert decision.allowed_tool_names == []
+    assert set(decision.denied_tool_names) == {"agent", "task", "read_file"}
+
+
+def test_plan_strategy_exposes_agent_and_task_during_planning() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"strategy": "plan_swarm"}},
+        tool_results=[],
+        registered_tools=_tools("agent", "task", "read_file", "write_file"),
+    )
+
+    assert decision.phase == "planning"
+    assert {"agent", "task", "read_file"}.issubset(set(decision.allowed_tool_names))
+    assert "write_file" in decision.allowed_tool_names
+
+
+def test_agent_tool_budget_blocks_agent_and_task_after_limit() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "plan_swarm",
+                "toolContinuation": {
+                    "allowToolsAfterTaskResults": True,
+                    "allowMoreSubtasksAfterTaskResults": True,
+                    "maxTaskToolCalls": 1,
+                },
+            },
+        },
+        tool_results=[{"name": "agent", "result": {"status": "completed"}}],
+        registered_tools=_tools("agent", "task", "read_file"),
+    )
+
+    assert decision.phase == "post_task_continuation"
+    assert decision.allowed_tool_names == ["read_file"]
+    assert set(decision.denied_tool_names) == {"agent", "task"}
+    assert "1/1" in decision.reasons["agent"]
+    assert "1/1" in decision.reasons["task"]
+
+
 def test_reviewer_role_is_read_only() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
@@ -193,13 +246,13 @@ def test_child_worker_uses_agent_type_metadata_and_allowlist() -> None:
             "_child_tool_allowlist": ["read_file", "git_status"],
         },
         tool_results=[],
-        registered_tools=_tools("read_file", "git_status", "write_file", "task"),
+        registered_tools=_tools("read_file", "git_status", "write_file", "agent", "task"),
     )
 
     assert decision.role_snapshot["runtimeRole"] == "worker"
     assert decision.role_snapshot["agentType"] == "structure-agent"
     assert set(decision.allowed_tool_names) == {"read_file", "git_status"}
-    assert set(decision.denied_tool_names) == {"write_file", "task"}
+    assert set(decision.denied_tool_names) == {"write_file", "agent", "task"}
 
 
 def test_child_worker_explicit_write_allowlist_enters_execution_phase() -> None:
@@ -210,15 +263,15 @@ def test_child_worker_explicit_write_allowlist_enters_execution_phase() -> None:
             "_child_worker": True,
             "agentType": "coder",
             "runtimeRole": "worker",
-            "_child_tool_allowlist": ["read_file", "run_command", "apply_patch", "write_file"],
+            "_child_tool_allowlist": ["read_file", "run_command", "apply_patch", "write_file", "agent", "task"],
         },
         tool_results=[],
-        registered_tools=_tools("read_file", "run_command", "apply_patch", "write_file", "task"),
+        registered_tools=_tools("read_file", "run_command", "apply_patch", "write_file", "agent", "task"),
     )
 
     assert decision.phase == "execution"
     assert set(decision.allowed_tool_names) == {"read_file", "run_command", "apply_patch", "write_file"}
-    assert decision.denied_tool_names == ["task"]
+    assert set(decision.denied_tool_names) == {"agent", "task"}
     run_detail = next(item for item in decision.decision_details if item["toolName"] == "run_command")
     assert run_detail["phaseDecision"] == "allowed"
     assert run_detail["finalDecision"] == "allowed"

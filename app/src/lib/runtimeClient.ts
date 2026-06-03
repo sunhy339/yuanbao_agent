@@ -47,6 +47,8 @@ import type {
   HookListResult,
   HookResult,
   HookUpdateParams,
+  YuanbaoEventsAfterParams,
+  YuanbaoEventsAfterResult,
   HahaCcEventsAfterParams,
   HahaCcEventsAfterResult,
   MessageListParams,
@@ -153,6 +155,7 @@ import type {
   WorkspaceMemoryClearParams,
   WorkspaceMemoryClearResult,
   WorkspaceOpenResult,
+  YuanbaoServerMessage,
   HahaCcServerMessage,
 } from "@shared";
 
@@ -168,6 +171,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 }
 
 const EVENT_CHANNEL = "agent://event";
+const YUANBAO_EVENT_CHANNEL = "yuanbao://message";
 const HAHA_CC_EVENT_CHANNEL = "haha-cc://message";
 const TERMINAL_EVENT_CHANNEL = "terminal://event";
 const RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE =
@@ -191,6 +195,8 @@ export interface HahaCcConnectionOptions extends RuntimePingParams {
   keepAliveMs?: number;
   onKeepAliveError?: (reason: unknown) => void;
 }
+
+export interface YuanbaoConnectionOptions extends HahaCcConnectionOptions {}
 
 // Client-side cache for Tauri results — used for optimistic updates and local reads
 interface ClientCache {
@@ -216,6 +222,7 @@ const clientCache: ClientCache = {
 export interface HostStatus {
   runtimeTransport: string;
   eventChannel: string;
+  yuanbaoEventChannel: string;
   hahaCcEventChannel: string;
   runtimeRunning: boolean;
   repoRoot: string;
@@ -699,8 +706,16 @@ export class RuntimeClient {
     return invokePayloadOrReject<TraceListResult>("trace_list", payload);
   }
 
+  async yuanbaoEventsAfter(payload: YuanbaoEventsAfterParams): Promise<YuanbaoEventsAfterResult> {
+    try {
+      return await invokePayloadOrReject<YuanbaoEventsAfterResult>("yuanbao_events_after", payload);
+    } catch (reason) {
+      return invokePayloadOrReject<YuanbaoEventsAfterResult>("haha_cc_events_after", payload);
+    }
+  }
+
   async hahaCcEventsAfter(payload: HahaCcEventsAfterParams): Promise<HahaCcEventsAfterResult> {
-    return invokePayloadOrReject<HahaCcEventsAfterResult>("haha_cc_events_after", payload);
+    return this.yuanbaoEventsAfter(payload);
   }
 
   async getConfig(): Promise<ConfigGetResult> {
@@ -874,12 +889,69 @@ export class RuntimeClient {
     };
   }
 
+  async subscribeYuanbaoMessages(handler: (message: YuanbaoServerMessage) => void): Promise<() => void> {
+    assertRuntimeBridgeAvailable("yuanbao_event_subscribe");
+    const unlisten = await listen<YuanbaoServerMessage>(YUANBAO_EVENT_CHANNEL, (event) => {
+      handler(event.payload);
+    });
+    return () => {
+      unlisten();
+    };
+  }
+
   async subscribeHahaCcMessages(handler: (message: HahaCcServerMessage) => void): Promise<() => void> {
     assertRuntimeBridgeAvailable("haha_cc_event_subscribe");
     const unlisten = await listen<HahaCcServerMessage>(HAHA_CC_EVENT_CHANNEL, (event) => {
       handler(event.payload);
     });
     return () => {
+      unlisten();
+    };
+  }
+
+  async connectYuanbaoMessages(
+    handler: (message: YuanbaoServerMessage) => void,
+    options: YuanbaoConnectionOptions = {},
+  ): Promise<() => void> {
+    const { keepAliveMs = 30_000, onKeepAliveError, ...pingPayload } = options;
+    const unlisten = await this.subscribeYuanbaoMessages(handler);
+    let stopped = false;
+    let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
+
+    const emitPing = async (includeConnected: boolean): Promise<void> => {
+      const result = await this.runtimePing(pingPayload);
+      if (stopped) {
+        return;
+      }
+      for (const message of result.yuanbaoMessages) {
+        if (!includeConnected && message.type === "connected") {
+          continue;
+        }
+        handler(message);
+      }
+    };
+
+    try {
+      await emitPing(true);
+    } catch (reason) {
+      stopped = true;
+      unlisten();
+      throw reason;
+    }
+
+    if (keepAliveMs > 0) {
+      keepAliveTimer = setInterval(() => {
+        void emitPing(false).catch((reason) => {
+          onKeepAliveError?.(reason);
+        });
+      }, keepAliveMs);
+    }
+
+    return () => {
+      stopped = true;
+      if (keepAliveTimer !== undefined) {
+        clearInterval(keepAliveTimer);
+      }
       unlisten();
     };
   }

@@ -83,6 +83,7 @@ WINDOWS_RUNTIME_ENV = (
 
 UNSAFE_CHILD_TOOLS = frozenset(
     {
+        "agent",
         "task",
     }
 )

@@ -75,6 +75,13 @@ class ChildTaskMixin:
         context["_skip_context_policy_advisor"] = True
         context["_skip_completion_advisor"] = True
         context["_worker_budget"] = params.get("budget") if isinstance(params.get("budget"), dict) else {}
+        preferred_cwd = self._child_preferred_cwd(profile)
+        if preferred_cwd:
+            context["cwd"] = preferred_cwd
+            context["preferredCwd"] = preferred_cwd
+        if self._child_plan_mode_required(profile):
+            context["_plan_mode"] = True
+            context["_plan_mode_reason"] = "child agent profile requires plan mode before execution"
         if profile:
             context["_child_profile"] = profile
         if mcp_policy is not None:
@@ -87,7 +94,11 @@ class ChildTaskMixin:
         child_allowlist = self._child_tool_allowlist_from_params(params)
         if child_allowlist is not None:
             context["_child_tool_allowlist"] = list(child_allowlist)
-        context = self._context_with_child_runtime_hints(context, child_allowlist=child_allowlist)
+        context = self._context_with_child_runtime_hints(
+            context,
+            child_allowlist=child_allowlist,
+            preferred_cwd=preferred_cwd,
+        )
         context = self._context_with_worker_budget(context, budget)
         plan_goal = self._child_plan_goal(
             prompt=child_goal,
@@ -367,8 +378,10 @@ class ChildTaskMixin:
         context: dict[str, Any],
         *,
         child_allowlist: tuple[str, ...] | None,
+        preferred_cwd: str | None = None,
     ) -> dict[str, Any]:
-        if child_allowlist is None or "run_command" not in set(child_allowlist):
+        run_command_allowed = child_allowlist is not None and "run_command" in set(child_allowlist)
+        if not run_command_allowed and not preferred_cwd:
             return context
         workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
         python_executable = sys.executable
@@ -378,8 +391,12 @@ class ChildTaskMixin:
             "recommendedPytestCommand": pytest_command,
             "workspaceRoot": workspace_root,
             "runCommandCwd": "narrowest relevant directory for the command",
+            "runCommandAllowed": run_command_allowed,
             "avoidCommands": ["python", "python3", "py", "cd ... && ..."],
         }
+        if preferred_cwd:
+            hints["preferredCwd"] = preferred_cwd
+            hints["runCommandCwd"] = preferred_cwd
         updated = dict(context)
         updated["childRuntimeHints"] = hints
         messages = list(updated.get("messages") or [])
@@ -401,15 +418,22 @@ class ChildTaskMixin:
 
     def _child_runtime_hint_text(self, hints: dict[str, Any]) -> str:
         workspace_root = str(hints.get("workspaceRoot") or "")
+        preferred_cwd = str(hints.get("preferredCwd") or "")
+        run_command_allowed = hints.get("runCommandAllowed") is True
         lines = [
             "[Child runtime hints]",
-            f"- Python executable: {hints['pythonExecutable']}",
-            f"- Preferred pytest command: {hints['recommendedPytestCommand']}",
-            "- When running tests, call run_command with this command first; do not probe python, python3, or py.",
-            "- Set run_command cwd to the narrowest relevant directory for the command and pass workspaceRoot instead of using shell cd.",
         ]
-        if workspace_root:
-            lines.append(f"- run_command workspaceRoot: {workspace_root}")
+        if preferred_cwd:
+            lines.append(f"- Preferred child cwd: {preferred_cwd}")
+        if run_command_allowed:
+            lines.extend([
+                f"- Python executable: {hints['pythonExecutable']}",
+                f"- Preferred pytest command: {hints['recommendedPytestCommand']}",
+                "- When running tests, call run_command with this command first; do not probe python, python3, or py.",
+                "- Set run_command cwd to the narrowest relevant directory for the command and pass workspaceRoot instead of using shell cd.",
+            ])
+            if workspace_root:
+                lines.append(f"- run_command workspaceRoot: {workspace_root}")
         return "\n".join(lines)
 
     def _child_uses_clean_context(self, *, profile: dict[str, Any]) -> bool:
@@ -418,6 +442,17 @@ class ChildTaskMixin:
         if profile.get("inheritParentContext") is True:
             return False
         return True
+
+    @staticmethod
+    def _child_preferred_cwd(profile: dict[str, Any]) -> str | None:
+        value = profile.get("cwd") or profile.get("workingDirectory") or profile.get("working_directory")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    @staticmethod
+    def _child_plan_mode_required(profile: dict[str, Any]) -> bool:
+        return profile.get("planModeRequired") is True or profile.get("plan_mode_required") is True
 
     def _child_plan_goal(
         self,

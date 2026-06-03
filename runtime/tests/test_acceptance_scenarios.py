@@ -202,7 +202,7 @@ class TestPlannerProposesUnsafeToolRuntimeRejects:
         assert reasons == []
 
     def test_mixed_tools_rejected_for_unsafe(self):
-        reasons = validate_tool_allowlist({
+        reasons = validate_no_unsafe_tools({
             "allowedTools": ["read_file", "task"],
         })
         assert any("task" in r for r in reasons)

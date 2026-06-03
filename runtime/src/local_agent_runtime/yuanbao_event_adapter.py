@@ -19,6 +19,33 @@ _DIRECT_EVENT_TYPES = {
     "system_notification",
 }
 
+_SYSTEM_NOTIFICATION_EVENT_TYPES = {
+    "compact_summary",
+    "goal_event",
+    "memory_event",
+    "background_task",
+    "task_summary",
+    "plan_update",
+}
+
+_PROGRESS_NOTIFICATION_EVENT_TYPES = {
+    "assistant_progress",
+    "tool.progress",
+    "tool.output",
+    "command.output",
+}
+
+_TASK_PROGRESS_EVENT_TYPES = {
+    "assistant_progress",
+    "tool.progress",
+    "tool.output",
+    "command.output",
+    "task_summary",
+    "plan_update",
+}
+
+_TASK_STARTED_STATUSES = {"queued", "starting", "started", "running", "active", "in_progress"}
+
 _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
     "content_start": {"type", "blockType", "toolName", "toolUseId", "parentToolUseId"},
     "content_delta": {"type", "text", "toolInput"},
@@ -109,6 +136,10 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
         message = _task_update_message(event, payload)
     elif event.type.startswith("collab."):
         message = _team_message(event.type, payload)
+    elif event.type in _SYSTEM_NOTIFICATION_EVENT_TYPES:
+        message = _system_notification_message(event.type, payload)
+    elif event.type in _PROGRESS_NOTIFICATION_EVENT_TYPES:
+        message = _progress_notification_message(event.type, payload)
 
     return _server_message_shape(message) if message is not None else None
 
@@ -194,6 +225,8 @@ def _server_message_shape(message: dict[str, Any]) -> dict[str, Any] | None:
             return None
         if isinstance(shaped[key], str) and not shaped[key]:
             return None
+    if event_type == "content_delta" and "text" not in shaped and "toolInput" not in shaped:
+        return None
     return shaped
 
 
@@ -382,6 +415,95 @@ def _team_status(value: Any) -> str:
     if normalized in {"failed", "error", "cancelled", "canceled"}:
         return "error"
     return "idle"
+
+
+def _system_notification_message(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    subtype = _system_notification_subtype(event_type, payload)
+    if not subtype:
+        return None
+    message = {
+        "type": "system_notification",
+        "subtype": subtype,
+        "data": _public_payload(payload),
+    }
+    text = _notification_text(payload)
+    if text:
+        message["message"] = _truncate_text(text)
+    return message
+
+
+def _progress_notification_message(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    message = _system_notification_message(event_type, payload)
+    if message is None:
+        return None
+    message["data"] = _progress_notification_data(payload)
+    if not message.get("message"):
+        message["message"] = _progress_fallback_message(event_type, payload)
+    return message
+
+
+def _system_notification_subtype(event_type: str, payload: dict[str, Any]) -> str | None:
+    if event_type == "compact_summary":
+        return "compact_summary"
+    if event_type == "goal_event":
+        return "goal_event"
+    if event_type == "memory_event":
+        return "memory_saved"
+    if event_type == "background_task":
+        status = str(payload.get("status") or payload.get("state") or "").strip().lower()
+        return "task_started" if status in _TASK_STARTED_STATUSES else "task_progress"
+    if event_type in _TASK_PROGRESS_EVENT_TYPES:
+        return "task_progress"
+    return None
+
+
+def _notification_text(payload: dict[str, Any]) -> str:
+    return _string_value(
+        payload.get("message"),
+        payload.get("summary"),
+        payload.get("description"),
+        payload.get("detail"),
+        payload.get("reason"),
+        payload.get("title"),
+        payload.get("content"),
+        payload.get("text"),
+        payload.get("body"),
+        payload.get("chunk"),
+        payload.get("delta"),
+        payload.get("toolOutput"),
+    )
+
+
+def _progress_fallback_message(event_type: str, payload: dict[str, Any]) -> str:
+    tool_name = _string_value(payload.get("toolName"), payload.get("tool_name"), payload.get("name"))
+    target = _string_value(payload.get("target"), payload.get("command"), payload.get("phase"), payload.get("status"))
+    if tool_name and target:
+        return f"{tool_name}: {target}"
+    if tool_name:
+        return f"{tool_name} progress"
+    if target:
+        return target
+    return event_type.replace(".", " ")
+
+
+def _truncate_text(value: str, max_length: int = 500) -> str:
+    if len(value) <= max_length:
+        return value
+    return f"{value[:max_length]}..."
+
+
+def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if not str(key).startswith("_")}
+
+
+def _progress_notification_data(payload: dict[str, Any]) -> dict[str, Any]:
+    data = _public_payload(payload)
+    for key in ("chunk", "delta", "toolOutput", "text"):
+        value = data.get(key)
+        if isinstance(value, str) and len(value) > 500:
+            data[key] = _truncate_text(value)
+            data[f"{key}Truncated"] = True
+    return data
 
 
 def _field_changed(payload: dict[str, Any], field_name: str) -> bool:

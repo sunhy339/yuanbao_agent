@@ -2082,7 +2082,7 @@ class ReactRunnerMixin:
             return f"{text.rstrip()}\n[truncated]"
         return text
 
-    # Strategies that are allowed to create child tasks via the `task` tool.
+    # Strategies that are allowed to create child tasks via subagent tools.
     _TASK_TOOL_STRATEGIES: frozenset[str] = frozenset({
         "plan_execute", "plan_supervise", "plan_swarm",
     })
@@ -2104,12 +2104,13 @@ class ReactRunnerMixin:
         for schema in self._tool_registry.schemas:
             if isinstance(schema, dict) and isinstance(schema.get("name"), str):
                 tools_by_name.setdefault(schema["name"], schema)
-        # 3. Remove the `task` tool when the routing strategy does not need it,
+        # 3. Remove subagent tools when the routing strategy does not need them,
         #    so that the LLM cannot spontaneously create child tasks for simple queries.
         routing = context.get("routing")
         if isinstance(routing, dict):
             strategy = routing.get("strategy", "")
             if strategy not in self._TASK_TOOL_STRATEGIES:
+                tools_by_name.pop("agent", None)
                 tools_by_name.pop("task", None)
         return [tools_by_name[name] for name in sorted(tools_by_name)]
 
@@ -2161,7 +2162,7 @@ class ReactRunnerMixin:
         if resolver.allow_tools_after_task_results(context):
             return False
         last_result = tool_results[-1]
-        if last_result.get("name") != "task":
+        if last_result.get("name") not in {"agent", "task"}:
             return False
         result = last_result.get("result")
         if isinstance(result, dict) and result.get("status") == "waiting_approval":

@@ -336,7 +336,8 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         createdAt: event.ts,
         sequence: event.seq ?? event.ts,
         visibility: event.visibility,
-        hahaCc: event.hahaCc,
+        yuanbao: event.yuanbao ?? event.hahaCc,
+        hahaCc: event.hahaCc ?? event.yuanbao,
       };
       const existingIndex = current.findIndex((item) => item.id === trace.id);
       if (existingIndex >= 0) {

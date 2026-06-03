@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from ..services.worker_budget import WorkerBudget
+from ..tools.task import normalize_agent_tool_params
 
 _WORKTREE_BOUND_TOOLS = {
     "list_dir",
@@ -40,6 +41,7 @@ _TOOL_VISIBLE_TEXT_HEAD_CHARS = 1200
 _TOOL_VISIBLE_TEXT_TAIL_CHARS = 800
 _TOOL_VISIBLE_COLLECTION_LIMIT = 12
 _TOOL_VISIBLE_SNIPPET_LIMIT = 600
+SUBAGENT_TOOL_NAMES = {"agent", "task"}
 _VERIFY_COMMAND_RE = _re.compile(
     r"\b("
     r"npm\s+(?:run\s+)?(?:test|typecheck|lint|build)|"
@@ -539,7 +541,7 @@ def _tool_result_preview(tool_name: str, result: dict[str, Any] | None, target: 
                 _preview_row("样例", _preview_paths(paths, limit=5)),
             ) if row
         )
-    elif tool_name == "task":
+    elif tool_name in {"agent", "task"}:
         rows.extend(
             row for row in (
                 _preview_row("状态", result.get("status") or "completed"),
@@ -926,8 +928,8 @@ def _tool_runtime_progress_message(
     if tool_name == "scratchpad.read":
         key = target or arguments.get("key") or "key"
         return _compact_text(f"正在读取 scratchpad：{key}", 220)
-    if tool_name == "task":
-        title = arguments.get("title") or arguments.get("agentType") or arguments.get("prompt") or "subtask"
+    if tool_name in {"agent", "task"}:
+        title = arguments.get("title") or arguments.get("agent_type") or arguments.get("agentType") or arguments.get("prompt") or "subtask"
         return _compact_text(f"正在启动子任务：{title}", 220)
     if tool_name.startswith("mcp__"):
         destination = _tool_progress_destination(tool_name, arguments, target)
@@ -1085,6 +1087,7 @@ def _tool_runtime_output_message(tool_name: str, result: dict[str, Any] | None, 
         "apply_patch",
         "browser",
         "notebook",
+        "agent",
         "task",
         "computer_use",
         "memory.remember",
@@ -1268,7 +1271,7 @@ def _tool_category(tool_name: str, arguments: dict[str, Any]) -> str:
         return "search"
     if tool_name in {"git_status", "git_diff"}:
         return "git"
-    if tool_name == "task":
+    if tool_name in {"agent", "task"}:
         return "subtask"
     if tool_name == "computer_use":
         return "computer_use"
@@ -1406,6 +1409,7 @@ def _result_operation_metadata(tool_name: str, result: dict[str, Any] | None) ->
     if not tool_name.startswith("mcp__") and tool_name in {
         "read_file",
         "run_command",
+        "agent",
         "task",
         "scratchpad.read",
         "scratchpad.write",
@@ -1579,6 +1583,15 @@ class ToolExecutionMixin:
             tool_name=tool_spec["name"],
             arguments=tool_arguments,
         )
+        if tool_spec["name"] == "agent":
+            tool_arguments = normalize_agent_tool_params(tool_arguments)
+            tool_spec = {
+                **tool_spec,
+                "arguments": {
+                    **tool_spec.get("arguments", {}),
+                    **tool_arguments,
+                },
+            }
         self._consume_budget_for_tool_call(
             session_id=session_id,
             task=task,
@@ -1718,7 +1731,7 @@ class ToolExecutionMixin:
             )
 
         try:
-            if tool_spec["name"] == "task":
+            if tool_spec["name"] in SUBAGENT_TOOL_NAMES:
                 self._fire_hooks("before_subagent_start", session_id, task, extra_context={"toolArguments": tool_arguments})
                 try:
                     result = self._subagent_service.dispatch(tool_arguments)
@@ -1941,7 +1954,7 @@ class ToolExecutionMixin:
                     },
                 )
 
-        if tool_spec["name"] == "task":
+        if tool_spec["name"] in SUBAGENT_TOOL_NAMES:
             tool_result = provider_tool_result()
             self._publish(
                 session_id=session_id,

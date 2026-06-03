@@ -50,6 +50,7 @@ import {
   completeChatCompatMessage,
   removeAssistantThinkingMessage,
   resolvePermissionRequestMessage,
+  resolveAskUserQuestionMessage,
   resolveSpecialApprovalMessage,
   updateAssistantMessageByMessageId,
   reconcileBackendMessage,
@@ -1036,6 +1037,36 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 : event.type;
           appendSpecialEventFromEnvelope(event, kind);
           return;
+        }
+
+        if (event.type === "task.supplement.consumed") {
+          const payload = event.payload as {
+            reason?: unknown;
+            answer?: unknown;
+            requestId?: unknown;
+            toolCallId?: unknown;
+            internalResponse?: unknown;
+          };
+          if (payload.reason === "ask_user_question_answer") {
+            const internalResponse =
+              payload.internalResponse && typeof payload.internalResponse === "object"
+                ? payload.internalResponse as Record<string, unknown>
+                : {};
+            setChatMessages((current) =>
+              resolveAskUserQuestionMessage(current, {
+                messageId: typeof internalResponse.messageId === "string" ? internalResponse.messageId : undefined,
+                requestId:
+                  typeof payload.requestId === "string"
+                    ? payload.requestId
+                    : typeof internalResponse.requestId === "string"
+                      ? internalResponse.requestId
+                      : undefined,
+                toolCallId: typeof payload.toolCallId === "string" ? payload.toolCallId : undefined,
+                answer: typeof payload.answer === "string" ? payload.answer : "",
+                now: event.ts,
+              }),
+            );
+          }
         }
 
         if (event.type === "approval.resolved") {

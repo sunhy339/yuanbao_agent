@@ -553,6 +553,41 @@ describe("CleanConversation", () => {
     );
   });
 
+  it("disables ask-user answers after the question is answered", async () => {
+    const user = userEvent.setup();
+    const onSubmitUserQuestionAnswer = vi.fn();
+
+    render(
+      <CleanActivityItem
+        item={{
+          id: "message:ask",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "ask1",
+            role: "assistant",
+            content: "",
+            metadata: {
+              kind: "ask_user_question",
+              question: "Which list should I make?",
+              options: [
+                { label: "Status list", description: "Use current state." },
+              ],
+            },
+          },
+        }}
+        answeredQuestionIds={new Set(["ask1"])}
+        onSubmitUserQuestionAnswer={onSubmitUserQuestionAnswer}
+      />,
+    );
+
+    const optionButton = screen.getByRole("button", { name: /Status list/ });
+    expect(optionButton).toBeDisabled();
+    expect(screen.getByPlaceholderText("等待回答提交接口")).toBeDisabled();
+    await user.click(optionButton);
+    expect(onSubmitUserQuestionAnswer).not.toHaveBeenCalled();
+  });
+
   it("submits computer-use permission decisions", async () => {
     const user = userEvent.setup();
     const onApprove = vi.fn();

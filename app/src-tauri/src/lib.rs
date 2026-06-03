@@ -132,6 +132,7 @@ struct MessageSendPayload {
     new_task: Option<bool>,
     background: Option<bool>,
     client_message_id: Option<String>,
+    internal_response: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2180,6 +2181,7 @@ async fn message_send(
                 "newTask": payload.new_task,
                 "background": background,
                 "clientMessageId": payload.client_message_id,
+                "internalResponse": payload.internal_response,
             }),
         )
         .await

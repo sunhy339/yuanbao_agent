@@ -173,6 +173,29 @@ class TestAdvisorRoutingAccepted:
         assert routing_dict["toolContinuation"]["source"] == "decision_advisor"
         assert routing_dict["toolContinuation"]["allowToolsAfterTaskResults"] is True
 
+    def test_advisor_returns_workspace_evidence_contract(self, tmp_path: Any) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "doc_write", "strategy": "react_standard", '
+                '"workspace_evidence_required": {"required": true, '
+                '"required_tools": ["read_file", "search_files"], '
+                '"reason": "answer must be grounded in repository docs"}}, '
+                '"confidence": 0.86, "rationale": "project progress requires workspace evidence"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("summarize the current project progress")
+
+        assert result.scenario == Scenario.DOC_WRITE
+        assert result.metadata["workspaceEvidenceRequired"]["required"] is True
+        orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock(), meta_router=router)
+        routing_dict = orchestrator._routing_dict_from_decision(result)
+        contract = routing_dict["profile"]["workspaceEvidenceRequired"]
+        assert contract["required"] is True
+        assert contract["requiredTools"] == ["read_file", "search_files"]
+        assert contract["source"] == "decision_advisor"
+
 
 # ---------------------------------------------------------------------------
 # Test: MetaRouter with DecisionAdvisor — rejected / fallback

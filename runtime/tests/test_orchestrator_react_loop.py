@@ -565,6 +565,13 @@ def test_react_turn_bridges_explicit_thought_summary_to_thinking(tmp_path: Any) 
     assert thinking_events[0]["payload"]["source"] == "non_stream_thought_summary"
     assert thinking_events[0]["payload"]["messageId"]
     assert thinking_events[0]["visibility"] == "chat"
+    progress_phases = [
+        event["payload"].get("phase")
+        for event in runtime.events
+        if event["type"] == "assistant_progress"
+    ]
+    assert "locate_sources" in progress_phases
+    assert "merge_findings" in progress_phases
 
 
 def test_child_provider_turn_does_not_publish_chat_progress(tmp_path: Any) -> None:
@@ -5279,11 +5286,9 @@ def test_react_loop_pauses_for_ask_user_and_resumes_with_supplement(tmp_path: An
         ),
         "task",
     )
-    resumed = _call_result(_rpc(runtime, "task.resume", {"taskId": task["id"]}), "task")
     final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
 
-    assert supplement["status"] == "paused"
-    assert resumed["status"] == "completed"
+    assert supplement["status"] == "completed"
     assert final_task["resultSummary"] == "已按补充说明继续。"
     assert "task.supplement.consumed" in [event["type"] for event in runtime.events]
 
@@ -5339,6 +5344,16 @@ def test_react_loop_ask_user_question_tool_auto_resumes_with_structured_result(t
         _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "update the workflow"}),
         "task",
     )
+    runtime.store.update_task(
+        task_id=task["id"],
+        routing={
+            **(task.get("routing") or {}),
+            "profile": {
+                **((task.get("routing") or {}).get("profile") or {}),
+                "workspaceEvidenceRequired": {"required": False, "source": "test"},
+            },
+        },
+    )
 
     assert task["status"] == "paused"
     question_event = next(event for event in runtime.events if event["type"] == "ask_user_question")
@@ -5381,6 +5396,106 @@ def test_react_loop_ask_user_question_tool_auto_resumes_with_structured_result(t
     assert answer_payload["answers"]["verification_level"] == "Choose UI first, and run focused verification."
 
 
+def test_react_loop_ask_user_question_internal_answer_is_not_visible_user_message(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "name": "ask_user_question",
+                        "arguments": {
+                            "question": "Which repository path should I inspect before continuing?",
+                            "options": [
+                                {
+                                    "label": "Current project",
+                                    "value": "current_project",
+                                    "description": "Inspect the active workspace.",
+                                }
+                            ],
+                            "reason": "missing_required_path",
+                        },
+                    }
+                ],
+            },
+            {"final": "Using the selected repository path."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "choose a response format"}),
+        "task",
+    )
+    runtime.store.update_task(
+        task_id=task["id"],
+        routing={
+            **(task.get("routing") or {}),
+            "profile": {
+                **((task.get("routing") or {}).get("profile") or {}),
+                "workspaceEvidenceRequired": {"required": False, "source": "test"},
+            },
+        },
+    )
+
+    question_event = next(event for event in runtime.events if event["type"] == "ask_user_question")
+    request_id = question_event["payload"]["requestId"]
+    response = _rpc(
+        runtime,
+        "message.send",
+        {
+            "sessionId": session["id"],
+            "taskId": task["id"],
+            "mode": "supplement",
+            "content": "Choice: Current project",
+            "internalResponse": {
+                "kind": "ask_user_question",
+                "messageId": "ask-message-1",
+                "requestId": request_id,
+                "toolCallId": "call_question",
+            },
+        },
+    )
+    resumed = _call_result(response, "task")
+
+    assert response["result"]["autoResumed"] is True
+    assert resumed["status"] == "completed"
+    messages = _call_result(_rpc(runtime, "message.list", {"sessionId": session["id"]}), "messages")
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert not any(message["role"] == "user" and "Choice: Current project" in message.get("content", "") for message in messages)
+    assert not any(message["role"] == "assistant" and message.get("kind") == "supplement" for message in messages)
+
+    consumed = next(
+        event
+        for event in runtime.events
+        if event["type"] == "task.supplement.consumed"
+        and event["payload"].get("reason") == "ask_user_question_answer"
+    )
+    assert consumed["payload"]["requestId"] == request_id
+    assert consumed["payload"]["internalResponse"]["messageId"] == "ask-message-1"
+
+    duplicate = _rpc(
+        runtime,
+        "message.send",
+        {
+            "sessionId": session["id"],
+            "taskId": task["id"],
+            "mode": "supplement",
+            "content": "Choice: Current project",
+            "internalResponse": {
+                "kind": "ask_user_question",
+                "messageId": "ask-message-1",
+                "requestId": request_id,
+                "toolCallId": "call_question",
+            },
+        },
+    )
+    assert duplicate["result"]["duplicate"] is True
+    after_duplicate = _call_result(_rpc(runtime, "message.list", {"sessionId": session["id"]}), "messages")
+    assert [message["role"] for message in after_duplicate] == ["user", "assistant"]
+
+
 def test_react_loop_ask_user_question_tool_resume_waits_for_answer(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [
@@ -5408,6 +5523,60 @@ def test_react_loop_ask_user_question_tool_resume_waits_for_answer(tmp_path: Any
     assert resumed["status"] == "paused"
     assert len(provider.calls) == 1
     assert any(event["type"] == "task.resume.blocked" for event in runtime.events)
+
+
+def test_react_loop_defaults_low_risk_ask_user_question_tool(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "name": "ask_user_question",
+                        "arguments": {
+                            "question": "Which current task list style should I use?",
+                            "options": [
+                                {
+                                    "label": "Status list",
+                                    "value": "status_list",
+                                    "description": "Group tasks by current state.",
+                                    "recommended": True,
+                                },
+                                {
+                                    "label": "Priority list",
+                                    "value": "priority_list",
+                                    "description": "Sort tasks by priority.",
+                                },
+                            ],
+                            "summary": "Choose output style.",
+                            "reason": "output_format_preference",
+                        },
+                    }
+                ],
+            },
+            {"final": "Using the status-list format."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "make a task list"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert not any(event["type"] == "ask_user_question" for event in runtime.events)
+    tool_messages = [
+        message
+        for message in provider.calls[1]["context"]["messages"]
+        if message.get("role") == "tool" and message.get("name") == "ask_user_question"
+    ]
+    assert len(tool_messages) == 1
+    payload = json.loads(tool_messages[0]["content"])
+    assert payload["defaulted"] is True
+    assert payload["status"] == "answered"
+    assert "Status list" in payload["answer"]
 
 
 def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any) -> None:

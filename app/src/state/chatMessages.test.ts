@@ -23,6 +23,7 @@ import {
   removeAssistantThinkingMessage,
   replaceSessionMessages,
   resolvePermissionRequestMessage,
+  resolveAskUserQuestionMessage,
   resolveSpecialApprovalMessage,
   sanitizeAssistantStatusContent,
   stripAssistantRuntimeProgress,
@@ -140,6 +141,45 @@ describe("chatMessages", () => {
     expect(getVisibleChatMessages(cleared, "sess_1").map((message) => message.id)).not.toContain(
       "assistant_thinking:task_3",
     );
+  });
+
+  it("marks ask-user question messages answered by request id", () => {
+    const current: ChatMessageView[] = [
+      {
+        id: "ask1",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "",
+        createdAt: 1,
+        updatedAt: 1,
+        status: "completed",
+        metadata: {
+          kind: "ask_user_question",
+          requestId: "ask_123",
+          status: "waiting",
+        },
+      },
+    ];
+
+    const next = resolveAskUserQuestionMessage(current, {
+      requestId: "ask_123",
+      answer: "Use the status list.",
+      now: 9,
+    });
+
+    expect(next[0]).toMatchObject({
+      id: "ask1",
+      updatedAt: 9,
+      status: "completed",
+      metadata: {
+        status: "answered",
+        resolved: true,
+        answered: true,
+        answer: "Use the status list.",
+        answeredAt: 9,
+      },
+    });
   });
 
   it("appends streaming thinking summary deltas", () => {

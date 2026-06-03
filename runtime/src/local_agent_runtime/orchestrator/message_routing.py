@@ -25,6 +25,17 @@ _WRITE_WORKTREE_SCENARIOS = {
     "supervised_task",
     "swarm_task",
 }
+_WORKSPACE_EVIDENCE_REQUIRED_SCENARIOS = {
+    "code_search",
+    "code_edit",
+    "code_review",
+    "debug",
+    "test_write",
+    "doc_write",
+    "multi_step_task",
+    "supervised_task",
+    "swarm_task",
+}
 
 _INLINE_FILE_REFERENCE_PATTERN = re.compile(r"(^|\s)@([^\s@]+)")
 _INLINE_FILE_REFERENCE_TRAILING = "),.;:!?，。；：！？）"
@@ -37,6 +48,11 @@ class MessageRoutingMixin:
     def _routing_dict_from_decision(self, routing: Any, context: dict[str, Any] | None = None) -> dict[str, Any]:
         strategy = routing.strategy.value
         tool_continuation = self._routing_tool_continuation_from_decision(routing, strategy)
+        profile = self._routing_profile_from_decision(routing)
+        workspace_evidence = self._routing_workspace_evidence_from_decision(routing)
+        if workspace_evidence:
+            profile = dict(profile or {})
+            profile["workspaceEvidenceRequired"] = workspace_evidence
         return {
             "scenario": routing.scenario.value,
             "strategy": strategy,
@@ -47,6 +63,7 @@ class MessageRoutingMixin:
             "reasoning": routing.reasoning,
             "skill_id": routing.skill_id,
             "toolContinuation": tool_continuation,
+            **({"profile": profile} if profile else {}),
             "profile_snapshot": self._runtime_profile_snapshot(context),
             "worktreeBindingRequired": False,
             "roleSnapshot": {
@@ -70,6 +87,68 @@ class MessageRoutingMixin:
                 "budget": {},
             },
         }
+
+    @staticmethod
+    def _routing_profile_from_decision(routing: Any) -> dict[str, Any]:
+        metadata = getattr(routing, "metadata", None)
+        if not isinstance(metadata, dict):
+            return {}
+        profile = metadata.get("profile")
+        return dict(profile) if isinstance(profile, dict) else {}
+
+    def _routing_workspace_evidence_from_decision(self, routing: Any) -> dict[str, Any]:
+        metadata = getattr(routing, "metadata", None)
+        raw = metadata.get("workspaceEvidenceRequired") if isinstance(metadata, dict) else None
+        if raw is None and isinstance(metadata, dict):
+            raw = metadata.get("workspace_evidence_required")
+        if isinstance(raw, dict):
+            normalized = self._normalize_workspace_evidence_contract(raw)
+            if normalized:
+                return normalized
+        if raw is True:
+            return self._default_workspace_evidence_contract(str(routing.scenario.value), source="routing_metadata")
+        if raw is False:
+            return {"required": False, "source": "routing_metadata"}
+        scenario = str(routing.scenario.value)
+        if scenario in _WORKSPACE_EVIDENCE_REQUIRED_SCENARIOS:
+            return self._default_workspace_evidence_contract(scenario, source="routing_rule")
+        return {}
+
+    @staticmethod
+    def _default_workspace_evidence_contract(scenario: str, *, source: str) -> dict[str, Any]:
+        return {
+            "required": True,
+            "source": source,
+            "scenario": scenario,
+            "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
+        }
+
+    def _normalize_workspace_evidence_contract(self, raw: dict[str, Any]) -> dict[str, Any]:
+        required = raw.get("required")
+        if required is None:
+            required = raw.get("enabled")
+        if not isinstance(required, bool):
+            required = True
+        result: dict[str, Any] = {
+            "required": required,
+            "source": str(raw.get("source") or "routing_metadata"),
+        }
+        required_tools = raw.get("requiredTools")
+        if required_tools is None:
+            required_tools = raw.get("required_tools")
+        if isinstance(required_tools, list):
+            tools = [
+                str(item).strip()
+                for item in required_tools
+                if str(item or "").strip()
+            ]
+            if tools:
+                result["requiredTools"] = tools[:20]
+        for key in ("reason", "rationale", "scenario"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                result[key] = value.strip()[:500]
+        return result
 
     def _routing_tool_continuation_from_decision(self, routing: Any, strategy: str) -> dict[str, Any]:
         metadata = getattr(routing, "metadata", None)
@@ -582,8 +661,39 @@ class MessageRoutingMixin:
 
         explicit_supplement = params.get("mode") == "supplement"
         explicit_task_id = params.get("taskId") or params.get("task_id")
+        internal_response = params.get("internalResponse")
+        is_internal_response = (
+            isinstance(internal_response, dict)
+            and internal_response.get("kind") == "ask_user_question"
+        )
         is_queued_mode = params.get("mode") == "queued"
         should_auto_supplement = not is_queued_mode and params.get("background") is not True and params.get("newTask") is not True
+        if is_internal_response:
+            active_task = self._find_supplement_target_task(
+                session_id=session["id"],
+                task_id=str(explicit_task_id) if explicit_task_id else None,
+                strict=False,
+            )
+            if active_task is None:
+                if explicit_task_id:
+                    try:
+                        target_task = self._store.get_task({"taskId": str(explicit_task_id)})["task"]
+                    except Exception as exc:  # noqa: BLE001
+                        raise ValueError(f"Cannot answer missing ask_user_question task: {explicit_task_id}") from exc
+                    if target_task.get("sessionId") == session["id"]:
+                        return {
+                            "task": target_task,
+                            "acceptedMode": "supplement",
+                            "duplicate": True,
+                        }
+                raise ValueError("Cannot answer ask_user_question without an active target task.")
+            return self._attach_supplemental_message(
+                session_id=session["id"],
+                task=active_task,
+                content=goal,
+                metadata=message_metadata,
+                internal_response=internal_response,
+            )
         if explicit_supplement or should_auto_supplement:
             active_task = self._find_supplement_target_task(
                 session_id=session["id"],
@@ -596,6 +706,7 @@ class MessageRoutingMixin:
                     task=active_task,
                     content=goal,
                     metadata=message_metadata,
+                    internal_response=params.get("internalResponse"),
                 )
 
         # --- Queued mode: create task but don't execute if another is running ---
@@ -1013,6 +1124,13 @@ class MessageRoutingMixin:
             metadata["attachments"] = attachments
         if file_references:
             metadata["fileReferences"] = file_references
+        internal_response = params.get("internalResponse")
+        if isinstance(internal_response, dict):
+            metadata["internalResponse"] = {
+                key: value
+                for key, value in internal_response.items()
+                if isinstance(key, str) and value not in (None, "", [])
+            }
         return metadata
 
     def _routing_with_requested_skill(self, routing: Any, requested_skill_id: str | None) -> Any:

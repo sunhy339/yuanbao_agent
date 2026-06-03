@@ -1315,11 +1315,13 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
   onCopyRuntimeText,
   onSubmitUserQuestionAnswer,
   busy,
+  answered,
 }: {
   message: SessionWorkspaceMessage;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
   onSubmitUserQuestionAnswer?: (message: SessionWorkspaceMessage, answer: string) => void | Promise<void>;
   busy?: boolean;
+  answered?: boolean;
 }) {
   const [answer, setAnswer] = useState("");
   const question =
@@ -1327,10 +1329,10 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
     message.content.trim() ||
     "需要你补充信息";
   const options = readMetadataList(message, ["options", "choices"]);
-  const canSubmit = Boolean(onSubmitUserQuestionAnswer);
+  const canSubmit = Boolean(onSubmitUserQuestionAnswer) && !answered;
   const submitAnswer = (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || !onSubmitUserQuestionAnswer) return;
+    if (!trimmed || !onSubmitUserQuestionAnswer || answered) return;
     void onSubmitUserQuestionAnswer(message, trimmed);
     setAnswer("");
   };
@@ -1342,7 +1344,7 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
           <strong>需要你确认</strong>
           <span>{question}</span>
         </div>
-        <StatusChip status={readMetadataString(message, ["status"]) || message.status || "waiting"} />
+        <StatusChip status={answered ? "answered" : readMetadataString(message, ["status"]) || message.status || "waiting"} />
       </header>
       {options.length ? (
         <div className="hc-question-options">
@@ -1360,7 +1362,7 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
               <button
                 type="button"
                 key={`${label}:${index}`}
-                disabled={!canSubmit || busy}
+                disabled={!canSubmit || busy || answered}
                 onClick={() => submitAnswer(answerText)}
               >
                 <strong>{label || `选项 ${index + 1}`}</strong>
@@ -1374,14 +1376,14 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
       <div className="hc-question-reply">
         <textarea
           value={answer}
-          disabled={!canSubmit || busy}
+          disabled={!canSubmit || busy || answered}
           rows={3}
           placeholder={canSubmit ? "补充说明或直接回答..." : "等待回答提交接口"}
           onChange={(event) => setAnswer(event.target.value)}
         />
         <button
           type="button"
-          disabled={!canSubmit || busy || !answer.trim()}
+          disabled={!canSubmit || busy || answered || !answer.trim()}
           onClick={() => submitAnswer(answer)}
         >
           <SendHorizontal size={13} />
@@ -2331,6 +2333,7 @@ export function CleanActivityItem({
   onStopCommandJob,
   busyId,
   onSubmitUserQuestionAnswer,
+  answeredQuestionIds,
 }: {
   item: ConversationActivityItem;
   onApprove?: (approvalId: string) => void | Promise<void>;
@@ -2348,6 +2351,7 @@ export function CleanActivityItem({
   onStopCommandJob?: (commandId: string) => void | Promise<void>;
   busyId?: string | null;
   onSubmitUserQuestionAnswer?: (message: SessionWorkspaceMessage, answer: string) => void | Promise<void>;
+  answeredQuestionIds?: Set<string>;
 }) {
   const transcriptKind = transcriptKindForActivity(item);
   if (item.kind === "runtime") {
@@ -2399,12 +2403,18 @@ export function CleanActivityItem({
     return wrap(<CleanToolMessageBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
   }
   if (kind === "ask_user_question") {
+    const questionAnswered =
+      answeredQuestionIds?.has(message.id) ||
+      message.metadata?.resolved === true ||
+      message.metadata?.answered === true ||
+      message.metadata?.status === "answered";
     return wrap(
       <CleanAskUserQuestionBlock
         message={message}
         onCopyRuntimeText={onCopyRuntimeText}
         onSubmitUserQuestionAnswer={onSubmitUserQuestionAnswer}
         busy={busyId === message.id}
+        answered={questionAnswered}
       />,
     );
   }

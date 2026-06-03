@@ -708,6 +708,7 @@ export function CleanSessionWorkspace({
   messagesLoading,
 }: SessionWorkspaceProps) {
   const [questionBusyId, setQuestionBusyId] = useState<string | null>(null);
+  const [answeredQuestionIds, setAnsweredQuestionIds] = useState<Set<string>>(() => new Set());
   const [messageActionBusyId, setMessageActionBusyId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLElement | null>(null);
   const wasNearBottomRef = useRef(true);
@@ -765,11 +766,21 @@ export function CleanSessionWorkspace({
     const text = answer.trim();
     const targetSessionId = session?.id;
     const targetTaskId = message.taskId && message.taskId !== "persisted" ? message.taskId : activeTask?.id;
-    if (!text || !targetSessionId) {
+    if (!text || !targetSessionId || answeredQuestionIds.has(message.id) || questionBusyId === message.id) {
       return;
     }
+    setAnsweredQuestionIds((current) => new Set(current).add(message.id));
     if (onSubmitUserQuestionAnswer) {
-      await onSubmitUserQuestionAnswer(message, text);
+      try {
+        await onSubmitUserQuestionAnswer(message, text);
+      } catch (reason) {
+        setAnsweredQuestionIds((current) => {
+          const next = new Set(current);
+          next.delete(message.id);
+          return next;
+        });
+        throw reason;
+      }
       return;
     }
     setQuestionBusyId(message.id);
@@ -780,15 +791,34 @@ export function CleanSessionWorkspace({
         attachments: [],
         taskId: targetTaskId,
         mode: "supplement",
+        internalResponse: {
+          kind: "ask_user_question",
+          messageId: message.id,
+          requestId:
+            typeof message.metadata?.requestId === "string"
+              ? message.metadata.requestId
+              : undefined,
+          toolCallId:
+            typeof message.metadata?.toolCallId === "string"
+              ? message.metadata.toolCallId
+              : undefined,
+        },
       });
       const resultTaskId = result.task.id || targetTaskId;
       if (result.task.status === "paused" && resultTaskId) {
         await runtimeClient.resumeTask({ taskId: resultTaskId });
       }
+    } catch (reason) {
+      setAnsweredQuestionIds((current) => {
+        const next = new Set(current);
+        next.delete(message.id);
+        return next;
+      });
+      throw reason;
     } finally {
       setQuestionBusyId(null);
     }
-  }, [activeTask?.id, activeTask?.status, onSubmitUserQuestionAnswer, session?.id]);
+  }, [activeTask?.id, answeredQuestionIds, onSubmitUserQuestionAnswer, questionBusyId, session?.id]);
 
   const runMessageAction = useCallback(async (
     message: SessionWorkspaceMessage,
@@ -866,6 +896,7 @@ export function CleanSessionWorkspace({
                 onStopCommandJob={onStopCommandJob}
                 busyId={patchBusyId ?? messageActionBusyId ?? questionBusyId ?? busyId}
                 onSubmitUserQuestionAnswer={submitUserQuestionAnswer}
+                answeredQuestionIds={answeredQuestionIds}
               />
             ))
           ) : messagesLoading ? (

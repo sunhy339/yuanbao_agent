@@ -613,6 +613,29 @@ class ReactRunnerMixin:
                 assistant_text = parsed["summary"]
 
             if turn_result.decision == TurnDecision.ASK_USER:
+                if not self._ask_user_question_is_required(
+                    question=assistant_text,
+                    reason=turn_result.why_complete,
+                    policy_needs=turn_result.policy_needs,
+                ):
+                    default_answer = self._default_answer_for_low_risk_question(
+                        question=assistant_text,
+                        policy_needs=turn_result.policy_needs,
+                    )
+                    self._publish(
+                        session_id=session_id,
+                        task=task,
+                        event_type="assistant_progress",
+                        payload={
+                            "summary": default_answer,
+                            "phase": "default_preference",
+                            "reason": "ask_user_question_low_risk_preference",
+                        },
+                        visibility="panel",
+                    )
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append({"role": "user", "content": f"[Default preference]\n{default_answer}"})
+                    continue
                 return self._pause_react_for_user_question(
                     session_id=session_id,
                     task=task,
@@ -653,6 +676,13 @@ class ReactRunnerMixin:
                 }
 
             tool_calls = self._annotate_tool_call_batch_with_history(parsed["tool_calls"], tool_results)
+            self._publish_tool_batch_phase_progress(
+                session_id=session_id,
+                task=task,
+                tool_calls=tool_calls,
+                context=context,
+                stage="before",
+            )
             messages.append(
                 {
                     "role": "assistant",
@@ -678,7 +708,7 @@ class ReactRunnerMixin:
                     read_file_cache.clear()
                 self._ensure_tool_result_operation(tool_spec, tool_result)
                 if self._tool_result_waits_for_user(tool_spec, tool_result):
-                    return self._pause_react_for_user_question_tool(
+                    ask_user_result = self._pause_react_for_user_question_tool(
                         session_id=session_id,
                         task=task,
                         goal=goal,
@@ -693,6 +723,10 @@ class ReactRunnerMixin:
                         tool_result=tool_result,
                         remaining_tool_calls=tool_calls[index + 1 :],
                     )
+                    if ask_user_result.get("status") == "defaulted" and isinstance(ask_user_result.get("tool_result"), dict):
+                        tool_result = ask_user_result["tool_result"]
+                    else:
+                        return ask_user_result
                 if self._tool_result_enters_plan_mode(tool_spec, tool_result):
                     context = self._context_with_plan_mode(context, tool_result)
                     tool_results.append(tool_result)
@@ -886,6 +920,13 @@ class ReactRunnerMixin:
                 index += 1
 
             # After all tool calls in this step, check for cooperative pause
+            self._publish_tool_batch_phase_progress(
+                session_id=session_id,
+                task=task,
+                tool_calls=tool_calls,
+                context=context,
+                stage="after",
+            )
             task = self._store.get_task({"taskId": task["id"]})["task"]
             if task["status"] == "paused":
                 self._pending_react_tasks[task["id"]] = {
@@ -1426,6 +1467,51 @@ class ReactRunnerMixin:
             "recent": recent[-5:],
         }
 
+    def _publish_tool_batch_phase_progress(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_calls: list[dict[str, Any]],
+        context: dict[str, Any],
+        stage: str,
+    ) -> None:
+        publish_progress = getattr(self, "_publish_assistant_progress", None)
+        if not callable(publish_progress) or not tool_calls:
+            return
+        tool_names = [
+            str(self._provider_tool_call_to_spec(tool_call, context).get("name") or "").strip()
+            for tool_call in tool_calls
+            if isinstance(tool_call, dict)
+        ]
+        tool_names = [name for name in tool_names if name]
+        if not tool_names:
+            return
+        if stage == "after":
+            text = "正在合并清单" if any(name in {"read_file", "search_files", "code_search", "list_dir", "list_directory"} for name in tool_names) else "正在合并工具结果"
+            phase = "merge_findings"
+        elif any(name in {"search_files", "code_search", "list_dir", "list_directory", "git_status", "git_diff"} for name in tool_names):
+            text = "正在定位任务来源"
+            phase = "locate_sources"
+        elif any(name == "read_file" for name in tool_names):
+            text = "正在读取候选文档"
+            phase = "read_candidates"
+        else:
+            text = "正在执行工具批次"
+            phase = "tool_batch"
+        publish_progress(
+            session_id=session_id,
+            task=task,
+            text=text,
+            phase=phase,
+            payload={
+                "toolTotal": len(tool_names),
+                "toolNames": tool_names[:10],
+                "stage": stage,
+            },
+            visibility="panel",
+        )
+
     def _pause_react_for_user_question(
         self,
         *,
@@ -1467,6 +1553,14 @@ class ReactRunnerMixin:
         self._pending_react_tasks[task["id"]] = pending_state
         self._save_pending_react_state(task["id"], pending_state)
         paused_task = self._store.update_task_status(task_id=task["id"], status="paused")
+        request_id = self._store.new_id("ask")
+        context = dict(pending_state.get("context") or {})
+        pending_question = context.get("_pending_user_question") if isinstance(context.get("_pending_user_question"), dict) else {}
+        pending_question["requestId"] = request_id
+        context["_pending_user_question"] = pending_question
+        pending_state["context"] = context
+        self._pending_react_tasks[task["id"]] = pending_state
+        self._save_pending_react_state(task["id"], pending_state)
         self._publish(
             session_id=session_id,
             task=paused_task,
@@ -1488,6 +1582,7 @@ class ReactRunnerMixin:
                 "resumePolicy": resume_policy,
                 "options": normalized_options,
                 "source": source,
+                "requestId": request_id,
             },
         )
         self._publish(
@@ -1523,6 +1618,46 @@ class ReactRunnerMixin:
         questions = self._normalize_user_questions_payload(result)
         primary_question = questions[0]["question"] if questions else str(result.get("question") or "Please provide the missing information.")
         options = questions[0].get("options") if questions else result.get("options")
+        if not self._ask_user_question_is_required(
+            question=primary_question,
+            reason=result.get("reason"),
+            policy_needs={"questions": questions, "options": options},
+        ):
+            default_answer = self._default_answer_for_low_risk_question(
+                question=primary_question,
+                policy_needs={"questions": questions, "options": options},
+            )
+            answered_payload = {
+                "status": "answered",
+                "summary": default_answer,
+                "answer": default_answer,
+                "answers": self._default_answers_for_questions(questions, default_answer),
+                "questions": questions,
+                "defaulted": True,
+                "reason": "low_risk_preference_defaulted",
+            }
+            tool_result = {
+                **tool_result,
+                "resultSummary": default_answer,
+                "result": answered_payload,
+                "modelVisibleResult": answered_payload,
+            }
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="assistant_progress",
+                payload={
+                    "summary": default_answer,
+                    "phase": "default_preference",
+                    "reason": "ask_user_question_tool_low_risk_preference",
+                    "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                },
+                visibility="panel",
+            )
+            return {
+                "status": "defaulted",
+                "tool_result": tool_result,
+            }
         pending_state = {
             "session_id": session_id,
             "goal": goal,
@@ -1550,6 +1685,14 @@ class ReactRunnerMixin:
         self._pending_react_tasks[task["id"]] = pending_state
         self._save_pending_react_state(task["id"], pending_state)
         paused_task = self._store.update_task_status(task_id=task["id"], status="paused")
+        request_id = str(result.get("requestId") or "") or self._store.new_id("ask")
+        context = dict(pending_state.get("context") or {})
+        pending_question = context.get("_pending_user_question") if isinstance(context.get("_pending_user_question"), dict) else {}
+        pending_question["requestId"] = request_id
+        context["_pending_user_question"] = pending_question
+        pending_state["context"] = context
+        self._pending_react_tasks[task["id"]] = pending_state
+        self._save_pending_react_state(task["id"], pending_state)
         self._publish(
             session_id=session_id,
             task=paused_task,
@@ -1565,7 +1708,7 @@ class ReactRunnerMixin:
                 "options": self._normalize_user_question_options(options),
                 "source": "tool",
                 "toolCallId": tool_call.get("id") or tool_result.get("id"),
-                **({"requestId": result.get("requestId")} if result.get("requestId") else {}),
+                "requestId": request_id,
             },
         )
         self._publish(
@@ -1580,6 +1723,111 @@ class ReactRunnerMixin:
             },
         )
         return {"status": "paused", "question": primary_question}
+
+    def _ask_user_question_is_required(
+        self,
+        *,
+        question: Any,
+        reason: Any,
+        policy_needs: Any,
+    ) -> bool:
+        reason_text = str(reason or "").strip().casefold()
+        required_reason_markers = (
+            "missing_required",
+            "required_information",
+            "missing information",
+            "missing_info",
+            "missing_context",
+            "scope_unclear",
+            "blocked",
+            "auth",
+            "credential",
+            "permission",
+            "approval",
+            "secret",
+            "access",
+        )
+        if any(marker in reason_text for marker in required_reason_markers):
+            return True
+        text_parts = [str(question or "")]
+        if isinstance(policy_needs, dict):
+            for key in ("question", "summary", "reason"):
+                if policy_needs.get(key):
+                    text_parts.append(str(policy_needs.get(key)))
+            options = policy_needs.get("options")
+            if not isinstance(options, list):
+                questions = policy_needs.get("questions")
+                if isinstance(questions, list):
+                    options = []
+                    for item in questions:
+                        if isinstance(item, dict) and isinstance(item.get("options"), list):
+                            options.extend(item["options"])
+            if isinstance(options, list):
+                for option in options:
+                    if isinstance(option, dict):
+                        text_parts.extend(str(option.get(key) or "") for key in ("label", "value", "description"))
+                    else:
+                        text_parts.append(str(option))
+        text = " ".join(text_parts).casefold()
+        low_risk_preference_markers = (
+            "style",
+            "format",
+            "sort",
+            "sorting",
+            "order",
+            "priority",
+            "status list",
+            "list style",
+            "presentation",
+            "output format",
+            "输出格式",
+            "排序",
+            "风格",
+            "样式",
+            "优先级",
+            "现状清单",
+            "状态清单",
+        )
+        if any(marker in text for marker in low_risk_preference_markers):
+            return False
+        return True
+
+    def _default_answer_for_low_risk_question(self, *, question: Any, policy_needs: Any) -> str:
+        options: list[Any] = []
+        if isinstance(policy_needs, dict):
+            raw_options = policy_needs.get("options")
+            if isinstance(raw_options, list):
+                options = raw_options
+            questions = policy_needs.get("questions")
+            if not options and isinstance(questions, list):
+                for item in questions:
+                    if isinstance(item, dict) and isinstance(item.get("options"), list):
+                        options = item["options"]
+                        break
+        recommended = None
+        for option in options:
+            if isinstance(option, dict) and option.get("recommended") is True:
+                recommended = option
+                break
+        if recommended is None and options:
+            recommended = options[0]
+        if isinstance(recommended, dict):
+            label = str(recommended.get("label") or recommended.get("value") or "").strip()
+            description = str(recommended.get("description") or "").strip()
+            if label and description:
+                return f"Defaulting to {label}: {description}"
+            if label:
+                return f"Defaulting to {label}."
+        return "Using the sensible default and continuing without asking for a low-risk preference."
+
+    @staticmethod
+    def _default_answers_for_questions(questions: list[dict[str, Any]], default_answer: str) -> dict[str, str]:
+        answers: dict[str, str] = {}
+        for index, question in enumerate(questions):
+            qid = str(question.get("id") or f"question_{index + 1}").strip()
+            if qid:
+                answers[qid] = default_answer
+        return answers
 
     @staticmethod
     def _tool_result_waits_for_user(tool_spec: dict[str, Any], tool_result: dict[str, Any]) -> bool:
@@ -1608,6 +1856,11 @@ class ReactRunnerMixin:
 
         answers = self._question_answers_from_supplements(pending, supplements)
         answer_text = "\n".join(str(entry.get("content") or "").strip() for entry in supplements if str(entry.get("content") or "").strip())
+        internal_responses = [
+            metadata.get("internalResponse")
+            for metadata in (self._supplement_metadata(entry) for entry in supplements)
+            if isinstance(metadata.get("internalResponse"), dict)
+        ]
         for entry in supplements:
             self._store.mark_supplement_consumed(
                 entry["id"],
@@ -1627,6 +1880,9 @@ class ReactRunnerMixin:
                 "entryIds": [entry["id"] for entry in supplements],
                 "reason": "ask_user_question_answer",
                 "toolCallId": pending_tool_call.get("id") or pending.get("toolCallId"),
+                "requestId": pending.get("requestId"),
+                "answer": answer_text,
+                "internalResponse": internal_responses[0] if internal_responses else None,
             },
         )
         result_payload = {

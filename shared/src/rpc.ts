@@ -409,6 +409,12 @@ export interface MessageSendParams {
   newTask?: boolean;
   background?: boolean;
   clientMessageId?: string;
+  internalResponse?: {
+    kind: "ask_user_question";
+    messageId?: string;
+    requestId?: string;
+    toolCallId?: string;
+  };
 }
 
 export interface MessageListParams {

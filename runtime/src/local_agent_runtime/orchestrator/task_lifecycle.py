@@ -458,6 +458,13 @@ class TaskLifecycleMixin:
         if context.get("_allow_summary_only_completion") is True:
             return {"action": "complete", "reason": "Summary-only completion explicitly allowed."}
         reviews_disabled = self._completion_reviews_disabled(context)
+        workspace_evidence_gate = self._completion_workspace_evidence_gate(completion_evidence)
+        if workspace_evidence_gate is not None:
+            if reviews_disabled and workspace_evidence_gate.get("action") == "review":
+                return self._completion_reviews_disabled_failure(
+                    workspace_evidence_gate.get("reason") or "Workspace evidence is required."
+                )
+            return workspace_evidence_gate
         is_write_or_verification_task = self._is_write_or_verification_task(task=task, context=context)
         if not is_write_or_verification_task:
             return {"action": "complete", "reason": "Read-only completion is allowed."}
@@ -804,6 +811,30 @@ class TaskLifecycleMixin:
             "decision": "advisor_evidence_requested",
             "gateStatus": "advisor_evidence_requested",
             "risk": "LLM product-surface advisor requested blocking evidence",
+            "reason": reason,
+        }
+
+    def _completion_workspace_evidence_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
+        workspace_evidence = completion_evidence.get("workspaceEvidence")
+        if not isinstance(workspace_evidence, dict):
+            return None
+        if workspace_evidence.get("required") is not True:
+            return None
+        if workspace_evidence.get("status") == "satisfied":
+            return None
+        required_tools = [
+            str(item).strip()
+            for item in (workspace_evidence.get("requiredTools") or [])
+            if str(item).strip()
+        ]
+        reason = "Completion blocked because this task requires read-only workspace evidence before answering."
+        if required_tools:
+            reason = f"{reason} Expected one of: {', '.join(required_tools[:6])}."
+        return {
+            "action": "review",
+            "decision": "needs_workspace_evidence",
+            "gateStatus": "needs_workspace_evidence",
+            "risk": "workspace-grounded task completed without read-only workspace evidence",
             "reason": reason,
         }
 
@@ -4023,6 +4054,12 @@ class TaskLifecycleMixin:
             verification=verification_for_requirements,
             tests_run=tests_run,
         )
+        workspace_evidence = self._completion_workspace_evidence(
+            task=task,
+            context=context or {},
+            tool_evidence=tool_evidence,
+            commands=commands,
+        )
 
         has_workspace_evidence = bool(changed_files or patches)
         has_command_evidence = bool(commands)
@@ -4076,6 +4113,7 @@ class TaskLifecycleMixin:
             "commands": commands,
             "verification": verification,
             "verificationRequirements": verification_requirements,
+            "workspaceEvidence": workspace_evidence,
             "testsRun": tests_run,
             "patches": patches,
             "toolResults": tool_evidence,
@@ -4096,6 +4134,8 @@ class TaskLifecycleMixin:
                 "failedVerification": len(unresolved_failed_verification) + len(failed_validation_checks) + len(unresolved_failed_tests_run),
                 "requiredVerificationFamilies": len(verification_requirements.get("required") or []),
                 "missingVerificationFamilies": len(verification_requirements.get("missing") or []),
+                "readOnlyWorkspaceEvidence": len(workspace_evidence.get("evidence") or []),
+                "requiredWorkspaceEvidence": 1 if workspace_evidence.get("required") is True else 0,
                 "testsRun": len(tests_run),
                 "passedTestsRun": len(passed_tests_run),
                 "failedTestsRun": len(unresolved_failed_tests_run),
@@ -6107,6 +6147,208 @@ class TaskLifecycleMixin:
             return None
         profile = routing.get("profile")
         return profile if isinstance(profile, dict) else None
+
+    def _completion_workspace_evidence(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        tool_evidence: list[dict[str, Any]],
+        commands: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        contract = self._completion_workspace_evidence_contract(task=task, context=context)
+        required = contract.get("required") is True
+        required_tools = [
+            str(item).strip()
+            for item in (contract.get("requiredTools") or [])
+            if str(item).strip()
+        ]
+        evidence = self._completion_read_only_workspace_evidence(
+            tool_evidence=tool_evidence,
+            commands=commands,
+            required_tools=required_tools,
+        )
+        result: dict[str, Any] = {
+            "required": required,
+            "status": "satisfied" if not required or evidence else "missing",
+            "source": contract.get("source") or ("none" if not required else "runtime"),
+            "evidence": evidence,
+        }
+        if required_tools:
+            result["requiredTools"] = required_tools
+        for key in ("reason", "rationale", "scenario"):
+            value = contract.get(key)
+            if isinstance(value, str) and value.strip():
+                result[key] = value.strip()[:500]
+        return result
+
+    def _completion_workspace_evidence_contract(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        contract = self._completion_contract_profile(task=task, context=context)
+        workspace_contract = (
+            contract.get("workspaceEvidenceRequired")
+            if isinstance(contract, dict)
+            else None
+        )
+        if workspace_contract is None and isinstance(contract, dict):
+            workspace_contract = contract.get("workspace_evidence_required")
+        if isinstance(workspace_contract, bool):
+            return {
+                "required": workspace_contract,
+                "source": "task_contract",
+                "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
+            }
+        if isinstance(workspace_contract, dict):
+            return self._normalize_completion_workspace_evidence_contract(workspace_contract)
+        return {"required": False, "source": "not_required"}
+
+    @staticmethod
+    def _normalize_completion_workspace_evidence_contract(raw: dict[str, Any]) -> dict[str, Any]:
+        required = raw.get("required")
+        if required is None:
+            required = raw.get("enabled")
+        if not isinstance(required, bool):
+            required = True
+        result: dict[str, Any] = {
+            "required": required,
+            "source": str(raw.get("source") or "task_contract"),
+        }
+        required_tools = raw.get("requiredTools")
+        if required_tools is None:
+            required_tools = raw.get("required_tools")
+        if isinstance(required_tools, list):
+            tools = [
+                str(item).strip()
+                for item in required_tools
+                if str(item or "").strip()
+            ]
+            if tools:
+                result["requiredTools"] = tools[:20]
+        for key in ("reason", "rationale", "scenario"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                result[key] = value.strip()[:500]
+        return result
+
+    def _completion_read_only_workspace_evidence(
+        self,
+        *,
+        tool_evidence: list[dict[str, Any]],
+        commands: list[dict[str, Any]],
+        required_tools: list[str],
+    ) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+        allowed_tools = set(required_tools) if required_tools else {
+            "read_file",
+            "search_files",
+            "code_search",
+            "list_dir",
+            "list_directory",
+            "git_status",
+            "git_diff",
+            "run_command",
+        }
+        read_only_tools = {
+            "read_file",
+            "search_files",
+            "code_search",
+            "list_dir",
+            "list_directory",
+            "git_status",
+            "git_diff",
+        }
+        for item in tool_evidence:
+            if not isinstance(item, dict) or item.get("failed") is True:
+                continue
+            name = str(item.get("name") or "").strip()
+            if name in read_only_tools and name in allowed_tools:
+                evidence.append({
+                    "source": "tool_result",
+                    "name": name,
+                    "status": item.get("status") or "completed",
+                    "summary": item.get("summary"),
+                })
+            elif name == "run_command" and ("run_command" in allowed_tools or not required_tools):
+                command = str(item.get("command") or "").strip()
+                if self._completion_command_is_read_only_workspace_evidence(command):
+                    evidence.append({
+                        "source": "tool_result",
+                        "name": "run_command",
+                        "command": command,
+                        "status": item.get("status") or "completed",
+                    })
+        for command_record in commands:
+            if not isinstance(command_record, dict):
+                continue
+            command = str(command_record.get("command") or "").strip()
+            if not command or not self._completion_command_is_read_only_workspace_evidence(command):
+                continue
+            status = str(command_record.get("status") or "").strip().lower()
+            if status in {"failed", "timeout", "killed", "validation_failed"}:
+                continue
+            evidence.append({
+                "source": "command_record",
+                "name": "run_command",
+                "command": command,
+                "status": status or "completed",
+            })
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in evidence:
+            key = f"{item.get('name')}:{item.get('command') or item.get('summary') or item.get('status')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append({k: v for k, v in item.items() if v not in (None, "", [], {})})
+        return deduped[:20]
+
+    @staticmethod
+    def _completion_command_is_read_only_workspace_evidence(command: str) -> bool:
+        normalized = " ".join(str(command or "").strip().split()).casefold()
+        if not normalized:
+            return False
+        read_only_prefixes = (
+            "git status",
+            "git diff",
+            "rg ",
+            "ripgrep ",
+            "findstr ",
+            "grep ",
+            "ls",
+            "dir",
+            "gci",
+            "get-childitem",
+            "get-content",
+            "cat ",
+            "type ",
+            "pwd",
+        )
+        mutating_tokens = (
+            " >",
+            ">>",
+            "set-content",
+            "add-content",
+            "out-file",
+            "remove-item",
+            "del ",
+            "rm ",
+            "move-item",
+            "copy-item",
+            "new-item",
+            "git add",
+            "git commit",
+            "git checkout",
+            "git reset",
+            "git clean",
+            "apply_patch",
+        )
+        if any(token in normalized for token in mutating_tokens):
+            return False
+        return any(normalized == prefix.strip() or normalized.startswith(prefix) for prefix in read_only_prefixes)
 
     def _completion_contract_role_is_read_only(
         self,

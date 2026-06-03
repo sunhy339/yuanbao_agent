@@ -103,10 +103,20 @@ register_decision(DecisionKindEntry(
     description=(
         "Select execution strategy and whether the parent should keep using tools "
         "after child task results. Use tool_continuation for semantic continuation policy; "
-        "runtime still enforces budgets, permissions, and safety gates."
+        "use workspace_evidence_required when the answer must be grounded in current "
+        "workspace files or read-only inspection; runtime still enforces budgets, "
+        "permissions, and safety gates."
     ),
     required_input_fields=("goal",),
-    allowed_proposal_schema=("strategy", "scenario", "skill_id", "tool_continuation", "toolContinuation"),
+    allowed_proposal_schema=(
+        "strategy",
+        "scenario",
+        "skill_id",
+        "tool_continuation",
+        "toolContinuation",
+        "workspace_evidence_required",
+        "workspaceEvidenceRequired",
+    ),
     fallback="default to standard ReAct",
     trace_event="agent.decision.routing_strategy",
 ))
@@ -691,6 +701,23 @@ class DecisionAdvisor:
             elif isinstance(camel_continuation, dict):
                 normalized["tool_continuation"] = camel_continuation
                 normalized.pop("toolContinuation", None)
+            workspace_evidence = DecisionAdvisor._normalize_workspace_evidence_required(
+                normalized.get("workspace_evidence_required")
+            )
+            camel_workspace_evidence = DecisionAdvisor._normalize_workspace_evidence_required(
+                normalized.get("workspaceEvidenceRequired")
+            )
+            if isinstance(workspace_evidence, dict) and isinstance(camel_workspace_evidence, dict):
+                merged = dict(camel_workspace_evidence)
+                merged.update(workspace_evidence)
+                normalized["workspace_evidence_required"] = merged
+                normalized.pop("workspaceEvidenceRequired", None)
+            elif isinstance(workspace_evidence, dict):
+                normalized["workspace_evidence_required"] = workspace_evidence
+                normalized.pop("workspaceEvidenceRequired", None)
+            elif isinstance(camel_workspace_evidence, dict):
+                normalized["workspace_evidence_required"] = camel_workspace_evidence
+                normalized.pop("workspaceEvidenceRequired", None)
         if kind == "tool_recovery":
             action = normalized.get("action")
             if isinstance(action, str):
@@ -740,6 +767,26 @@ class DecisionAdvisor:
             },
         }
         return aliases.get(compact, value)
+
+    @staticmethod
+    def _normalize_workspace_evidence_required(value: Any) -> dict[str, Any] | Any:
+        if isinstance(value, bool):
+            return {
+                "required": value,
+                "source": "decision_advisor",
+            }
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        required = normalized.get("required")
+        if required is None:
+            required = normalized.get("enabled")
+        if required is None:
+            required = normalized.get("workspaceEvidenceRequired")
+        if isinstance(required, bool):
+            normalized["required"] = required
+        normalized.setdefault("source", "decision_advisor")
+        return normalized
 
     @staticmethod
     def _normalize_tool_recovery_action(action: str) -> str:

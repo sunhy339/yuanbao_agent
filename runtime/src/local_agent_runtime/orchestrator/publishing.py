@@ -599,6 +599,8 @@ class PublishingMixin:
                 "reason",
                 "parentToolUseId",
                 "toolGroupId",
+                "toolNames",
+                "stage",
                 "toolIndex",
                 "toolTotal",
                 "toolOperationId",

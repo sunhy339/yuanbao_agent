@@ -1593,6 +1593,51 @@ export function appendSpecialEventMessage(
   return [...current, nextMessage];
 }
 
+export function resolveAskUserQuestionMessage(
+  current: ChatMessageView[],
+  payload: {
+    messageId?: string | null;
+    requestId?: string | null;
+    toolCallId?: string | null;
+    answer: string;
+    now: number;
+  },
+): ChatMessageView[] {
+  let changed = false;
+  const messageId = payload.messageId?.trim() ?? "";
+  const requestId = payload.requestId?.trim() ?? "";
+  const toolCallId = payload.toolCallId?.trim() ?? "";
+  const next = current.map((message) => {
+    if (message.metadata?.kind !== "ask_user_question") {
+      return message;
+    }
+    const metadataRequestId = typeof message.metadata?.requestId === "string" ? message.metadata.requestId.trim() : "";
+    const metadataToolCallId = typeof message.metadata?.toolCallId === "string" ? message.metadata.toolCallId.trim() : "";
+    const matches =
+      (messageId && message.id === messageId) ||
+      (requestId && metadataRequestId === requestId) ||
+      (toolCallId && metadataToolCallId === toolCallId);
+    if (!matches) {
+      return message;
+    }
+    changed = true;
+    return {
+      ...message,
+      updatedAt: payload.now,
+      status: "completed" as const,
+      metadata: {
+        ...(message.metadata ?? {}),
+        status: "answered",
+        resolved: true,
+        answered: true,
+        answer: payload.answer,
+        answeredAt: payload.now,
+      },
+    };
+  });
+  return changed ? next : current;
+}
+
 export function completeChatCompatMessage(
   current: ChatMessageView[],
   payload: {

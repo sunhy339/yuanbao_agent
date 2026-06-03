@@ -267,6 +267,87 @@ class TestCompletionHardGate:
         ).fetchall()
         assert approvals == []
 
+    def test_workspace_evidence_required_waits_for_read_only_tool_evidence(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="workspace evidence gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="summarize current project progress",
+            plan=[],
+            routing={
+                "scenario": "doc_write",
+                "profile": {
+                    "workspaceEvidenceRequired": {
+                        "required": True,
+                        "source": "test_contract",
+                        "requiredTools": ["read_file", "search_files"],
+                    },
+                },
+            },
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Project progress summarized.",
+            context={"routing": dict(task.get("routing") or {})},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_workspace_evidence"
+        evidence = result["structuredResult"]["completionEvidence"]["workspaceEvidence"]
+        assert evidence["required"] is True
+        assert evidence["status"] == "missing"
+
+    def test_workspace_evidence_required_accepts_read_only_tool_result(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="workspace evidence gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="summarize current project progress",
+            plan=[],
+            routing={
+                "scenario": "doc_write",
+                "profile": {
+                    "workspaceEvidenceRequired": {
+                        "required": True,
+                        "source": "test_contract",
+                        "requiredTools": ["read_file", "search_files"],
+                    },
+                },
+            },
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Project progress summarized from README.",
+            context={"routing": dict(task.get("routing") or {})},
+            tool_results=[
+                {
+                    "name": "read_file",
+                    "result": {
+                        "status": "completed",
+                        "path": "README.md",
+                        "summary": "read README",
+                    },
+                }
+            ],
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]["workspaceEvidence"]
+        assert evidence["status"] == "satisfied"
+        assert evidence["evidence"][0]["name"] == "read_file"
+
     def test_no_approval_mode_uses_store_config_without_context_config(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

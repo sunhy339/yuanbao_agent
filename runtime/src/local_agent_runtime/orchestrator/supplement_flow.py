@@ -6,6 +6,7 @@ assessing impact, routing to children, and task focus context.
 from __future__ import annotations
 
 import logging
+import json
 import re
 from typing import Any
 
@@ -46,27 +47,48 @@ class SupplementFlowMixin:
         task: dict[str, Any],
         content: str,
         metadata: dict[str, Any] | None = None,
+        internal_response: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if task.get("status") not in ACTIVE_SUPPLEMENT_STATUSES:
             raise ValueError(f"Cannot supplement task that is not active: {task.get('id')}")
-        # Create user message for chat history
-        user_msg = self._store.create_message(
-            session_id=session_id,
-            task_id=task["id"],
-            role="user",
-            content=content,
-            kind="supplement",
-            metadata=metadata,
-        )
+        metadata = dict(metadata or {})
+        internal_response = internal_response if isinstance(internal_response, dict) else None
+        is_internal_answer = internal_response is not None and internal_response.get("kind") == "ask_user_question"
+        if is_internal_answer:
+            duplicate = self._find_existing_internal_question_answer(task_id=task["id"], internal_response=internal_response)
+            if duplicate is not None:
+                return {
+                    "task": task,
+                    "acceptedMode": "supplement",
+                    "duplicate": True,
+                    "inboxEntry": duplicate,
+                }
+            metadata["internalResponse"] = {
+                key: value
+                for key, value in internal_response.items()
+                if isinstance(key, str) and value not in (None, "", [])
+            }
+        user_msg: dict[str, Any] | None = None
+        if not is_internal_answer:
+            user_msg = self._store.create_message(
+                session_id=session_id,
+                task_id=task["id"],
+                role="user",
+                content=content,
+                kind="supplement",
+                metadata=metadata,
+            )
         # Write to task inbox so the running loop can consume it
         inbox_entry = self._store.create_inbox_entry(
             task_id=task["id"],
             session_id=session_id,
             content=content,
-            message_id=user_msg["id"],
+            message_id=user_msg["id"] if user_msg is not None else None,
             metadata=metadata,
         )
-        routing = self._routing_with_user_takeover(task=task, content=content)
+        routing = task.get("routing") or {}
+        if not is_internal_answer:
+            routing = self._routing_with_user_takeover(task=task, content=content)
         updated_task = self._store.update_task(
             task_id=task["id"],
             status=task["status"],
@@ -83,7 +105,7 @@ class SupplementFlowMixin:
                 "status": runtime_task["status"],
                 "plan": runtime_task.get("plan") or [],
                 "currentStep": runtime_task.get("currentStep"),
-                "detail": "Supplemental user message attached to the active task.",
+                "detail": "User answered the pending question." if is_internal_answer else "Supplemental user message attached to the active task.",
             },
         )
         self._publish(
@@ -92,9 +114,11 @@ class SupplementFlowMixin:
             event_type="task.supplement.received",
             payload={
                 "inboxEntryId": inbox_entry["id"],
-                "messageId": user_msg["id"],
+                "messageId": user_msg["id"] if user_msg is not None else internal_response.get("messageId"),
                 "content": content,
+                "internalResponse": internal_response,
             },
+            visibility="trace" if is_internal_answer else None,
         )
         takeover = (routing.get("mainWorkflow") or {}).get("userTakeover")
         if isinstance(takeover, dict) and takeover.get("state") != "supplement":
@@ -105,33 +129,39 @@ class SupplementFlowMixin:
                 payload=takeover,
             )
             runtime_task = self._apply_user_takeover_transition(runtime_task, takeover)
-        acknowledgement = self._supplement_acknowledgement(takeover)
-        self._store.create_message(
-            session_id=session_id,
-            task_id=runtime_task["id"],
-            role="assistant",
-            content=acknowledgement,
-        )
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="assistant.message.completed",
-            payload={"content": acknowledgement, "supplemental": True},
-        )
+        if not is_internal_answer:
+            acknowledgement = self._supplement_acknowledgement(takeover)
+            self._store.create_message(
+                session_id=session_id,
+                task_id=runtime_task["id"],
+                role="assistant",
+                content=acknowledgement,
+            )
+            self._publish(
+                session_id=session_id,
+                task=runtime_task,
+                event_type="assistant.message.completed",
+                payload={"content": acknowledgement, "supplemental": True},
+            )
         # Route supplement to child tasks if applicable
-        routing_result = self._route_supplement_to_children(
-            session_id=session_id,
-            root_task=runtime_task,
-            content=content,
-            message_id=user_msg["id"],
-        )
+        routing_result = None
+        if not is_internal_answer and user_msg is not None:
+            routing_result = self._route_supplement_to_children(
+                session_id=session_id,
+                root_task=runtime_task,
+                content=content,
+                message_id=user_msg["id"],
+            )
         result = {"task": runtime_task, "acceptedMode": "supplement"}
         if routing_result:
             result["supplementRouting"] = routing_result
         if (
             runtime_task.get("status") == "paused"
             and self._pending_user_question_state(self._load_pending_react_state(runtime_task["id"]) or {}) is not None
-            and (takeover or {}).get("state") in (None, "supplement", "continue_requested")
+            and (
+                is_internal_answer
+                or (takeover or {}).get("state") in (None, "supplement", "continue_requested")
+            )
         ):
             try:
                 resumed = self.resume_task({"taskId": runtime_task["id"]})["task"]
@@ -140,6 +170,51 @@ class SupplementFlowMixin:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to auto-resume task %s after user answer: %s", runtime_task.get("id"), exc)
         return result
+
+    def _find_existing_internal_question_answer(
+        self,
+        *,
+        task_id: str,
+        internal_response: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        incoming_keys = self._internal_question_answer_keys(internal_response)
+        if not incoming_keys:
+            return None
+        try:
+            entries = self._store.list_task_inbox_items(task_id)
+        except Exception:  # noqa: BLE001
+            return None
+        for entry in entries:
+            metadata = self._inbox_entry_metadata(entry)
+            existing = metadata.get("internalResponse") if isinstance(metadata.get("internalResponse"), dict) else None
+            if not existing or existing.get("kind") != "ask_user_question":
+                continue
+            if incoming_keys & self._internal_question_answer_keys(existing):
+                return entry
+        return None
+
+    @staticmethod
+    def _internal_question_answer_keys(internal_response: dict[str, Any]) -> set[str]:
+        keys: set[str] = set()
+        for field in ("requestId", "messageId", "toolCallId"):
+            value = internal_response.get(field)
+            if isinstance(value, str) and value.strip():
+                keys.add(f"{field}:{value.strip()}")
+        return keys
+
+    @staticmethod
+    def _inbox_entry_metadata(entry: dict[str, Any]) -> dict[str, Any]:
+        metadata = entry.get("metadata")
+        if isinstance(metadata, dict):
+            return metadata
+        raw = entry.get("metadata_json")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _apply_user_takeover_transition(
         self,

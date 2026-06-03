@@ -616,6 +616,9 @@ class MetaRouter:
         tool_continuation = self._advisor_tool_continuation_payload(payload)
         if tool_continuation:
             metadata["toolContinuation"] = tool_continuation
+        workspace_evidence = self._advisor_workspace_evidence_payload(payload)
+        if workspace_evidence:
+            metadata["workspaceEvidenceRequired"] = workspace_evidence
 
         return RoutingDecision(
             scenario=scenario,
@@ -656,6 +659,42 @@ class MetaRouter:
         if isinstance(rationale, str) and rationale.strip():
             continuation["rationale"] = rationale.strip()[:500]
         return continuation if len(continuation) > 1 else {}
+
+    @staticmethod
+    def _advisor_workspace_evidence_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        raw = payload.get("workspace_evidence_required")
+        if raw is None:
+            raw = payload.get("workspaceEvidenceRequired")
+        if isinstance(raw, bool):
+            return {
+                "required": raw,
+                "source": "decision_advisor",
+            }
+        if not isinstance(raw, dict):
+            return {}
+        required = raw.get("required")
+        if required is None:
+            required = raw.get("enabled")
+        result: dict[str, Any] = {
+            "required": required if isinstance(required, bool) else True,
+            "source": "decision_advisor",
+        }
+        required_tools = raw.get("requiredTools")
+        if required_tools is None:
+            required_tools = raw.get("required_tools")
+        if isinstance(required_tools, list):
+            tools = [
+                str(item).strip()
+                for item in required_tools
+                if str(item or "").strip()
+            ]
+            if tools:
+                result["requiredTools"] = tools[:20]
+        for key in ("reason", "rationale"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                result[key] = value.strip()[:500]
+        return result
 
 
 # Re-export the keyword index so it is accessible from tests if needed.

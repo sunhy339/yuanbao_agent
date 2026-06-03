@@ -1805,6 +1805,63 @@ def test_openai_responses_stream_routes_reasoning_summary_to_thinking_delta() ->
     assert events[-1]["response"]["message"]["content"] == "Done"
 
 
+def test_openai_responses_stream_routes_reasoning_text_to_thinking_delta() -> None:
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Any]:
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.reasoning_text.delta\n',
+                b'data: {"type":"response.reasoning_text.delta","delta":"Plan "}\n\n',
+                b'event: response.thinking.delta\n',
+                b'data: {"type":"response.thinking.delta","delta":"then write. "}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"Done"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Done","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "hi"}], context=context))
+
+    assert [event for event in events if event["type"] == "thinking_delta"] == [
+        {"type": "thinking_delta", "delta": "Plan ", "source": "provider_reasoning_delta"},
+        {"type": "thinking_delta", "delta": "then write. ", "source": "provider_reasoning_delta"},
+    ]
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Done"},
+    ]
+    assert events[-1]["response"]["message"]["content"] == "Done"
+
+
 def test_openai_responses_stream_merges_function_call_parts() -> None:
     stream_calls: list[dict[str, Any]] = []
 

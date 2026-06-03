@@ -420,6 +420,14 @@ struct HahaCcEventsAfterPayload {
 
 type YuanbaoEventsAfterPayload = HahaCcEventsAfterPayload;
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HahaCcTeamSnapshotPayload {
+    session_id: String,
+}
+
+type YuanbaoTeamSnapshotPayload = HahaCcTeamSnapshotPayload;
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct LogExportPayload {
@@ -2953,6 +2961,40 @@ async fn haha_cc_events_after(
 }
 
 #[tauri::command]
+async fn yuanbao_team_snapshot(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: YuanbaoTeamSnapshotPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "events.yuanbaoTeamSnapshot".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn haha_cc_team_snapshot(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: HahaCcTeamSnapshotPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "events.hahaCcTeamSnapshot".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
 async fn log_export(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -3476,6 +3518,8 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             trace_list,
             yuanbao_events_after,
             haha_cc_events_after,
+            yuanbao_team_snapshot,
+            haha_cc_team_snapshot,
             log_export,
             errors_list,
             metrics_list,

@@ -206,6 +206,17 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
         completed_event["hahaCc"],
     ]
 
+    team_snapshot = runtime_harness.call("events.yuanbaoTeamSnapshot", {"sessionId": session["id"]})["result"]
+    assert team_snapshot == {
+        "teamName": session["id"],
+        "messages": [
+            {"type": "team_created", "teamName": session["id"]},
+            completed_event["hahaCc"],
+        ],
+    }
+    legacy_team_snapshot = runtime_harness.call("events.hahaCcTeamSnapshot", {"sessionId": session["id"]})["result"]
+    assert legacy_team_snapshot == team_snapshot
+
 
 def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtime_harness: Any, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"

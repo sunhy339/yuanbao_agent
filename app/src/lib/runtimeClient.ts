@@ -51,6 +51,10 @@ import type {
   YuanbaoEventsAfterResult,
   HahaCcEventsAfterParams,
   HahaCcEventsAfterResult,
+  YuanbaoTeamSnapshotParams,
+  YuanbaoTeamSnapshotResult,
+  HahaCcTeamSnapshotParams,
+  HahaCcTeamSnapshotResult,
   MessageListParams,
   MessageListResult,
   MessageDeleteParams,
@@ -716,6 +720,18 @@ export class RuntimeClient {
 
   async hahaCcEventsAfter(payload: HahaCcEventsAfterParams): Promise<HahaCcEventsAfterResult> {
     return this.yuanbaoEventsAfter(payload);
+  }
+
+  async yuanbaoTeamSnapshot(payload: YuanbaoTeamSnapshotParams): Promise<YuanbaoTeamSnapshotResult> {
+    try {
+      return await invokePayloadOrReject<YuanbaoTeamSnapshotResult>("yuanbao_team_snapshot", payload);
+    } catch (reason) {
+      return invokePayloadOrReject<YuanbaoTeamSnapshotResult>("haha_cc_team_snapshot", payload);
+    }
+  }
+
+  async hahaCcTeamSnapshot(payload: HahaCcTeamSnapshotParams): Promise<HahaCcTeamSnapshotResult> {
+    return this.yuanbaoTeamSnapshot(payload);
   }
 
   async getConfig(): Promise<ConfigGetResult> {

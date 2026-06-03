@@ -736,7 +736,15 @@ class OpenAICompatibleChatClient:
 
     @staticmethod
     def _thinking_text_from_chat_payload(payload: dict[str, Any]) -> str | None:
-        for key in ("reasoning_content", "reasoningContent", "thinking"):
+        for key in (
+            "reasoning_content",
+            "reasoningContent",
+            "reasoning_delta",
+            "reasoningDelta",
+            "thinking",
+            "thinking_delta",
+            "thinkingDelta",
+        ):
             value = payload.get(key)
             if isinstance(value, str) and value:
                 return value
@@ -744,10 +752,19 @@ class OpenAICompatibleChatClient:
         if isinstance(reasoning, str) and reasoning:
             return reasoning
         if isinstance(reasoning, dict):
-            for key in ("text", "content", "summary"):
+            for key in ("delta", "text_delta", "textDelta", "text", "content", "summary"):
                 value = reasoning.get(key)
                 if isinstance(value, str) and value:
                     return value
+        return None
+
+    @staticmethod
+    def _responses_thinking_source(event_type: str) -> str | None:
+        normalized = event_type.replace("-", "_")
+        if "reasoning" in normalized or "thinking" in normalized:
+            if "summary" in normalized:
+                return "provider_reasoning_summary"
+            return "provider_reasoning_delta"
         return None
 
     def _normalize_stream(
@@ -1343,8 +1360,8 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                             "parentToolUseId": current.get("parentToolUseId"),
                             "arguments_delta": delta,
                         }
-                    elif "reasoning_summary_text" in event_type:
-                        yield {"type": "thinking_delta", "delta": delta, "source": "provider_reasoning_summary"}
+                    elif thinking_source := self._responses_thinking_source(event_type):
+                        yield {"type": "thinking_delta", "delta": delta, "source": thinking_source}
                     else:
                         content_parts.append(delta)
                         yield {"type": "content_delta", "delta": delta}

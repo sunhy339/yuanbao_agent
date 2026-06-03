@@ -101,6 +101,8 @@ export type RpcMethod =
   | "events.after"
   | "events.yuanbaoAfter"
   | "events.hahaCcAfter"
+  | "events.yuanbaoTeamSnapshot"
+  | "events.hahaCcTeamSnapshot"
   | "provider_turn.list"
   | "context_snapshot.list"
   | "context_snapshot.get"
@@ -517,6 +519,12 @@ export interface YuanbaoEventsAfterParams extends EventsAfterParams {}
 
 export interface HahaCcEventsAfterParams extends YuanbaoEventsAfterParams {}
 
+export interface YuanbaoTeamSnapshotParams {
+  sessionId: Identifier;
+}
+
+export interface HahaCcTeamSnapshotParams extends YuanbaoTeamSnapshotParams {}
+
 export interface ProviderTurnListParams {
   taskId: Identifier;
 }
@@ -820,6 +828,13 @@ export interface YuanbaoEventsAfterResult {
 }
 
 export interface HahaCcEventsAfterResult extends YuanbaoEventsAfterResult {}
+
+export interface YuanbaoTeamSnapshotResult {
+  teamName: string;
+  messages: YuanbaoServerMessage[];
+}
+
+export interface HahaCcTeamSnapshotResult extends YuanbaoTeamSnapshotResult {}
 
 export interface ProviderTurnRecord {
   id: Identifier;

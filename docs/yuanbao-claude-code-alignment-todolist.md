@@ -596,3 +596,33 @@ Progress:
 - 2026-06-03: `python -m compileall -q runtime/src/local_agent_runtime` passed.
 - 2026-06-03: `message.completed` realtime flat frames are now suppressed when the event is `_chatCompat`, so bridge `message_complete` remains the only realtime finalize frame.
 - 2026-06-03: historical `events.yuanbaoAfter` still recovers `message.completed` as flat `message_complete`, covered together with `message.delta` recovery.
+
+## Batch 18: Team snapshot and thinking delta coverage
+
+Goal: close the remaining non-Computer-Use output gaps by giving external adapters a reconnect-safe team snapshot and widening true provider thinking delta coverage.
+
+- [x] Add `events.yuanbaoTeamSnapshot` / `events.hahaCcTeamSnapshot` backend RPCs.
+- [x] Add Tauri `yuanbao_team_snapshot` / `haha_cc_team_snapshot` commands.
+- [x] Add `RuntimeClient.yuanbaoTeamSnapshot()` / `RuntimeClient.hahaCcTeamSnapshot()`.
+- [x] Return flat `team_created` + current `team_update` messages from the snapshot path.
+- [x] Expand OpenAI-compatible chat reasoning aliases: `reasoning_delta`, `thinking_delta`, and nested `reasoning.delta`.
+- [x] Expand OpenAI Responses reasoning/thinking `.delta` routing so true provider deltas become flat `thinking`.
+- [x] Keep non-stream `thought_summary` as a single summary frame, not fake token streaming.
+
+Acceptance:
+
+- External adapters can initialize current team output without replaying the full trace.
+- Realtime collaboration events still produce the same flat `team_update` stream.
+- Provider-emitted thinking/reasoning deltas become one flat `thinking` message per delta.
+- Normal answer text remains `content_delta`.
+
+Progress:
+
+- 2026-06-03: `runtime/src/local_agent_runtime/services/collaboration_service.py` now builds current team flat snapshot messages via the existing Yuanbao/haha adapter.
+- 2026-06-03: `runtime/src/local_agent_runtime/rpc/server.py`, `shared/src/rpc.ts`, `app/src-tauri/src/lib.rs`, and `app/src/lib/runtimeClient.ts` expose snapshot polling for Yuanbao and legacy haha-cc names.
+- 2026-06-03: `runtime/src/local_agent_runtime/provider/openai_compatible.py` now treats more chat proxy and Responses reasoning/thinking delta shapes as provider thinking deltas.
+- 2026-06-03: `pytest runtime/tests/test_collaboration_events.py runtime/tests/test_haha_cc_compat.py -q` passed: 23 passed.
+- 2026-06-03: `npm --prefix app test -- runtimeClient.test.ts` passed: 31 passed.
+- 2026-06-03: `pytest runtime/tests/test_provider_streaming.py runtime/tests/test_provider_adapter.py -q -k "thinking or reasoning or responses_stream"` passed: 14 passed, 55 deselected.
+- 2026-06-03: `pytest runtime/tests/test_provider_turns.py runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py -q -k "thinking or provider_reasoning or events_after"` passed: 9 passed, 86 deselected.
+- 2026-06-03: `python -m compileall -q runtime/src/local_agent_runtime` passed.

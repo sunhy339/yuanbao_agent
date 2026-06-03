@@ -388,3 +388,28 @@ Yuanbao 消息输出：
 - 工具结果不会把大 JSON 直接塞回模型上下文。
 - 只读探索任务速度明显提升。
 - 权限提示次数减少，高风险操作仍需审批。
+
+## 11. Follow-up Output Parity Tracks
+
+### 11.1 Team adapter snapshot
+
+External adapters should not depend only on incremental collaboration events. The backend now needs a session-scoped flat snapshot endpoint that can return current team lifecycle messages after reconnect:
+
+```json
+[
+  { "type": "team_created", "teamName": "session-id" },
+  { "type": "team_update", "teamName": "session-id", "members": [] }
+]
+```
+
+This complements realtime `team_update` events and keeps Yuanbao/haha-cc flat output usable for external consumers that join late.
+
+### 11.2 Real provider thinking deltas
+
+Token-level `thinking` should only be emitted when the provider exposes true streaming reasoning/thinking deltas. Non-stream `thought_summary` remains a single summary frame and must not be presented as token-level streaming.
+
+Covered streaming sources:
+
+- OpenAI-compatible chat deltas: `reasoning_content`, `reasoning_delta`, `thinking`, `thinking_delta`, and nested `reasoning.delta`.
+- OpenAI Responses deltas: `response.reasoning_summary_text.delta`, `response.reasoning_text.delta`, and compatible reasoning/thinking `.delta` event names.
+- Anthropic Messages thinking blocks and `thinking_delta`.

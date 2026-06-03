@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import RuntimeEvent
+from ..yuanbao_event_adapter import to_yuanbao_server_message
 from .worker_health import (
     DEFAULT_WORKER_HEALTH_POLICY,
     WorkerHealthPolicy,
@@ -117,6 +118,43 @@ class CollaborationService:
             payload=payload,
             visibility=visibility,
         )
+
+    def team_snapshot_messages(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = (
+            self._string_or_none(params.get("sessionId"))
+            or self._string_or_none(params.get("session_id"))
+            or self._string_or_none(params.get("teamName"))
+            or self._string_or_none(params.get("team_name"))
+        )
+        if session_id is None:
+            return {"teamName": "", "messages": []}
+        snapshot = self._team_snapshot(session_id)
+        created = to_yuanbao_server_message(
+            RuntimeEvent(
+                event_id=self._store.new_id("evt"),
+                session_id=session_id,
+                task_id=session_id,
+                type="collab.team.created",
+                ts=self._store.now(),
+                payload={"teamName": session_id, "team": snapshot},
+                visibility="panel",
+            )
+        )
+        updated = to_yuanbao_server_message(
+            RuntimeEvent(
+                event_id=self._store.new_id("evt"),
+                session_id=session_id,
+                task_id=session_id,
+                type="collab.task.updated",
+                ts=self._store.now(),
+                payload={"team": snapshot},
+                visibility="panel",
+            )
+        )
+        return {
+            "teamName": session_id,
+            "messages": [message for message in (created, updated) if isinstance(message, dict)],
+        }
 
     def _publish_task_event(self, result: dict[str, Any], event_type: str) -> None:
         task = result.get("task")

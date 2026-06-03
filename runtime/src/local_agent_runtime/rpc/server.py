@@ -158,6 +158,8 @@ class JsonRpcServer:
             "events.after": self._events_after,
             "events.yuanbaoAfter": self._yuanbao_events_after,
             "events.hahaCcAfter": self._haha_cc_events_after,
+            "events.yuanbaoTeamSnapshot": self._yuanbao_team_snapshot,
+            "events.hahaCcTeamSnapshot": self._haha_cc_team_snapshot,
             "provider_turn.list": self._provider_turn_list,
             "context_snapshot.list": self._context_snapshot_list,
             "context_snapshot.get": self._context_snapshot_get,
@@ -466,6 +468,14 @@ class JsonRpcServer:
         """Fetch legacy haha-cc flat ServerMessages after a trace sequence."""
 
         return self._yuanbao_events_after(params)
+
+    def _yuanbao_team_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch current team flat ServerMessages for adapter reconnects."""
+        return self._collaboration.team_snapshot_messages(params)
+
+    def _haha_cc_team_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch legacy haha-cc current team flat ServerMessages."""
+        return self._yuanbao_team_snapshot(params)
 
     def _provider_turn_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List provider turns for a task."""

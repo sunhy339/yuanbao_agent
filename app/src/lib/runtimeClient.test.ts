@@ -345,6 +345,42 @@ describe("RuntimeClient desktop transport", () => {
     });
   });
 
+  it("fetches current Yuanbao team snapshot messages", async () => {
+    const client = new RuntimeClient();
+    const result = {
+      teamName: "sess_1",
+      messages: [
+        { type: "team_created", teamName: "sess_1" },
+        { type: "team_update", teamName: "sess_1", members: [] },
+      ],
+    };
+
+    invokeMock.mockResolvedValueOnce(result);
+
+    await expect(client.yuanbaoTeamSnapshot({ sessionId: "sess_1" })).resolves.toEqual(result);
+    expect(invokeMock).toHaveBeenLastCalledWith("yuanbao_team_snapshot", {
+      payload: { sessionId: "sess_1" },
+    });
+  });
+
+  it("keeps legacy haha-cc team snapshot polling as fallback", async () => {
+    const client = new RuntimeClient();
+    const result = {
+      teamName: "sess_1",
+      messages: [
+        { type: "team_created", teamName: "sess_1" },
+        { type: "team_update", teamName: "sess_1", members: [] },
+      ],
+    };
+
+    invokeMock.mockResolvedValueOnce(result);
+
+    await expect(client.hahaCcTeamSnapshot({ sessionId: "sess_1" })).resolves.toEqual(result);
+    expect(invokeMock).toHaveBeenLastCalledWith("yuanbao_team_snapshot", {
+      payload: { sessionId: "sess_1" },
+    });
+  });
+
   it("connects Yuanbao messages with initial connected and keepalive pong", async () => {
     const client = new RuntimeClient();
     const listenMock = vi.mocked(listen);

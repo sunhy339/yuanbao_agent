@@ -858,7 +858,8 @@ describe("CleanSessionWorkspace", () => {
               title: "Audit session layout",
               status: "completed",
               workerId: "worker-1",
-              workerName: "Agent",
+              workerName: "Planner Worker",
+              agentType: "planner",
               summary: "Composer and workspace are aligned",
               createdAt: 100,
               updatedAt: 200,
@@ -869,7 +870,8 @@ describe("CleanSessionWorkspace", () => {
               title: "Fix output folding",
               status: "running",
               workerId: "worker-1",
-              workerName: "Agent",
+              workerName: "Worker Worker",
+              agentType: "worker",
               summary: "Checking tool grouping",
               createdAt: 210,
               updatedAt: 260,
@@ -895,6 +897,7 @@ describe("CleanSessionWorkspace", () => {
     );
 
     expect(screen.getByText(/派遣了 2 个代理/)).toBeInTheDocument();
+    expect(screen.getByText(/1 planner \/ 1 worker/)).toBeInTheDocument();
     expect(screen.getByText("Audit session layout")).toBeInTheDocument();
     expect(screen.getByText("Fix output folding")).toBeInTheDocument();
   });

@@ -80,18 +80,41 @@ function getTaskSummary(task: SessionWorkspaceChildTask) {
   return compactText(summary, 96);
 }
 
+function normalizeAgentLabel(value?: string) {
+  return value?.trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function readableAgentLabel(value?: string) {
+  const normalized = normalizeAgentLabel(value);
+  if (!normalized) return "";
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function isGenericAgentWorker(workerName?: string, agentType?: string) {
+  const worker = normalizeAgentLabel(workerName);
+  const role = normalizeAgentLabel(agentType);
+  if (!worker || !role) return false;
+  return worker === role || worker === `${role} worker` || worker === `${role} agent`;
+}
+
+function isGenericPlannerWorker(workerName?: string, agentType?: string) {
+  const worker = normalizeAgentLabel(workerName);
+  return isGenericAgentWorker(workerName, agentType) || worker === "planner" || worker === "planner worker" || worker === "planner agent";
+}
+
 function getTaskFooter(task: SessionWorkspaceChildTask) {
-  const workerLabel = isGenericPlannerWorker(task.workerName) ? null : task.workerName ? `worker: ${task.workerName}` : null;
+  const agentType = readableAgentLabel(task.agentType);
+  const workerLabel = isGenericAgentWorker(task.workerName, task.agentType) || isGenericPlannerWorker(task.workerName, task.agentType)
+    ? null
+    : task.workerName
+      ? `worker: ${task.workerName}`
+      : null;
   return compactMeta([
-    task.agentType ? `类型: ${task.agentType}` : null,
+    agentType ? `类型: ${agentType}` : null,
     workerLabel,
     task.durationMs != null ? formatDuration(task.durationMs) : null,
     task.artifactCount != null && task.artifactCount > 0 ? `${task.artifactCount} 产物` : null,
   ]).join(" · ");
-}
-
-function isGenericPlannerWorker(workerName?: string) {
-  return /planner worker/i.test(workerName ?? "");
 }
 
 function isCollapsiblePlannerTask(task: SessionWorkspaceChildTask) {
@@ -105,13 +128,13 @@ function isCollapsiblePlannerTask(task: SessionWorkspaceChildTask) {
   if (task.errorMessage || task.attention) {
     return false;
   }
-  return isGenericPlannerWorker(task.workerName);
+  return isGenericPlannerWorker(task.workerName, task.agentType);
 }
 
 function isGenericPlannerTask(task: SessionWorkspaceChildTask) {
   return (
     String(task.agentType ?? "").toLowerCase() === "planner" &&
-    isGenericPlannerWorker(task.workerName) &&
+    isGenericPlannerWorker(task.workerName, task.agentType) &&
     GENERIC_PLANNER_TITLE_RE.test(task.title ?? "")
   );
 }

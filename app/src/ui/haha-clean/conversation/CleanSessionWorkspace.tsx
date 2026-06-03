@@ -610,6 +610,24 @@ function agentTaskStatusRank(status?: string) {
   return "recorded";
 }
 
+function displayAgentRole(value?: string) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return "";
+  return normalized.replace(/[_-]+/g, " ");
+}
+
+function summarizeAgentRoles(tasks: NonNullable<SessionWorkspaceCollaboration["childTasks"]>) {
+  const counts = new Map<string, number>();
+  for (const task of tasks) {
+    const role = displayAgentRole(task.agentType) || "agent";
+    counts.set(role, (counts.get(role) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([role, count]) => `${count} ${role}`)
+    .join(" / ");
+}
+
 function summarizeAgentTasks(collaboration?: SessionWorkspaceCollaboration): SessionWorkspaceMessage[] {
   const tasks = collaboration?.childTasks ?? [];
   if (!tasks.length) return [];
@@ -627,11 +645,12 @@ function summarizeAgentTasks(collaboration?: SessionWorkspaceCollaboration): Ses
   const failedCount = tasks.filter((task) => agentTaskStatusRank(task.status) === "failed").length;
   const completedCount = tasks.filter((task) => agentTaskStatusRank(task.status) === "completed").length;
   const status = runningCount ? "running" : failedCount ? "failed" : completedCount === tasks.length ? "completed" : "recorded";
+  const roleSummary = summarizeAgentRoles(tasks);
   const summaryParts = [
     completedCount ? `${completedCount} 个完成` : "",
     runningCount ? `${runningCount} 个运行中` : "",
     failedCount ? `${failedCount} 个失败或取消` : "",
-    workers.length ? `${workers.length} 个 worker` : "",
+    roleSummary,
   ].filter(Boolean);
 
   return [{

@@ -1370,6 +1370,32 @@ function agentTaskTone(status?: string) {
   return "neutral";
 }
 
+function normalizeAgentLabel(value?: string) {
+  return value?.trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function readableAgentLabel(value?: string) {
+  const normalized = normalizeAgentLabel(value);
+  if (!normalized) return "";
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function displayAgentMeta(workerName?: string, agentType?: string, durationMs?: number | null) {
+  const worker = workerName?.trim() ?? "";
+  const role = readableAgentLabel(agentType);
+  const workerKey = normalizeAgentLabel(worker);
+  const roleKey = normalizeAgentLabel(role);
+  const isGenericWorkerName =
+    Boolean(workerKey) &&
+    Boolean(roleKey) &&
+    (workerKey === roleKey || workerKey === `${roleKey} worker` || workerKey === `${roleKey} agent`);
+  return [
+    isGenericWorkerName ? "" : worker,
+    role,
+    durationMs !== null && durationMs !== undefined ? formatDuration(durationMs) : "",
+  ].filter(Boolean);
+}
+
 export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
   message,
 }: {
@@ -1399,12 +1425,13 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
             const agentType = readString(task.agentType);
             const description = readString(task.attention) || readString(task.summary) || readString(task.errorMessage);
             const duration = readRecordNumber(task, ["durationMs"]);
+            const meta = displayAgentMeta(worker, agentType, duration);
             return (
               <article key={id} data-tone={agentTaskTone(taskStatus)}>
                 <Circle size={10} />
                 <div>
                   <strong>{readString(task.title) || id}</strong>
-                  <small>{[worker, agentType, duration !== null ? formatDuration(duration) : ""].filter(Boolean).join(" · ")}</small>
+                  {meta.length ? <small>{meta.join(" · ")}</small> : null}
                   {description ? <p>{compactText(description, 180)}</p> : null}
                 </div>
                 <em>{formatAgentTaskStatus(taskStatus)}</em>

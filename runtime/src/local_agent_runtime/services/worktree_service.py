@@ -31,7 +31,7 @@ class WorktreeService:
     def __init__(
         self,
         store: SQLiteStore,
-        git_adapter: GitWorktreeAdapter,
+        git_adapter: GitWorktreeAdapter | None = None,
         hook_service: Any | None = None,
         policy_guard: PolicyGuard | None = None,
         permission_engine: Any | None = None,
@@ -41,6 +41,24 @@ class WorktreeService:
         self._hook_service = hook_service
         self._policy_guard = policy_guard
         self._permission_engine = permission_engine
+
+    def _git_for_workspace_id(self, workspace_id: Any) -> GitWorktreeAdapter:
+        if self._git is not None and type(self._git) is not GitWorktreeAdapter:
+            return self._git
+        if isinstance(workspace_id, str) and workspace_id.strip():
+            try:
+                workspace = self._store.require_workspace(workspace_id)
+            except Exception:
+                workspace = {}
+            root_path = workspace.get("rootPath") if isinstance(workspace, dict) else None
+            if isinstance(root_path, str) and root_path.strip():
+                return GitWorktreeAdapter(root_path)
+        if self._git is not None:
+            return self._git
+        raise ValueError("Workspace git repository is not available for worktree operation")
+
+    def _git_for_worktree(self, wt: dict[str, Any]) -> GitWorktreeAdapter:
+        return self._git_for_workspace_id(wt.get("workspaceId"))
 
     def _fire_hooks(self, event: str, context: dict[str, Any]) -> list[dict[str, Any]]:
         """Fire hooks for a worktree lifecycle event. No-op if no hook service."""
@@ -62,11 +80,12 @@ class WorktreeService:
         if wt.get("mergePolicy") == "manual_only":
             raise ValueError("Worktree merge policy is manual_only")
 
-        status = self._git.status(wt["worktreePath"])
+        git = self._git_for_worktree(wt)
+        status = git.status(wt["worktreePath"])
         if status.get("dirtyFiles", 0):
             raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
-        diff = self._git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
-        full_diff = self._git.diff_full(wt["worktreePath"], wt.get("baseRef", "HEAD"))
+        diff = git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
+        full_diff = git.diff_full(wt["worktreePath"], wt.get("baseRef", "HEAD"))
         diff_summary = self._diff_summary(diff=diff, full_diff=full_diff, params=params)
         review = self._review_summary(params)
         self._ensure_reviewer_gate(review)
@@ -172,7 +191,8 @@ class WorktreeService:
 
         # Create git worktree
         Path(params["worktreePath"]).parent.mkdir(parents=True, exist_ok=True)
-        git_result = self._git.create(
+        git = self._git_for_workspace_id(workspace_id)
+        git_result = git.create(
             branch_name=params["branchName"],
             target_path=params["worktreePath"],
             base_ref=params.get("baseRef", "HEAD"),
@@ -231,10 +251,11 @@ class WorktreeService:
         diff_summary = approved_request.get("diffSummary") if isinstance(approved_request.get("diffSummary"), dict) else {}
         approval_summary = self._approval_summary(approval=approval, request=approved_request)
         multi_agent_strategy = approved_request.get("multiAgentWorktreeStrategy") if isinstance(approved_request.get("multiAgentWorktreeStrategy"), dict) else {}
-        status = self._git.status(wt["worktreePath"])
+        git = self._git_for_worktree(wt)
+        status = git.status(wt["worktreePath"])
         if status.get("dirtyFiles", 0):
             raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
-        diff = self._git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
+        diff = git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
 
         hook_context = {
             "workspaceId": wt.get("workspaceId", ""),
@@ -253,7 +274,7 @@ class WorktreeService:
         self._fire_hooks("before_worktree_merge", hook_context)
 
         # Merge via git adapter
-        merge_result = self._git.merge(
+        merge_result = git.merge(
             branch_name=branch_name,
             target_branch=target_branch,
         )
@@ -638,7 +659,7 @@ class WorktreeService:
         record = self._store.get_worktree(params)
         wt = record["worktree"]
         try:
-            git_status = self._git.status(wt["worktreePath"])
+            git_status = self._git_for_worktree(wt).status(wt["worktreePath"])
         except Exception:
             git_status = {"error": "worktree path not accessible"}
         return {"worktree": wt, "gitStatus": git_status}
@@ -647,9 +668,10 @@ class WorktreeService:
         """Get diff between worktree and its base ref."""
         record = self._store.get_worktree(params)
         wt = record["worktree"]
+        git = self._git_for_worktree(wt)
         if params.get("full") or params.get("includeFullDiff"):
-            summary = self._git.diff(wt["worktreePath"], wt["baseRef"])
-            full = self._git.diff_full(wt["worktreePath"], wt["baseRef"])
+            summary = git.diff(wt["worktreePath"], wt["baseRef"])
+            full = git.diff_full(wt["worktreePath"], wt["baseRef"])
             git_diff = {
                 **summary,
                 **self._diff_summary(diff=summary, full_diff=full, params=params),
@@ -658,7 +680,7 @@ class WorktreeService:
                 "truncated": False,
             }
         else:
-            git_diff = self._git.diff(wt["worktreePath"], wt["baseRef"])
+            git_diff = git.diff(wt["worktreePath"], wt["baseRef"])
         return {"worktree": wt, "diff": git_diff}
 
     def cleanup(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -672,11 +694,12 @@ class WorktreeService:
         record = self._store.get_worktree(params)
         wt = record["worktree"]
         force = params.get("force", False)
+        git = self._git_for_worktree(wt)
 
-        if not force and not self._git.has_clean_branch(wt["worktreePath"]):
+        if not force and not git.has_clean_branch(wt["worktreePath"]):
             raise ValueError("Worktree has uncommitted changes; use force=True to override")
 
-        self._git.remove(wt["worktreePath"], force=force)
+        git.remove(wt["worktreePath"], force=force)
 
         self._store.update_worktree({
             "worktreeId": wt["id"],

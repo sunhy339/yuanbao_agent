@@ -282,9 +282,39 @@ def test_worker_runner_uses_injected_executor_and_completes_child_task(tmp_path:
         }
         assert response["subagent"] == {"agentType": "coder", "executionMode": "test-executor"}
         assert task["status"] == "completed"
+        assert worker["name"] == "Coder"
         assert worker["status"] == "idle"
         assert worker["currentTaskId"] is None
         assert response["message"]["body"] == "handled executor boundary"
+    finally:
+        store.close()
+
+
+def test_worker_runner_prefers_profile_display_name_for_child_agent(tmp_path: Path) -> None:
+    def executor(_context: Any) -> dict[str, Any]:
+        return {
+            "summary": "profiled child done",
+            "executionMode": "test-executor",
+            "result": {},
+        }
+
+    store, runner, records = _runner_context(tmp_path, executor=executor)
+    try:
+        response = runner.run_child_task(
+            ChildTaskRequest(
+                prompt="profiled child",
+                title="Profiled child",
+                agent_type="worker",
+                profile={"displayName": "  UI Repair Lead  "},
+                session_id=records["session"]["id"],
+                parent_runtime_task_id=records["parent_task"]["id"],
+            )
+        )
+
+        worker = store.get_agent_worker({"workerId": response["workerId"]})["worker"]
+
+        assert worker["name"] == "UI Repair Lead"
+        assert worker["role"] == "worker"
     finally:
         store.close()
 

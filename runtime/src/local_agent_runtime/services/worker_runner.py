@@ -1224,13 +1224,30 @@ class WorkerRunner:
     def _create_inline_worker(self, *, request: ChildTaskRequest) -> dict[str, Any]:
         return self._collaboration.upsert_agent_worker(
             {
-                "name": f"{request.agent_type.title()} Worker",
+                "name": self._worker_display_name(request),
                 "role": request.agent_type,
                 "status": "idle",
                 "capabilities": ["subagent", "collaboration"],
                 "metadata": self._worker_metadata(request),
             }
         )["worker"]
+
+    def _worker_display_name(self, request: ChildTaskRequest) -> str:
+        profile = request.profile if isinstance(request.profile, dict) else {}
+        for key in ("displayName", "display_name", "name", "label"):
+            value = profile.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())
+        return self._humanize_agent_type(request.agent_type)
+
+    @staticmethod
+    def _humanize_agent_type(agent_type: str | None) -> str:
+        raw = str(agent_type or "").strip() or "worker"
+        normalized = re.sub(r"[_-]+", " ", raw)
+        words = [word for word in normalized.split() if word]
+        if not words:
+            return "Worker"
+        return " ".join(word[:1].upper() + word[1:].lower() for word in words)
 
     def _create_inline_task(self, *, request: ChildTaskRequest) -> dict[str, Any]:
         params: dict[str, Any] = {

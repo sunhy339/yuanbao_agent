@@ -54,6 +54,7 @@ export interface ComposerRuntimeChildTask {
   title: string;
   status?: string;
   workerName?: string;
+  agentType?: string;
   summary?: string;
   attention?: string;
   createdAt?: number;
@@ -199,13 +200,25 @@ function summarizeRuntimeChildSummary(value?: string) {
   return text.length > 88 ? `${text.slice(0, 84).trimEnd()}...` : text;
 }
 
-function isGenericPlannerWorker(workerName?: string) {
-  return /planner worker/i.test(workerName ?? "");
+function normalizeAgentLabel(value?: string) {
+  return value?.trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function isGenericAgentWorker(workerName?: string, agentType?: string) {
+  const worker = normalizeAgentLabel(workerName);
+  const role = normalizeAgentLabel(agentType);
+  if (!worker) return false;
+  return Boolean(role) && (worker === role || worker === `${role} worker` || worker === `${role} agent`);
+}
+
+function isGenericPlannerWorker(workerName?: string, agentType?: string) {
+  const worker = normalizeAgentLabel(workerName);
+  return isGenericAgentWorker(workerName, agentType) || worker === "planner" || worker === "planner worker" || worker === "planner agent";
 }
 
 function isGenericPlannerScanTask(task: ComposerRuntimeChildTask) {
   return (
-    isGenericPlannerWorker(task.workerName) &&
+    isGenericPlannerWorker(task.workerName, task.agentType) &&
     /\b(inspect|identify|understand|locate|search|scan)\b/i.test(task.title ?? "")
   );
 }
@@ -223,7 +236,8 @@ function groupRuntimeChildTasks(tasks: ComposerRuntimeChildTask[]): VisibleRunti
 
   for (const task of tasks) {
     const state = runtimeChildState(task);
-    const genericPlanner = isGenericPlannerWorker(task.workerName);
+    const genericWorker = isGenericAgentWorker(task.workerName, task.agentType);
+    const genericPlanner = isGenericPlannerWorker(task.workerName, task.agentType);
     if (state === "completed" && genericPlanner && !task.attention && isGenericPlannerScanTask(task)) {
       const key = `planner_scan|planner`;
       grouped.set(key, [...(grouped.get(key) ?? []), task]);
@@ -232,7 +246,7 @@ function groupRuntimeChildTasks(tasks: ComposerRuntimeChildTask[]): VisibleRunti
     cards.push({
       ...task,
       displaySummary: task.attention ?? summarizeRuntimeChildSummary(task.summary),
-      displayWorker: genericPlanner ? undefined : task.workerName,
+      displayWorker: genericWorker || genericPlanner ? undefined : task.workerName,
     });
   }
 

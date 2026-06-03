@@ -3,11 +3,53 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanSlashCommandBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
+import { CleanActivityItem, CleanAgentTaskGroupBlock, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanSlashCommandBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
 
 afterEach(() => cleanup());
 
 describe("CleanConversation", () => {
+  it("dedupes generic child agent names in agent groups", () => {
+    render(
+      <CleanAgentTaskGroupBlock
+        message={{
+          id: "agents",
+          role: "assistant",
+          status: "running",
+          content: "",
+          metadata: {
+            kind: "agent_task_group",
+            title: "派遣了 2 个代理",
+            summary: "1 个完成 / 1 个运行中",
+            agentTasks: [
+              {
+                id: "planner",
+                title: "Analyze codebase",
+                status: "completed",
+                workerName: "Planner Worker",
+                agentType: "planner",
+              },
+              {
+                id: "worker",
+                title: "Implement changes",
+                status: "running",
+                workerName: "Worker Worker",
+                agentType: "worker",
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    const planner = screen.getByText("Analyze codebase").closest("article") as HTMLElement;
+    const worker = screen.getByText("Implement changes").closest("article") as HTMLElement;
+
+    expect(planner).toHaveTextContent("Planner");
+    expect(planner).not.toHaveTextContent("Planner Worker");
+    expect(worker).toHaveTextContent("Worker");
+    expect(worker).not.toHaveTextContent("Worker Worker");
+  });
+
   it("renders thinking as a lightweight progress row", () => {
     render(
       <CleanThinkingBlock

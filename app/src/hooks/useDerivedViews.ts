@@ -354,6 +354,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         title: childTask.title,
         status: childTask.status,
         workerName: childTask.workerName,
+        agentType: childTask.agentType,
         summary: childTask.summary,
         attention: childTask.attention,
         createdAt: childTask.createdAt,

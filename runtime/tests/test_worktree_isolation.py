@@ -396,6 +396,47 @@ class TestWorktreeServiceMergeGate:
         assert wt["lastStatus"]["requestedBaseRef"] == "HEAD"
         assert wt["lastStatus"]["resolvedBaseRef"] == "abc123"
 
+    def test_create_for_task_uses_workspace_root_without_global_adapter(self, tmp_path: Any) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git(repo, "init")
+        _run_git(repo, "checkout", "-b", "main")
+        _run_git(repo, "config", "user.email", "test@example.com")
+        _run_git(repo, "config", "user.name", "Test User")
+        (repo / "README.md").write_text("# Project\n", encoding="utf-8")
+        _run_git(repo, "add", "README.md")
+        _run_git(repo, "commit", "-m", "init")
+
+        store = _make_store(tmp_path)
+        workspace = store.upsert_workspace(str(repo))
+        session = store.create_session(workspace["id"], "workspace-root worktree")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="edit in child worktree",
+            plan=[],
+            status="running",
+        )
+        worktree_path = tmp_path / "worktrees" / task["id"]
+        service = WorktreeService(store)
+
+        result = service.create_for_task({
+            "workspaceId": workspace["id"],
+            "sessionId": session["id"],
+            "taskId": task["id"],
+            "baseRef": "HEAD",
+            "branchName": f"agent/{task['id']}",
+            "worktreePath": str(worktree_path),
+            "cleanupPolicy": "ask_user",
+            "mergePolicy": "approval_required",
+        })
+
+        wt = result["worktree"]
+        assert wt["status"] == "active"
+        assert wt["worktreePath"] == str(worktree_path)
+        assert (worktree_path / "README.md").read_text(encoding="utf-8") == "# Project\n"
+        assert _run_git(worktree_path, "rev-parse", "--abbrev-ref", "HEAD") == f"agent/{task['id']}"
+
     def test_merge_requires_explicit_approval(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)
         ws_id = _make_workspace(store, tmp_path)

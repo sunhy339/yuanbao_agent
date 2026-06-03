@@ -22,6 +22,7 @@ def test_build_child_worker_env_keeps_only_runtime_provider_and_platform_vars(tm
         "LOCAL_AGENT_PROVIDER_API_KEY": "sk-local-agent",
         "LOCAL_AGENT_PROVIDER_MODEL": "gpt-test",
         "LOCAL_AGENT_OPENAI_API_KEY": "sk-local-openai",
+        "LOCAL_AGENT_REPO_ROOT": str(tmp_path / "repo"),
         "LOCAL_AGENT_UNRELATED_SECRET": "do-not-copy-local-secret",
         "OPENAI_API_KEY": "sk-openai",
         "ANTHROPIC_API_KEY": "sk-anthropic",
@@ -52,6 +53,7 @@ def test_build_child_worker_env_keeps_only_runtime_provider_and_platform_vars(tm
     assert env["LOCAL_AGENT_PROVIDER_API_KEY"] == "sk-local-agent"
     assert env["LOCAL_AGENT_PROVIDER_MODEL"] == "gpt-test"
     assert env["LOCAL_AGENT_OPENAI_API_KEY"] == "sk-local-openai"
+    assert env["LOCAL_AGENT_REPO_ROOT"] == str(tmp_path / "repo")
     assert env["OPENAI_API_KEY"] == "sk-openai"
     assert env["ANTHROPIC_API_KEY"] == "sk-anthropic"
     assert env["LOCAL_AGENT_DB_PATH"] == str(db_path)
@@ -148,6 +150,7 @@ def test_normalize_child_tool_allowlist_defaults_to_read_only_tools() -> None:
         "code_search",
         "web_fetch",
         "browser",
+        "ask_user_question",
     )
 
 

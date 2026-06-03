@@ -67,17 +67,14 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
         memory_store=memory_store,
         refresh_permission_engine=True,
     )
-    # WorktreeService requires a git repo root; only create when env var is set.
-    worktree_service = None
     repo_root = os.environ.get("LOCAL_AGENT_REPO_ROOT")
-    if repo_root:
-        worktree_service = WorktreeService(
-            store,
-            GitWorktreeAdapter(repo_root),
-            hook_service=hook_service,
-            policy_guard=policy_guard,
-            permission_engine=permission_engine,
-        )
+    worktree_service = WorktreeService(
+        store,
+        GitWorktreeAdapter(repo_root) if repo_root else None,
+        hook_service=hook_service,
+        policy_guard=policy_guard,
+        permission_engine=permission_engine,
+    )
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,

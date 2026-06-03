@@ -2449,6 +2449,7 @@
   font-size: 12px;
 }
 
+.hc-thinking-detail,
 .hc-thinking pre,
 .hc-permission-card pre,
 .hc-special-event pre,
@@ -2462,6 +2463,11 @@
   padding: 10px;
   color: #39434d;
   white-space: pre-wrap;
+}
+
+.hc-thinking-detail .hc-markdown {
+  color: #39434d;
+  font-size: 13px;
 }
 
 .hc-slash-command-detail {

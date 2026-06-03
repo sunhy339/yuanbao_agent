@@ -172,6 +172,15 @@ class TestParseTurnResultInference:
         assert result.decision == TurnDecision.FINAL_ANSWER
         assert result.final_answer == "All done."
 
+    def test_plain_message_final_is_not_reused_as_thought_summary(self, orchestrator: Orchestrator) -> None:
+        response = {"message": "# Final\n\n- **Done**"}
+        result = orchestrator._parse_turn_result(
+            response, allow_fallback=False, allow_plain_message_final=True,
+        )
+        assert result.decision == TurnDecision.FINAL_ANSWER
+        assert result.final_answer == "# Final\n\n- **Done**"
+        assert result.thought_summary == ""
+
     def test_fallback_inferred_when_allowed(self, orchestrator: Orchestrator) -> None:
         # No tool_calls, no final_answer, but allow_fallback=True and provider has fallback
         orchestrator._provider.choose_tool_sequence = MagicMock()

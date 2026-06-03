@@ -505,16 +505,15 @@ function worklogPhaseTone(nodes: WorklogTreeNode[]) {
 
 function worklogPhaseEntries(nodes: WorklogTreeNode[]) {
   const phases = new Map<string, { label: string; nodes: WorklogTreeNode[] }>();
-  const addNode = (node: WorklogTreeNode, phaseSource: RuntimeTimelineItem) => {
-    const key = runtimeGroupKey(phaseSource);
-    const label = runtimeGroupLabel(phaseSource);
+  const addNode = (node: WorklogTreeNode, phaseItem: RuntimeTimelineItem) => {
+    const key = runtimeGroupKey(phaseItem);
+    const label = runtimeGroupLabel(phaseItem);
     const phase = phases.get(key);
     if (phase) {
       phase.nodes.push(node);
     } else {
       phases.set(key, { label, nodes: [node] });
     }
-    node.children.forEach((child) => addNode(child, phaseSource));
   };
   nodes.forEach((node) => addNode(node, node.item));
   return Array.from(phases.entries())
@@ -954,7 +953,11 @@ export const CleanThinkingBlock = memo(function CleanThinkingBlock({ message }: 
         <span>{title}</span>
         <em>{preview}</em>
       </button>
-      {expanded ? <pre>{text}</pre> : null}
+      {expanded ? (
+        <div className="hc-thinking-detail">
+          <CleanMarkdown content={text} />
+        </div>
+      ) : null}
     </section>
   );
 });
@@ -2199,6 +2202,7 @@ function CleanWorklogPhaseRoot({ phase }: { phase: WorklogPhase }) {
   const childTotal = phase.nodes.reduce((total, node) => total + node.children.length, 0);
   const runningCount = phase.nodes.filter((node) => isInFlight(node.item.status)).length;
   const failedCount = phase.nodes.filter((node) => statusTone(node.item.status) === "danger").length;
+  const totalCount = flattenWorklogTree(phase.nodes).length;
   const summary = failedCount ? `${failedCount} 个异常` : runningCount ? `${runningCount} 个进行中` : childTotal ? `包含 ${childTotal} 个子步骤` : "语义阶段";
   return (
     <div className="hc-worklog-phase-root" data-tone={tone}>
@@ -2206,7 +2210,7 @@ function CleanWorklogPhaseRoot({ phase }: { phase: WorklogPhase }) {
         <ListChecks size={13} />
         <strong>{phase.label}</strong>
       </span>
-      <em>{phase.nodes.length} 项</em>
+      <em>{totalCount} 项</em>
       <small>{summary}</small>
     </div>
   );
@@ -2271,11 +2275,11 @@ export function CleanWorklogBlock({
             <section className="hc-worklog-phase" key={phase.id} aria-label={`阶段：${phase.label}`}>
               <header>
                 <span>{phase.label}</span>
-                <small>{phase.nodes.length} 项</small>
+                <small>{flattenWorklogTree(phase.nodes).length} 项</small>
               </header>
               <CleanWorklogPhaseRoot phase={phase} />
               <div className="hc-worklog-list">
-                {phase.nodes.map((node) => (
+                {flattenWorklogTree(phase.nodes).map((node) => (
                   <CleanWorklogRuntimeRow
                     key={node.item.id}
                     item={node.item}

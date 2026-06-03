@@ -1971,7 +1971,12 @@ class ProviderTurnMixin:
 
         tool_calls = response.get("tool_calls")
         message = self._assistant_text(response)
-        thought_summary = response.get("thought_summary") or response.get("thoughtSummary") or message[:200]
+        explicit_thought_summary = response.get("thought_summary") or response.get("thoughtSummary")
+        thought_summary = (
+            explicit_thought_summary.strip()
+            if isinstance(explicit_thought_summary, str) and explicit_thought_summary.strip()
+            else ""
+        )
         why_complete = response.get("why_complete") or response.get("whyComplete")
         remaining_risks = response.get("remaining_risks") or response.get("remainingRisks") or []
         policy_needs = response.get("policy_needs") or response.get("policyNeeds")

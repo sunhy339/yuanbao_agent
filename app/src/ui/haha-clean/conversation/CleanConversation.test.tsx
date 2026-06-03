@@ -25,6 +25,27 @@ describe("CleanConversation", () => {
     expect(screen.getByText("我在检查相关文件。")).toBeInTheDocument();
   });
 
+  it("renders expanded thinking markdown instead of raw source blocks", () => {
+    const { container } = render(
+      <CleanThinkingBlock
+        message={{
+          id: "thinking-md",
+          role: "assistant",
+          content: "# Plan\n\n- **Priority** item",
+          metadata: { kind: "assistant_thinking" },
+        }}
+      />,
+    );
+
+    fireEvent.click(container.querySelector(".hc-thinking button") as HTMLElement);
+    const detail = container.querySelector(".hc-thinking-detail") as HTMLElement;
+    expect(detail).toBeInTheDocument();
+    expect(detail.querySelector("pre")).not.toBeInTheDocument();
+    expect(within(detail).getByRole("heading", { name: "Plan" })).toBeInTheDocument();
+    expect(detail.querySelector("strong")).toHaveTextContent("Priority");
+    expect(detail).not.toHaveTextContent("**Priority**");
+  });
+
   it("renders slash command results as expandable detail nodes", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();
@@ -1051,6 +1072,46 @@ describe("CleanConversation", () => {
     await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
     expect(screen.getByText("1 个子步骤")).toBeInTheDocument();
     expect(screen.getByText("读取 app/src/target.ts").closest(".hc-worklog-row")).toHaveAttribute("data-depth", "1");
+  });
+
+  it("keeps parented worklog tools inside the root phase only", () => {
+    const { container } = render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:search:root",
+            kind: "tool",
+            title: "search_files",
+            status: "completed",
+            toolName: "search_files",
+            toolUseId: "call_search_root",
+            toolGroupId: "tgrp_root",
+            toolSemanticParentId: "group:tgrp_root:phase:search",
+            toolSemanticParentLabel: "Search",
+            code: JSON.stringify({ query: "README" }),
+          },
+          {
+            id: "tool:read:child",
+            kind: "tool",
+            title: "read_file",
+            status: "completed",
+            toolName: "read_file",
+            toolUseId: "call_read_child",
+            parentToolUseId: "call_search_root",
+            toolGroupId: "tgrp_root",
+            toolSemanticParentId: "group:tgrp_root:phase:context_read",
+            toolSemanticParentLabel: "Read Context",
+            code: JSON.stringify({ path: "snake_game/README.md" }),
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(container.querySelector(".hc-worklog-head") as HTMLElement);
+    const phases = Array.from(container.querySelectorAll(".hc-worklog-phase"));
+    expect(phases).toHaveLength(1);
+    expect(phases[0]).toHaveTextContent("snake_game/README.md");
+    expect(container.querySelector('[data-depth="1"]')).toHaveTextContent("snake_game/README.md");
   });
 
   it("renders inferred file change review parent-child worklog trees", async () => {

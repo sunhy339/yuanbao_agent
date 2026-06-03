@@ -63,6 +63,26 @@ def test_yuanbao_adapter_rejects_unknown_status_states() -> None:
     assert to_yuanbao_server_message(_event("status", {"state": "retrying_provider"})) is None
 
 
+def test_yuanbao_adapter_maps_direct_message_delta_to_content_delta() -> None:
+    assert to_yuanbao_server_message(_event("message.delta", {"messageId": "msg_1", "delta": "hello"})) == {
+        "type": "content_delta",
+        "text": "hello",
+    }
+
+
+def test_yuanbao_adapter_does_not_flatten_bridge_assistant_token() -> None:
+    assert (
+        to_yuanbao_server_message(
+            _event("assistant.token", {"messageId": "msg_1", "delta": "hello", "_chatCompat": True})
+        )
+        is None
+    )
+    assert to_yuanbao_server_message(_event("assistant.token", {"delta": "hello"})) == {
+        "type": "content_delta",
+        "text": "hello",
+    }
+
+
 def test_yuanbao_adapter_normalizes_usage() -> None:
     assert normalize_yuanbao_usage(
         {

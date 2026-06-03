@@ -136,8 +136,14 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
         if event.type == "connected" and not message.get("sessionId"):
             message["sessionId"] = event.session_id
     elif event.type == "assistant.token":
+        if _is_chat_compat_payload(payload):
+            return None
         delta = payload.get("delta")
         if isinstance(delta, str) and delta:
+            message = {"type": "content_delta", "text": delta}
+    elif event.type == "message.delta":
+        delta = _string_value(payload.get("delta"), payload.get("text"))
+        if delta:
             message = {"type": "content_delta", "text": delta}
     elif event.type == "message.completed":
         message = {
@@ -328,6 +334,10 @@ def _raw_usage(payload: dict[str, Any]) -> Any:
     if isinstance(raw, dict):
         return raw.get("usage")
     return None
+
+
+def _is_chat_compat_payload(payload: dict[str, Any]) -> bool:
+    return payload.get("_chatCompat") is True
 
 
 def _error_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[str, Any]:

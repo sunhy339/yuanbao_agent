@@ -574,3 +574,23 @@
 - 2026-06-03：`python -m compileall -q runtime/src/local_agent_runtime` 通过。
 - 2026-06-03：`npm --prefix app run typecheck` 通过。
 - 2026-06-03：`npm --prefix app test -- src/lib/runtimeClient.test.ts src/hooks/useEventSubscription.test.tsx src/state/chatMessages.test.ts` 通过，98 passed。
+
+## Batch 17: Message lifecycle flat fallback
+
+Goal: keep frontend message lifecycle events aligned with haha-cc flat text output without duplicating realtime adapter frames.
+- [x] Map direct `message.delta` events to flat `content_delta` for Yuanbao/haha historical replay and external adapters.
+- [x] Keep bridge-generated `assistant.token` payloads from producing a second flat `content_delta`.
+- [x] Suppress realtime flat output for `_chatCompat` `message.delta` events, because the realtime haha stream is already carried by bridge `content_delta`.
+- [x] Add adapter/EventBus/RPC tests for direct `message.delta`, realtime duplicate suppression, and `events.yuanbaoAfter` historical recovery.
+
+Acceptance:
+- Realtime stdout keeps one flat text delta per token.
+- Stored lifecycle replay can still return haha-style `content_delta`.
+- Frontend `message.delta` consumption and external adapter flat output stay consistent.
+
+Progress:
+- 2026-06-03: `runtime/src/local_agent_runtime/yuanbao_event_adapter.py` now treats direct lifecycle `message.delta` as `content_delta`, while `_chatCompat` `assistant.token` is not flattened.
+- 2026-06-03: `runtime/src/local_agent_runtime/event_bus.py` suppresses realtime flat frames for bridge-generated `message.delta`, avoiding duplicate stdout `yuanbao_message` / `haha_cc_message` lines.
+- 2026-06-03: `python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_agent_role_and_visibility.py -q -k "yuanbao or haha or message_delta or assistant_token or payload_includes or payload_suppresses or events_after"` passed: 45 passed, 28 deselected.
+- 2026-06-03: `python -m pytest runtime/tests/test_p9_release_checks.py -q -k "assistant_token or message_delta or content_delta or message_complete"` passed: 3 passed, 24 deselected.
+- 2026-06-03: `python -m compileall -q runtime/src/local_agent_runtime` passed.

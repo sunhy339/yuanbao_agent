@@ -51,8 +51,16 @@ class EventBus:
             "payload": event.payload,
             "visibility": event.visibility,
         }
-        yuanbao = to_yuanbao_server_message(event)
+        yuanbao = None if _suppresses_realtime_flat_message(event) else to_yuanbao_server_message(event)
         if yuanbao is not None:
             payload["yuanbao"] = yuanbao
             payload["hahaCc"] = yuanbao
         return payload
+
+
+def _suppresses_realtime_flat_message(event: RuntimeEvent) -> bool:
+    event_payload = event.payload if isinstance(event.payload, dict) else {}
+    if event.type == "message.delta" and event_payload.get("_chatCompat") is True:
+        return True
+    bridge = event_payload.get("_bridge")
+    return isinstance(bridge, dict) and bridge.get("suppressRealtimeFlat") is True

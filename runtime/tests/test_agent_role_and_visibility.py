@@ -271,6 +271,20 @@ class TestEventBusVisibility:
         assert payload["yuanbao"] == {"type": "content_delta", "text": "hello"}
         assert payload["hahaCc"] == payload["yuanbao"]
 
+    def test_payload_suppresses_bridge_message_delta_flat_duplicate(self):
+        from local_agent_runtime.event_bus import EventBus
+        bus = EventBus()
+        event = type("E", (), {
+            "event_id": "e3b", "session_id": "s1", "task_id": "t1",
+            "type": "message.delta", "ts": 0, "seq": 0,
+            "payload": {"messageId": "msg_1", "delta": "hello", "_chatCompat": True},
+            "visibility": "chat",
+        })()
+        payload = bus.as_payload(event)
+        assert payload["type"] == "message.delta"
+        assert "yuanbao" not in payload
+        assert "hahaCc" not in payload
+
     def test_payload_includes_haha_cc_error_for_failed_message(self):
         from local_agent_runtime.event_bus import EventBus
         bus = EventBus()

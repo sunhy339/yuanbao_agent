@@ -553,6 +553,61 @@ def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_pa
     assert yuanbao_response["result"] == response["result"]
 
 
+def test_events_after_uses_message_delta_as_historical_content_delta(tmp_path) -> None:
+    from local_agent_runtime.event_bus import EventBus
+    from local_agent_runtime.orchestrator.service import Orchestrator
+    from local_agent_runtime.rpc.server import JsonRpcServer
+    from local_agent_runtime.tools.registry import ToolRegistry
+
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="compat rpc")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="stream", plan=[])
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="assistant.token",
+        source="assistant",
+        payload={"messageId": "msg_1", "delta": "hello", "_chatCompat": True},
+    )
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="message.delta",
+        source="assistant",
+        payload={"messageId": "msg_1", "delta": "hello", "_chatCompat": True},
+    )
+
+    event_bus = EventBus()
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=None,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    response = server.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "req_1",
+                "method": "events.yuanbaoAfter",
+                "params": {"sessionId": session["id"], "afterSeq": 0},
+            }
+        )
+    )
+
+    assert response["result"] == {
+        "messages": [
+            {"type": "content_delta", "text": "hello"},
+        ],
+        "lastSeq": 2,
+        "truncated": False,
+    }
+
+
 def test_trace_list_includes_haha_cc_error_message(tmp_path) -> None:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     workspace_root = tmp_path / "workspace"

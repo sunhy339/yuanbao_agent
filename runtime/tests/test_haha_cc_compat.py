@@ -579,6 +579,18 @@ def test_events_after_uses_message_delta_as_historical_content_delta(tmp_path) -
         source="assistant",
         payload={"messageId": "msg_1", "delta": "hello", "_chatCompat": True},
     )
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="message.completed",
+        source="assistant",
+        payload={
+            "messageId": "msg_1",
+            "content": "hello",
+            "_chatCompat": True,
+            "usage": {"inputTokens": 3, "outputTokens": 1},
+        },
+    )
 
     event_bus = EventBus()
     orchestrator = Orchestrator(
@@ -602,8 +614,9 @@ def test_events_after_uses_message_delta_as_historical_content_delta(tmp_path) -
     assert response["result"] == {
         "messages": [
             {"type": "content_delta", "text": "hello"},
+            {"type": "message_complete", "usage": {"input_tokens": 3, "output_tokens": 1}},
         ],
-        "lastSeq": 2,
+        "lastSeq": 3,
         "truncated": False,
     }
 

@@ -594,3 +594,5 @@ Progress:
 - 2026-06-03: `python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_agent_role_and_visibility.py -q -k "yuanbao or haha or message_delta or assistant_token or payload_includes or payload_suppresses or events_after"` passed: 45 passed, 28 deselected.
 - 2026-06-03: `python -m pytest runtime/tests/test_p9_release_checks.py -q -k "assistant_token or message_delta or content_delta or message_complete"` passed: 3 passed, 24 deselected.
 - 2026-06-03: `python -m compileall -q runtime/src/local_agent_runtime` passed.
+- 2026-06-03: `message.completed` realtime flat frames are now suppressed when the event is `_chatCompat`, so bridge `message_complete` remains the only realtime finalize frame.
+- 2026-06-03: historical `events.yuanbaoAfter` still recovers `message.completed` as flat `message_complete`, covered together with `message.delta` recovery.

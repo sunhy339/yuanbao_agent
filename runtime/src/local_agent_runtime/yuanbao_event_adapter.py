@@ -144,6 +144,73 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
     return _server_message_shape(message) if message is not None else None
 
 
+def yuanbao_message_from_event_payload(payload: Any) -> dict[str, Any] | None:
+    """Extract the flat ServerMessage from a runtime event envelope payload."""
+
+    if not isinstance(payload, dict):
+        return None
+    message = payload.get("yuanbao")
+    if not isinstance(message, dict):
+        message = payload.get("hahaCc")
+    return message if isinstance(message, dict) else None
+
+
+def to_yuanbao_output_frames(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return stdout/adapter frames for one runtime event envelope payload."""
+
+    frames: list[dict[str, Any]] = [
+        {
+            "kind": "event",
+            "payload": payload,
+        }
+    ]
+    message = yuanbao_message_from_event_payload(payload)
+    if message is not None:
+        frames.extend(
+            [
+                {
+                    "kind": "yuanbao_message",
+                    "payload": message,
+                },
+                {
+                    "kind": "haha_cc_message",
+                    "payload": message,
+                },
+            ]
+        )
+    return frames
+
+
+def collect_yuanbao_server_messages(
+    events: Any,
+    *,
+    after_seq: int = 0,
+) -> dict[str, Any]:
+    """Collect flat ServerMessages from stored event envelopes."""
+
+    messages: list[dict[str, Any]] = []
+    last_seq = int(after_seq)
+    if not isinstance(events, list):
+        return {
+            "messages": messages,
+            "lastSeq": last_seq,
+        }
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        sequence = event.get("sequence")
+        if isinstance(sequence, (int, float)) and not isinstance(sequence, bool):
+            last_seq = max(last_seq, int(sequence))
+        message = yuanbao_message_from_event_payload(event)
+        if message is not None:
+            messages.append(message)
+    return {
+        "messages": messages,
+        "lastSeq": last_seq,
+    }
+
+
 def normalize_yuanbao_usage(usage: Any) -> dict[str, int]:
     if not isinstance(usage, dict):
         return {

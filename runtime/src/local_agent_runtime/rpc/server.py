@@ -8,7 +8,11 @@ import time
 from typing import Any, Callable, TextIO
 
 from ..models import RpcEnvelope, RuntimeEvent
-from ..yuanbao_event_adapter import to_yuanbao_server_message
+from ..yuanbao_event_adapter import (
+    collect_yuanbao_server_messages,
+    to_yuanbao_output_frames,
+    to_yuanbao_server_message,
+)
 from ..services.collaboration_service import CollaborationService
 from ..services.replay_service import ReplayService
 from ..services.command_background import cancel_background_command, get_background_command_event_bridge, get_background_command_service
@@ -448,23 +452,13 @@ class JsonRpcServer:
         """Fetch Yuanbao flat ServerMessages after a trace sequence."""
         result = self._events_after(params)
         events = result.get("events") if isinstance(result, dict) else []
-        messages: list[dict[str, Any]] = []
-        last_seq = int(params.get("afterSeq", params.get("after_seq", 0)))
-        if isinstance(events, list):
-            for event in events:
-                if not isinstance(event, dict):
-                    continue
-                sequence = event.get("sequence")
-                if isinstance(sequence, (int, float)) and not isinstance(sequence, bool):
-                    last_seq = max(last_seq, int(sequence))
-                yuanbao = event.get("yuanbao")
-                if not isinstance(yuanbao, dict):
-                    yuanbao = event.get("hahaCc")
-                if isinstance(yuanbao, dict):
-                    messages.append(yuanbao)
+        collected = collect_yuanbao_server_messages(
+            events,
+            after_seq=int(params.get("afterSeq", params.get("after_seq", 0))),
+        )
         return {
-            "messages": messages,
-            "lastSeq": last_seq,
+            "messages": collected["messages"],
+            "lastSeq": collected["lastSeq"],
             "truncated": bool(result.get("truncated")) if isinstance(result, dict) else False,
         }
 
@@ -873,38 +867,6 @@ class JsonRpcServer:
             return
 
         with self._writer_lock:
-            self._writer.write(
-                json.dumps(
-                    {
-                        "kind": "event",
-                        "payload": payload,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-            yuanbao = payload.get("yuanbao")
-            if not isinstance(yuanbao, dict):
-                yuanbao = payload.get("hahaCc")
-            if isinstance(yuanbao, dict):
-                self._writer.write(
-                    json.dumps(
-                        {
-                            "kind": "yuanbao_message",
-                            "payload": yuanbao,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-                self._writer.write(
-                    json.dumps(
-                        {
-                            "kind": "haha_cc_message",
-                            "payload": yuanbao,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
+            for frame in to_yuanbao_output_frames(payload):
+                self._writer.write(json.dumps(frame, ensure_ascii=False) + "\n")
             self._writer.flush()

@@ -481,3 +481,33 @@
 - 2026-06-03：`npm --prefix app run typecheck` 通过。
 - 2026-06-03：AgentTool/工具策略 acceptance 子集通过：`python -m pytest runtime/tests/test_acceptance_scenarios.py runtime/tests/test_llm_proposal_flows.py runtime/tests/test_planner_contract.py -q -k "tool or unsafe or allowedTools or agent_profile"`，18 passed，189 deselected。
 - 说明：Computer Use / desktop adapter 生态等价未纳入本轮收口，按当前要求后续单独推进。
+
+## Batch 14：外部 adapter 输出帧收口
+
+目标：让实时 stdout、RPC 补拉和后续外部 adapter 使用同一套 Yuanbao/haha-cc flat ServerMessage 提取规则。
+
+- [x] 抽取 `yuanbao_message_from_event_payload`，统一从 `event.yuanbao` 优先、`event.hahaCc` 兼容 fallback 提取 flat ServerMessage。
+- [x] 抽取 `to_yuanbao_output_frames`，统一生成 `kind: "event"`、`kind: "yuanbao_message"`、`kind: "haha_cc_message"`。
+- [x] 抽取 `collect_yuanbao_server_messages`，统一 `events.yuanbaoAfter` / `events.hahaCcAfter` 的历史补拉提取和 `lastSeq` 计算。
+- [x] RPC writer 改为复用统一输出帧 helper，不再手写两套 flat frame。
+- [x] 增加 helper 级契约测试，确保 `yuanbao_message` 和 `haha_cc_message` payload 同值同形，且不泄漏 `eventId/sessionId/taskId/visibility/payload` 等 envelope 字段。
+- [x] 保留旧 `hahaCc` 历史数据 fallback，迁移期不会断流。
+
+建议文件：
+
+- `runtime/src/local_agent_runtime/yuanbao_event_adapter.py`
+- `runtime/src/local_agent_runtime/rpc/server.py`
+- `runtime/tests/test_yuanbao_event_adapter.py`
+
+验收：
+
+- 外部 adapter 可以优先消费 `yuanbao_message`。
+- 旧 adapter 可以继续消费 `haha_cc_message`。
+- 两者 payload 始终来自同一份 flat ServerMessage。
+- RPC 补拉和实时 stdout 不再各自实现提取逻辑。
+
+进展：
+
+- 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_agent_role_and_visibility.py -q -k "yuanbao or haha_cc or rpc_writer or events_after"` 通过，34 passed，32 deselected。
+- 2026-06-03：`python -m compileall -q runtime/src/local_agent_runtime` 通过。
+- 说明：本批次只收口 flat message 输出帧和补拉契约；Computer Use、完整桌面/IM adapter 生态仍按后续单独 track 推进。

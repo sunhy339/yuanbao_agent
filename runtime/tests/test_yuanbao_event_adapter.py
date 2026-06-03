@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from local_agent_runtime.haha_cc_compat import to_haha_cc_server_message
 from local_agent_runtime.models import RuntimeEvent
-from local_agent_runtime.yuanbao_event_adapter import normalize_yuanbao_usage, to_yuanbao_server_message
+from local_agent_runtime.yuanbao_event_adapter import (
+    collect_yuanbao_server_messages,
+    normalize_yuanbao_usage,
+    to_yuanbao_output_frames,
+    to_yuanbao_server_message,
+    yuanbao_message_from_event_payload,
+)
 
 
 def _event(event_type: str, payload: dict) -> RuntimeEvent:
@@ -71,6 +77,60 @@ def test_haha_cc_compat_exports_yuanbao_message_alias() -> None:
     event = _event("thinking", {"text": "plan"})
 
     assert to_haha_cc_server_message(event) == to_yuanbao_server_message(event)
+
+
+def test_yuanbao_output_frames_keep_flat_messages_in_sync() -> None:
+    payload = {
+        "eventId": "evt_1",
+        "sessionId": "sess_1",
+        "taskId": "task_1",
+        "type": "content_delta",
+        "payload": {"text": "hello"},
+        "visibility": "chat",
+        "yuanbao": {"type": "content_delta", "text": "hello"},
+        "hahaCc": {"type": "content_delta", "text": "hello"},
+    }
+
+    frames = to_yuanbao_output_frames(payload)
+
+    assert frames == [
+        {"kind": "event", "payload": payload},
+        {"kind": "yuanbao_message", "payload": {"type": "content_delta", "text": "hello"}},
+        {"kind": "haha_cc_message", "payload": {"type": "content_delta", "text": "hello"}},
+    ]
+    assert "eventId" not in frames[1]["payload"]
+    assert frames[1]["payload"] == frames[2]["payload"]
+
+
+def test_yuanbao_output_frames_fall_back_to_legacy_haha_cc_payload() -> None:
+    payload = {
+        "eventId": "evt_1",
+        "type": "thinking",
+        "payload": {"text": "plan"},
+        "hahaCc": {"type": "thinking", "text": "plan"},
+    }
+
+    assert yuanbao_message_from_event_payload(payload) == {"type": "thinking", "text": "plan"}
+    assert to_yuanbao_output_frames(payload)[1:] == [
+        {"kind": "yuanbao_message", "payload": {"type": "thinking", "text": "plan"}},
+        {"kind": "haha_cc_message", "payload": {"type": "thinking", "text": "plan"}},
+    ]
+
+
+def test_collect_yuanbao_server_messages_uses_same_flat_extraction_rules() -> None:
+    events = [
+        {"sequence": 7, "yuanbao": {"type": "content_delta", "text": "hello"}},
+        {"sequence": 8, "type": "provider.request", "payload": {"model": "test"}},
+        {"sequence": 9, "hahaCc": {"type": "thinking", "text": "plan"}},
+    ]
+
+    assert collect_yuanbao_server_messages(events, after_seq=3) == {
+        "messages": [
+            {"type": "content_delta", "text": "hello"},
+            {"type": "thinking", "text": "plan"},
+        ],
+        "lastSeq": 9,
+    }
 
 
 def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> None:

@@ -1778,6 +1778,8 @@ class TaskLifecycleMixin:
             "summary": summary,
             "risk": risk or "completion evidence requires review",
             "reason": reason,
+            "gateStatus": gate_status or "needs_user_review",
+            "decision": decision or "needs_user_review",
             "completionEvidence": completion_evidence,
             "structuredResult": structured_result,
         }

@@ -124,7 +124,11 @@ class EventStoreMixin:
         payload = getattr(event, "payload", {})
         if isinstance(payload, dict):
             bridge = payload.get("_bridge")
-            if isinstance(bridge, dict) and bool(bridge.get("skipTraceMirror")):
+            if (
+                isinstance(bridge, dict)
+                and bool(bridge.get("skipTraceMirror"))
+                and not bool(bridge.get("persistTraceMirror"))
+            ):
                 return None
         event_visibility = getattr(event, "visibility", "chat")
         if normalized_type.startswith("session."):

@@ -1881,6 +1881,72 @@ class TestCompletionHardGate:
         refreshed_gate = refreshed["structuredResult"]["completionGate"]
         assert refreshed_gate["status"] == "waiting_runtime_work"
 
+    def test_completion_review_approval_does_not_force_complete_advisor_incomplete_task(self, tmp_path: Any) -> None:
+        class IncompleteAdvisor:
+            def advise(self, kind: str, _input_context: dict[str, Any]) -> Any:
+                if kind == "completion_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="No implementation evidence.",
+                        fallback_reason=None,
+                        proposal_id="completion_incomplete",
+                        confidence=0.98,
+                        payload={
+                            "is_complete": False,
+                            "blocking_issues": ["No changed files or verification evidence."],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="rule_fallback",
+                    rationale="No-op",
+                    fallback_reason=None,
+                    proposal_id=kind,
+                    confidence=0.5,
+                    payload={},
+                )
+
+        rt = _make_runtime(tmp_path, decision_advisor=IncompleteAdvisor())
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="advisor incomplete")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="agent",
+            goal="implement the requested optimization",
+            plan=[],
+            routing={"scenario": "swarm_task"},
+        )
+
+        waiting = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="I inspected the project but did not change anything.",
+            context={"routing": {"scenario": "swarm_task"}},
+            skip_reflection=True,
+        )
+
+        assert waiting["status"] == "waiting_approval"
+        gate = waiting["structuredResult"]["completionGate"]
+        assert gate["status"] == "advisor_needs_review"
+        approval_id = gate["approvalId"]
+
+        result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+
+        assert result["task"]["status"] == "running"
+        refreshed = store.get_task({"taskId": task["id"]})["task"]
+        assert refreshed["status"] == "running"
+        refreshed_gate = refreshed["structuredResult"]["completionGate"]
+        assert refreshed_gate["status"] == "advisor_needs_review"
+        assert refreshed_gate["decision"] == "continue_after_review"
+
+        repeated = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+
+        assert repeated["ignored"] is True
+        assert repeated["task"]["status"] == "running"
+        assert store.get_task({"taskId": task["id"]})["task"]["status"] == "running"
+
     def test_invalid_advisor_tool_approval_does_not_execute_empty_write_file(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

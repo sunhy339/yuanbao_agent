@@ -1537,6 +1537,70 @@ def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> N
     assert captured["child_timeout_ms"] == 900_000
 
 
+def test_swarm_execution_emits_replayable_planning_thinking(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="coordinate a swarm task",
+        plan=[],
+    )
+
+    runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
+        lambda **_kwargs: SimpleNamespace(subtasks=[], execution_order=[], dag={})
+    )
+    runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
+    runtime.server._orchestrator._swarm.execute = (  # noqa: SLF001
+        lambda *_args, **_kwargs: OrchestrationResult(
+            success=True,
+            summary="Swarm finished.",
+            subtask_results=[],
+            handoff_count=1,
+        )
+    )
+
+    runtime.server._orchestrator._execute_with_swarm(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        goal="coordinate a swarm task",
+        context={},
+    )
+
+    thinking_events = [
+        event for event in runtime.events
+        if event["type"] == "thinking" and event["taskId"] == task["id"]
+    ]
+    progress_events = [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["taskId"] == task["id"]
+    ]
+    assert [event["payload"]["phase"] for event in thinking_events] == [
+        "planning_started",
+        "planning_decomposed",
+        "subtasks_started",
+        "synthesis_started",
+        "planning_completed",
+    ]
+    assert all(event["visibility"] == "chat" for event in thinking_events)
+    assert all(event["payload"]["mode"] == "swarm" for event in progress_events)
+
+    persisted = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+    persisted_thinking = [event for event in persisted if event["type"] == "thinking"]
+    assert [event["payload"]["phase"] for event in persisted_thinking] == [
+        "planning_started",
+        "planning_decomposed",
+        "subtasks_started",
+        "synthesis_started",
+        "planning_completed",
+    ]
+    assert persisted_thinking[0]["hahaCc"] == {
+        "type": "thinking",
+        "text": "正在用 swarm 模式拆分并安排多 agent 协作。",
+    }
+
+
 def test_supervisor_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
     provider = ScriptedProvider([])
     runtime = _make_runtime(tmp_path, provider)

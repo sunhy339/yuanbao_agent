@@ -137,6 +137,26 @@ class ApprovalFlowMixin:
         return result
 
     def submit_approval(self, params: dict[str, Any]) -> dict[str, Any]:
+        existing_approval = self._store.get_approval({"approvalId": params["approvalId"]})["approval"]
+        existing_decision = str(existing_approval.get("decision") or "").strip()
+        if existing_decision:
+            task = self._store.get_task({"taskId": existing_approval["taskId"]})["task"]
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="approval.resolved",
+                payload=self._approval_resolved_payload(
+                    approval=existing_approval,
+                    task=task,
+                    extra={
+                        "ignored": True,
+                        "alreadyResolved": True,
+                        "taskStatus": task.get("status"),
+                    },
+                ),
+            )
+            return {"approval": existing_approval, "task": task, "ignored": True}
+
         approval = self._store.resolve_approval(
             approval_id=params["approvalId"],
             decision=params["decision"],
@@ -512,6 +532,15 @@ class ApprovalFlowMixin:
             task=task,
             detail="Completion review approved",
         )
+        if self._completion_review_should_continue(request=request, conclusion=conclusion):
+            continued_task = self._continue_after_blocking_completion_review(
+                task=task,
+                request=request,
+                conclusion=conclusion,
+                summary=summary,
+            )
+            return {"approval": approval, "task": continued_task}
+
         completed_task = self._complete_task(
             session_id=task["sessionId"],
             task=task,
@@ -525,6 +554,121 @@ class ApprovalFlowMixin:
             force_complete_after_review=True,
         )
         return {"approval": approval, "task": completed_task}
+
+    @staticmethod
+    def _completion_review_gate_status(request: dict[str, Any]) -> str:
+        structured = request.get("structuredResult") if isinstance(request.get("structuredResult"), dict) else {}
+        gate = structured.get("completionGate") if isinstance(structured.get("completionGate"), dict) else {}
+        return str(gate.get("status") or request.get("gateStatus") or "").strip()
+
+    @staticmethod
+    def _completion_review_advisor_says_incomplete(request: dict[str, Any]) -> bool:
+        evidence = request.get("completionEvidence") if isinstance(request.get("completionEvidence"), dict) else {}
+        advisor = evidence.get("completionAdvisor") if isinstance(evidence.get("completionAdvisor"), dict) else {}
+        payload = advisor.get("payload") if isinstance(advisor.get("payload"), dict) else {}
+        return advisor.get("accepted") is True and payload.get("is_complete") is False
+
+    def _completion_review_should_continue(self, *, request: dict[str, Any], conclusion: dict[str, Any]) -> bool:
+        gate_status = (
+            self._completion_review_gate_status(request)
+            or str(conclusion.get("gateStatus") or "").strip()
+        )
+        blocking_gate_statuses = {
+            "advisor_needs_review",
+            "advisor_evidence_requested",
+            "needs_workspace_evidence",
+            "waiting_runtime_work",
+        }
+        if gate_status in blocking_gate_statuses:
+            return True
+        return self._completion_review_advisor_says_incomplete(request)
+
+    def _continue_after_blocking_completion_review(
+        self,
+        *,
+        task: dict[str, Any],
+        request: dict[str, Any],
+        conclusion: dict[str, Any],
+        summary: str,
+    ) -> dict[str, Any]:
+        structured_result = self._completion_review_structured_result(
+            request=request,
+            conclusion=conclusion,
+            status="waiting_runtime_work",
+        )
+        gate_status = (
+            self._completion_review_gate_status(request)
+            or str(conclusion.get("gateStatus") or "").strip()
+            or "completion_review_requires_continuation"
+        )
+        if isinstance(structured_result, dict):
+            gate = structured_result.get("completionGate") if isinstance(structured_result.get("completionGate"), dict) else {}
+            evidence = (
+                structured_result.get("completionEvidence")
+                if isinstance(structured_result.get("completionEvidence"), dict)
+                else {}
+            )
+            structured_result = {
+                **structured_result,
+                "status": "waiting_runtime_work",
+                "completionReview": conclusion,
+                "completionGate": {
+                    **gate,
+                    "status": gate_status,
+                    "decision": "continue_after_review",
+                    "reason": (
+                        gate.get("reason")
+                        or request.get("reason")
+                        or "Completion review confirmed more runtime work is required."
+                    ),
+                    "reviewConclusion": conclusion,
+                },
+                "completionEvidence": {
+                    **evidence,
+                    "reviewConclusion": conclusion,
+                },
+            }
+        continued = self._store.update_task(
+            task_id=task["id"],
+            status="running",
+            plan=task.get("plan") or [],
+            summary=summary,
+            result_summary=summary,
+            structured_result=structured_result,
+        )
+        runtime_task = {
+            **continued,
+            "plan": task.get("plan") or [],
+            "resultSummary": summary,
+        }
+        self._publish(
+            session_id=runtime_task["sessionId"],
+            task=runtime_task,
+            event_type="agent.decision.completion",
+            payload={
+                "decision": "continue_after_review",
+                "completionReviewConclusion": conclusion,
+                "gateStatus": gate_status,
+                "reason": (
+                    request.get("reason")
+                    or "Completion review approved, but the completion gate still requires more work."
+                ),
+            },
+        )
+        self._publish(
+            session_id=runtime_task["sessionId"],
+            task=runtime_task,
+            event_type="task.runtime_work_waiting",
+            payload={
+                "status": "running",
+                "detail": "Completion review approved, continuing instead of finalizing because required evidence/work is still missing.",
+                "completionGate": (structured_result or {}).get("completionGate") if isinstance(structured_result, dict) else {
+                    "status": gate_status,
+                    "decision": "continue_after_review",
+                },
+            },
+        )
+        return runtime_task
 
     def _completion_review_conclusion_payload(
         self,

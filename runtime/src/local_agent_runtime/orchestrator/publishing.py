@@ -338,10 +338,14 @@ class PublishingMixin:
         event_type: str,
         payload: dict[str, Any],
         visibility: str = "chat",
+        persist_trace: bool = False,
     ) -> None:
         compat_payload = dict(payload)
         compat_payload["_chatCompat"] = True
-        compat_payload["_bridge"] = {"skipTraceMirror": True}
+        if persist_trace:
+            compat_payload["_bridge"] = {"persistTraceMirror": True}
+        else:
+            compat_payload["_bridge"] = {"skipTraceMirror": True}
         self._publish_event_raw(
             session_id=session_id,
             task=task,
@@ -605,6 +609,7 @@ class PublishingMixin:
                 "toolTotal",
                 "toolOperationId",
                 "toolOperationLabel",
+                "mode",
                 "isError",
             ):
                 if payload.get(key) is not None:
@@ -615,6 +620,7 @@ class PublishingMixin:
             event_type="assistant_progress",
             payload=progress_payload,
             visibility=visibility,
+            persist_trace=bool(payload.get("persistTrace")) if isinstance(payload, dict) else False,
         )
 
     @staticmethod
@@ -635,6 +641,15 @@ class PublishingMixin:
 
     def _tool_started_progress_text(self, payload: dict[str, Any]) -> str | None:
         tool_name = str(payload.get("toolName") or "").strip()
+        quiet_tools = {
+            "git_status",
+            "list_dir",
+            "list_directory",
+            "read_file",
+            "scratchpad.read",
+        }
+        if tool_name in quiet_tools:
+            return None
         labels = {
             "run_command": "准备运行命令",
             "apply_patch": "准备应用改动",

@@ -34,6 +34,43 @@ from ..store.sqlite_store import SQLiteStore
 class MessageExecutionMixin:
     """Mixin providing execution strategies and background worker management."""
 
+    def _publish_planning_thinking(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        text: str,
+        phase: str,
+        mode: str = "planning",
+        status: str = "running",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        event_payload: dict[str, Any] = {
+            "text": text,
+            "source": f"{mode}_{phase}",
+            "phase": phase,
+            "mode": mode,
+        }
+        if isinstance(payload, dict):
+            event_payload.update({key: value for key, value in payload.items() if value is not None})
+        event_payload["_bridge"] = {"persistTraceMirror": True}
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="thinking",
+            payload=event_payload,
+            visibility="chat",
+        )
+        self._publish_assistant_progress(
+            session_id=session_id,
+            task=task,
+            text=text,
+            phase=phase,
+            status=status,
+            payload={"mode": mode, "persistTrace": True, **(payload or {})},
+            visibility="chat",
+        )
+
     def _publish_root_subtask_progress(
         self,
         *,
@@ -517,6 +554,14 @@ class MessageExecutionMixin:
                 event_type="task.planning.started",
                 payload={"goal": goal},
             )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="正在拆分任务并确定执行顺序。",
+                phase="planning_started",
+                mode="planning",
+                payload={"strategy": "plan_execute"},
+            )
 
             # 1. Decompose
             plan_context = json.dumps(
@@ -551,6 +596,18 @@ class MessageExecutionMixin:
                     attributes={"subtask_count": len(plan.subtasks), "execution_order": plan.execution_order},
                 )
 
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text=f"已生成 {len(plan.subtasks)} 个子任务，正在准备执行。",
+                phase="planning_decomposed",
+                mode="planning",
+                payload={
+                    "subtaskCount": len(plan.subtasks),
+                    "executionOrder": plan.execution_order,
+                    "source": plan_source,
+                },
+            )
             self._publish(
                 session_id=session_id, task=task,
                 event_type="task.planning.decomposed",
@@ -582,6 +639,15 @@ class MessageExecutionMixin:
                         "executionOrder": plan.execution_order,
                         "planOnly": True,
                     },
+                )
+                self._publish_planning_thinking(
+                    session_id=session_id,
+                    task=task,
+                    text="已整理出计划，正在收尾输出。",
+                    phase="planning_completed",
+                    mode="planning",
+                    status="completed",
+                    payload={"planOnly": True, "subtaskCount": len(plan.subtasks)},
                 )
                 self._tracer.end_span(
                     plan_span.span_id, status="ok",
@@ -676,6 +742,14 @@ class MessageExecutionMixin:
                 )
 
             routing = context.get("routing", {})
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="正在派发子任务并收集执行结果。",
+                phase="subtasks_started",
+                mode="planning",
+                payload={"subtaskCount": len(plan.subtasks)},
+            )
             execution = self._dag_executor.execute(
                 plan,
                 session_id=session_id,
@@ -837,6 +911,18 @@ class MessageExecutionMixin:
                 )
 
             summary = execution["summary"]
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="子任务已返回，正在合并结果与检查完成条件。",
+                phase="synthesis_started",
+                mode="planning",
+                payload={
+                    "success": execution.get("success"),
+                    "completed": len(execution.get("completed") or []),
+                    "failed": len(execution.get("failed") or []),
+                },
+            )
 
             if execution["success"] is False:
                 completion_recovery: dict[str, Any] | None = None
@@ -993,6 +1079,15 @@ class MessageExecutionMixin:
                     "success": execution["success"],
                     "partialHandoffs": execution.get("partialHandoffs", []),
                 },
+            )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="规划执行已完成，正在生成最终答复。",
+                phase="planning_completed",
+                mode="planning",
+                status="completed",
+                payload={"coverage": coverage, "success": execution["success"]},
             )
 
             self._tracer.end_span(
@@ -1984,6 +2079,13 @@ class MessageExecutionMixin:
                 event_type="task.planning.started",
                 payload={"goal": goal, "mode": "supervisor"},
             )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="正在用 supervisor 模式拆分任务。",
+                phase="planning_started",
+                mode="supervisor",
+            )
 
             # Plan approval gate (strict mode)
             plan_context = json.dumps(
@@ -2014,6 +2116,14 @@ class MessageExecutionMixin:
                     "mode": "supervisor",
                 },
             )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text=f"已拆分 {len(plan.subtasks)} 个 supervisor 子任务，准备派发执行。",
+                phase="planning_decomposed",
+                mode="supervisor",
+                payload={"subtaskCount": len(plan.subtasks), "executionOrder": plan.execution_order},
+            )
             # --- Decision trace: decomposition (supervisor) ---
             self._publish(
                 session_id=session_id, task=task,
@@ -2032,11 +2142,27 @@ class MessageExecutionMixin:
             if approval_response is not None:
                 return approval_response
 
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="正在派发 supervisor 子任务并进行结果审查。",
+                phase="subtasks_started",
+                mode="supervisor",
+                payload={"subtaskCount": len(plan.subtasks)},
+            )
             result = self._supervisor.execute(
                 goal, {**context, "_provider_context": self._planning_provider_context(context)},
                 session_id=session_id, task=task,
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+            )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="子任务审查已返回，正在合并 supervisor 结果。",
+                phase="synthesis_started",
+                mode="supervisor",
+                payload={"reviews": result.review_count},
             )
 
             if result.paused:
@@ -2047,6 +2173,15 @@ class MessageExecutionMixin:
                 session_id=session_id, task=task,
                 event_type="task.planning.completed",
                 payload={"mode": "supervisor", "reviews": result.review_count},
+            )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="supervisor 执行已完成，正在生成最终答复。",
+                phase="planning_completed",
+                mode="supervisor",
+                status="completed",
+                payload={"reviews": result.review_count},
             )
 
             self._tracer.end_span(span.span_id, status="ok", attributes={"reviews": result.review_count})
@@ -2090,6 +2225,13 @@ class MessageExecutionMixin:
                 event_type="task.planning.started",
                 payload={"goal": goal, "mode": "swarm"},
             )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="正在用 swarm 模式拆分并安排多 agent 协作。",
+                phase="planning_started",
+                mode="swarm",
+            )
 
             # Plan approval gate (strict mode)
             plan_context = json.dumps(
@@ -2120,6 +2262,14 @@ class MessageExecutionMixin:
                     "mode": "swarm",
                 },
             )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text=f"已拆分 {len(plan.subtasks)} 个 swarm 子任务，准备派发 agent。",
+                phase="planning_decomposed",
+                mode="swarm",
+                payload={"subtaskCount": len(plan.subtasks), "executionOrder": plan.execution_order},
+            )
             # --- Decision trace: decomposition (swarm) ---
             self._publish(
                 session_id=session_id, task=task,
@@ -2138,11 +2288,27 @@ class MessageExecutionMixin:
             if approval_response is not None:
                 return approval_response
 
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="正在派发 swarm 子任务并跟踪 agent 交接。",
+                phase="subtasks_started",
+                mode="swarm",
+                payload={"subtaskCount": len(plan.subtasks)},
+            )
             result = self._swarm.execute(
                 goal, {**context, "_provider_context": self._planning_provider_context(context)},
                 session_id=session_id, task=task,
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+            )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="多 agent 执行结果已返回，正在汇总交接和最终结果。",
+                phase="synthesis_started",
+                mode="swarm",
+                payload={"handoffs": result.handoff_count},
             )
 
             if result.paused:
@@ -2153,6 +2319,15 @@ class MessageExecutionMixin:
                 session_id=session_id, task=task,
                 event_type="task.planning.completed",
                 payload={"mode": "swarm", "handoffs": result.handoff_count},
+            )
+            self._publish_planning_thinking(
+                session_id=session_id,
+                task=task,
+                text="swarm 执行已完成，正在生成最终答复。",
+                phase="planning_completed",
+                mode="swarm",
+                status="completed",
+                payload={"handoffs": result.handoff_count},
             )
 
             self._tracer.end_span(span.span_id, status="ok", attributes={"handoffs": result.handoff_count})

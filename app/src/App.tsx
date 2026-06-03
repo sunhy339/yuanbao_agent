@@ -35,14 +35,12 @@ import type { WorkbenchTab } from "./ui/workbench/types";
 import type { SessionWorkspaceMessage } from "./ui/workbench/workspaces/session/types";
 import { ToastContainer, createToast, type ToastEntry } from "./ui/workbench/Toast";
 import {
-  SESSION_TRACE_TASK_LIMIT,
   TRACE_AUTO_REFRESH_STATUSES,
   normalizeRuntimeConfig,
   buildProviderSettingsForm,
   buildCommandPolicyForm,
   serializePatternList,
   TRACE_CACHE_LIMIT,
-  TRACE_LIMIT,
   type ProviderSettingsForm,
   isTaskControllable,
 } from "./state/providerConfig";
@@ -71,6 +69,9 @@ import { useEventSubscription } from "./hooks/useEventSubscription";
 import { useDerivedViews } from "./hooks/useDerivedViews";
 
 const runtimeClient = new RuntimeClient();
+const SESSION_TRACE_EVENT_PAGE_LIMIT = 500;
+const SESSION_TRACE_EVENT_MAX_PAGES = 40;
+const SESSION_COMMAND_LOG_LIMIT = 1000;
 
 function mergeTraceEvents(
   current: TraceEventRecord[],
@@ -443,45 +444,92 @@ export function App() {
   }
 
   function refreshSessionTranscript(sessionId: string, messages: MessageRecord[], nextSession?: SessionRecord) {
-    setChatMessages((current) => replaceSessionMessages(current, sessionId, messages));
+    setChatMessages((current) =>
+      replaceSessionMessages(current, sessionId, messages, {
+        excludeTaskIds: Array.from(childTaskIdsRef.current),
+      }),
+    );
     if (nextSession) {
       setSessions((current) => sortByUpdatedAtDesc([nextSession, ...current.filter((item) => item.id !== nextSession.id)]));
       setSession((current) => (current?.id === nextSession.id ? nextSession : current));
     }
   }
 
-  async function loadRecentSessionTrace(
+  async function loadSessionTraceEvents(
+    sessionId: string,
+    isCancelled: () => boolean,
+  ): Promise<TraceEventRecord[]> {
+    const allEvents: TraceEventRecord[] = [];
+    let afterSeq = 0;
+
+    for (let page = 0; page < SESSION_TRACE_EVENT_MAX_PAGES; page += 1) {
+      const result = await runtimeClient.eventsAfter({
+        sessionId,
+        afterSeq,
+        limit: SESSION_TRACE_EVENT_PAGE_LIMIT,
+      });
+      if (isCancelled()) {
+        return allEvents;
+      }
+      const pageEvents = result.events ?? [];
+      if (!pageEvents.length) {
+        break;
+      }
+      allEvents.push(...pageEvents);
+      const nextAfterSeq = pageEvents.reduce(
+        (max, event) => Math.max(max, event.sequence ?? max),
+        afterSeq,
+      );
+      if (nextAfterSeq <= afterSeq) {
+        break;
+      }
+      afterSeq = nextAfterSeq;
+      if (!result.truncated) {
+        break;
+      }
+    }
+
+    return allEvents;
+  }
+
+  function rememberChildTaskIdsFromTrace(traceEvents: TraceEventRecord[]) {
+    const next = new Set(childTaskIdsRef.current);
+    for (const trace of traceEvents) {
+      if (trace.type !== "task.started") {
+        continue;
+      }
+      const payload = trace.payload as Record<string, unknown> | null | undefined;
+      if (payload?.childWorker === true) {
+        next.add(trace.taskId);
+      }
+    }
+    childTaskIdsRef.current = next;
+  }
+
+  async function loadSessionTraceRecovery(
     sessionId: string | null | undefined,
-    taskCandidates: TaskRecord[] = taskHistory,
+    _taskCandidates: TaskRecord[] = taskHistory,
     isCancelled: () => boolean = () => false,
   ) {
     if (!sessionId) return;
-    const sessionTasks = sortByUpdatedAtDesc(
-      taskCandidates.filter((item) => item.sessionId === sessionId),
-    ).slice(0, SESSION_TRACE_TASK_LIMIT);
-    if (!sessionTasks.length) return;
-
-    const results = await Promise.all(
-      sessionTasks.map((item) =>
-        Promise.all([
-          runtimeClient.listTrace({ taskId: item.id, limit: TRACE_LIMIT }),
-          runtimeClient.commandLogList({ taskId: item.id, limit: TRACE_LIMIT }).catch(() => ({ commandLogs: [] })),
-        ])
-          .then(([traceResult, commandResult]) => ({
-            traceEvents: traceResult.traceEvents,
-            commandLogs: commandResult.commandLogs,
-          }))
-          .catch(() => ({ traceEvents: [], commandLogs: [] })),
-      ),
-    );
+    const [loadedTraceEvents, commandResult] = await Promise.all([
+      loadSessionTraceEvents(sessionId, isCancelled).catch(() => [] as TraceEventRecord[]),
+      runtimeClient.commandLogList({
+        sessionId,
+        limit: SESSION_COMMAND_LOG_LIMIT,
+      }).catch(() => ({ commandLogs: [] })),
+    ]);
     if (isCancelled()) return;
-
-    const loadedTraceEvents = results.flatMap((result) => result.traceEvents);
-    const loadedCommandLogs = results.flatMap((result) => result.commandLogs);
+    rememberChildTaskIdsFromTrace(loadedTraceEvents);
     if (loadedTraceEvents.length) {
       setTraceEvents((current) => mergeTraceEvents(current, loadedTraceEvents));
-      setChatMessages((current) => replayTraceEventsToChatMessages(current, loadedTraceEvents));
+      setChatMessages((current) =>
+        replayTraceEventsToChatMessages(current, loadedTraceEvents, {
+          childTaskIds: childTaskIdsRef.current,
+        }),
+      );
     }
+    const loadedCommandLogs = commandResult.commandLogs;
     if (loadedCommandLogs.length) {
       setCommandLogCacheById((current) => ({
         ...current,
@@ -495,13 +543,19 @@ export function App() {
     const requestId = messageLoadRequestRef.current + 1;
     messageLoadRequestRef.current = requestId;
     try {
-      const result = await runtimeClient.listMessages({ sessionId, limit: 500 });
+      const [, result] = await Promise.all([
+        loadSessionTraceRecovery(
+          sessionId,
+          undefined,
+          () => messageLoadRequestRef.current !== requestId,
+        ),
+        runtimeClient.listMessages({ sessionId, limit: 500 }),
+      ]);
       if (messageLoadRequestRef.current !== requestId) return;
-      setChatMessages((current) => replaceSessionMessages(current, sessionId, result.messages));
-      void loadRecentSessionTrace(
-        sessionId,
-        undefined,
-        () => messageLoadRequestRef.current !== requestId,
+      setChatMessages((current) =>
+        replaceSessionMessages(current, sessionId, result.messages, {
+          excludeTaskIds: Array.from(childTaskIdsRef.current),
+        }),
       );
     } catch (reason) {
       if (messageLoadRequestRef.current === requestId) toastError(reason);
@@ -893,7 +947,6 @@ export function App() {
         setTask(initialTask);
         setActiveTaskForSession(initialTask?.id ?? null, initialSession?.id);
         void loadSessionMessages(initialSession?.id);
-        void loadRecentSessionTrace(initialSession?.id, nextTasks.tasks, () => disposed);
         setScheduledRecords(nextScheduledTasks.tasks);
         setSelectedScheduledTaskId(nextScheduledTasks.tasks[0]?.id ?? null);
         setSkills(nextSkills.skills);
@@ -943,7 +996,6 @@ export function App() {
 
   const sessionTraceTaskKey = session?.id
     ? sortByUpdatedAtDesc(taskHistory.filter((item) => item.sessionId === session.id))
-        .slice(0, SESSION_TRACE_TASK_LIMIT)
         .map((item) => `${item.id}:${item.updatedAt ?? 0}`)
         .join("|")
     : "";
@@ -953,7 +1005,7 @@ export function App() {
       return;
     }
     let cancelled = false;
-    void loadRecentSessionTrace(session.id, taskHistory, () => cancelled);
+    void loadSessionTraceRecovery(session.id, taskHistory, () => cancelled);
     return () => { cancelled = true; };
   }, [session?.id, sessionTraceTaskKey]);
 
@@ -984,6 +1036,8 @@ export function App() {
             replaceSessionMessages(current, sessionId, messageResult.messages, {
               taskIds: [taskId],
               includeUserMessages: true,
+              excludeTaskIds: Array.from(childTaskIdsRef.current),
+              preserveOtherTaskMessages: true,
             }),
           );
         }
@@ -1019,6 +1073,8 @@ export function App() {
             replaceSessionMessages(current, sessionId, result.messages, {
               taskIds: [task.id],
               includeUserMessages: true,
+              excludeTaskIds: Array.from(childTaskIdsRef.current),
+              preserveOtherTaskMessages: true,
             }),
           );
         }

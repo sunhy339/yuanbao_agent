@@ -47,6 +47,8 @@ import type {
   HookListResult,
   HookResult,
   HookUpdateParams,
+  EventsAfterParams,
+  EventsAfterResult,
   YuanbaoEventsAfterParams,
   YuanbaoEventsAfterResult,
   HahaCcEventsAfterParams,
@@ -708,6 +710,10 @@ export class RuntimeClient {
 
   async listTrace(payload: TraceListParams): Promise<TraceListResult> {
     return invokePayloadOrReject<TraceListResult>("trace_list", payload);
+  }
+
+  async eventsAfter(payload: EventsAfterParams): Promise<EventsAfterResult> {
+    return invokePayloadOrReject<EventsAfterResult>("events_after", payload);
   }
 
   async yuanbaoEventsAfter(payload: YuanbaoEventsAfterParams): Promise<YuanbaoEventsAfterResult> {

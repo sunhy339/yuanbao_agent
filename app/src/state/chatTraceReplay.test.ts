@@ -8,12 +8,13 @@ function trace(
   type: string,
   payload: unknown,
   sequence: number,
-  visibility: TraceEventRecord["visibility"] = "chat",
+  visibility: TraceEventRecord["visibility"] | undefined = undefined,
+  taskId = "task_1",
 ): TraceEventRecord {
   return {
     id,
     sessionId: "sess_1",
-    taskId: "task_1",
+    taskId,
     type,
     source: type.split(".")[0] || "runtime",
     payload,
@@ -158,5 +159,36 @@ describe("chat trace replay", () => {
     ]);
 
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
+  });
+
+  it("hides child-worker trace events on session recovery unless they are explicitly chat-visible", () => {
+    const replayed = replayTraceEventsToChatMessages(
+      [],
+      [
+        trace("evt_child_tool", "tool.started", {
+          toolCallId: "child_tool",
+          toolName: "read_file",
+          target: "child-notes.md",
+        }, 1, undefined, "task_child"),
+        trace("evt_root_tool", "tool.started", {
+          toolCallId: "root_tool",
+          toolName: "read_file",
+          target: "README.md",
+        }, 2, undefined, "task_root"),
+        trace("evt_child_progress", "assistant_progress", {
+          text: "Child status promoted to chat.",
+        }, 3, "chat", "task_child"),
+      ],
+      {
+        childTaskIds: new Set(["task_child"]),
+      },
+    );
+
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+
+    expect(visible.map((message) => message.id)).toEqual([
+      "tool_use:root_tool",
+      "assistant_progress:evt_child_progress",
+    ]);
   });
 });

@@ -46,6 +46,8 @@ const SPECIAL_EVENT_TYPES = new Set([
   "computer_use_permission",
 ]);
 
+const EMPTY_CHILD_TASK_IDS = new Set<string>();
+
 function envelopeFromTrace(trace: TraceEventRecord): AgentEventEnvelope {
   return {
     eventId: trace.id,
@@ -132,10 +134,13 @@ function isChatCompatPayload(payload: unknown): boolean {
   return Boolean(payload && typeof payload === "object" && (payload as { _chatCompat?: unknown })._chatCompat === true);
 }
 
-function isReplayChatVisibleEvent(event: AgentEventEnvelope): boolean {
+function isReplayChatVisibleEvent(
+  event: AgentEventEnvelope,
+  childTaskIds: ReadonlySet<string> = EMPTY_CHILD_TASK_IDS,
+): boolean {
   if (event.visibility === "chat") return true;
   if (event.visibility === "panel" || event.visibility === "trace") return false;
-  return true;
+  return !childTaskIds.has(event.taskId);
 }
 
 function replayMarker(event: AgentEventEnvelope, part: string): string {
@@ -204,8 +209,12 @@ function replaySpecialEvent(current: ChatMessageView[], event: AgentEventEnvelop
   });
 }
 
-function replayTraceEvent(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
-  if (!isReplayChatVisibleEvent(event)) {
+function replayTraceEvent(
+  current: ChatMessageView[],
+  event: AgentEventEnvelope,
+  childTaskIds: ReadonlySet<string>,
+): ChatMessageView[] {
+  if (!isReplayChatVisibleEvent(event, childTaskIds)) {
     return current;
   }
 
@@ -762,8 +771,12 @@ function replayTraceEvent(current: ChatMessageView[], event: AgentEventEnvelope)
 export function replayTraceEventsToChatMessages(
   current: ChatMessageView[],
   traces: TraceEventRecord[],
+  options: {
+    childTaskIds?: ReadonlySet<string>;
+  } = {},
 ): ChatMessageView[] {
   if (!traces.length) return current;
+  const childTaskIds = options.childTaskIds ?? EMPTY_CHILD_TASK_IDS;
   return traces
     .slice()
     .sort((left, right) => {
@@ -773,5 +786,5 @@ export function replayTraceEventsToChatMessages(
       if (timeDiff !== 0) return timeDiff;
       return String(left.id).localeCompare(String(right.id));
     })
-    .reduce((messages, trace) => replayTraceEvent(messages, envelopeFromTrace(trace)), current);
+    .reduce((messages, trace) => replayTraceEvent(messages, envelopeFromTrace(trace), childTaskIds), current);
 }

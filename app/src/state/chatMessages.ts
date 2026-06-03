@@ -21,6 +21,8 @@ export interface ChatMessageView {
 interface ReplaceSessionMessagesOptions {
   taskIds?: string[];
   includeUserMessages?: boolean;
+  excludeTaskIds?: string[];
+  preserveOtherTaskMessages?: boolean;
 }
 
 export function messageRecordToChatMessage(record: MessageRecord): ChatMessageView | null {
@@ -51,11 +53,16 @@ export function replaceSessionMessages(
   options: ReplaceSessionMessagesOptions = {},
 ): ChatMessageView[] {
   const allowedTaskIds = options.taskIds?.length ? new Set(options.taskIds.filter(Boolean)) : null;
+  const excludedTaskIds = options.excludeTaskIds?.length ? new Set(options.excludeTaskIds.filter(Boolean)) : null;
   const includeUserMessages = options.includeUserMessages !== false;
+  const preserveOtherTaskMessages = Boolean(allowedTaskIds && options.preserveOtherTaskMessages);
   const persistedMessages = records
     .map(messageRecordToChatMessage)
     .filter((message): message is ChatMessageView => message !== null)
     .filter((message) => {
+      if (excludedTaskIds?.has(message.taskId)) {
+        return false;
+      }
       if (!allowedTaskIds) {
         return true;
       }
@@ -70,15 +77,25 @@ export function replaceSessionMessages(
   const liveStreamingMessages: ChatMessageView[] = [];
   const pendingLocalMessages: ChatMessageView[] = [];
   const ephemeralBlockMessages: ChatMessageView[] = [];
+  const preservedOtherTaskMessages: ChatMessageView[] = [];
   for (const message of current) {
-    if (message.sessionId === sessionId && message.streaming) {
-      liveStreamingMessages.push(message);
-    } else if (message.sessionId === sessionId && isLocalPendingMessage(message)) {
-      pendingLocalMessages.push(message);
-    } else if (message.sessionId === sessionId && isEphemeralChatBlockMessage(message)) {
-      ephemeralBlockMessages.push(message);
-    } else if (message.sessionId !== sessionId) {
+    if (message.sessionId !== sessionId) {
       otherSessionMessages.push(message);
+    } else if (excludedTaskIds?.has(message.taskId)) {
+      continue;
+    } else if (message.streaming) {
+      liveStreamingMessages.push(message);
+    } else if (isLocalPendingMessage(message)) {
+      pendingLocalMessages.push(message);
+    } else if (isEphemeralChatBlockMessage(message)) {
+      ephemeralBlockMessages.push(message);
+    } else if (
+      preserveOtherTaskMessages &&
+      allowedTaskIds &&
+      !allowedTaskIds.has(message.taskId) &&
+      !(excludedTaskIds?.has(message.taskId))
+    ) {
+      preservedOtherTaskMessages.push(message);
     }
   }
 
@@ -86,6 +103,12 @@ export function replaceSessionMessages(
   const persistedClientMessageIds = new Set(
     persistedMessages.map((message) => message.clientMessageId).filter((id): id is string => Boolean(id)),
   );
+  const dedupedPreservedOtherTaskMessages = preservedOtherTaskMessages.filter((message) => {
+    if (persistedIds.has(message.id)) {
+      return false;
+    }
+    return !(message.clientMessageId && persistedClientMessageIds.has(message.clientMessageId));
+  });
   const unmatchedLiveStreamingMessages = liveStreamingMessages.filter((message) => {
     if (persistedIds.has(message.id)) {
       return false;
@@ -116,9 +139,14 @@ export function replaceSessionMessages(
     }
   }
 
-  return [...otherSessionMessages, ...persistedMessages, ...ephemeralBlockMessages, ...unmatchedPendingLocalMessages, ...updatedLiveStreamingMessages].sort(
-    (left, right) => sortBySeqAndTime(left, right),
-  );
+  return [
+    ...otherSessionMessages,
+    ...dedupedPreservedOtherTaskMessages,
+    ...persistedMessages,
+    ...ephemeralBlockMessages,
+    ...unmatchedPendingLocalMessages,
+    ...updatedLiveStreamingMessages,
+  ].sort((left, right) => sortBySeqAndTime(left, right));
 }
 
 function findPersistedMatch(

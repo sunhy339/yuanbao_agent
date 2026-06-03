@@ -419,6 +419,8 @@ struct HahaCcEventsAfterPayload {
     limit: Option<u64>,
 }
 
+type EventsAfterPayload = HahaCcEventsAfterPayload;
+
 type YuanbaoEventsAfterPayload = HahaCcEventsAfterPayload;
 
 #[derive(Debug, Deserialize)]
@@ -2925,6 +2927,25 @@ async fn trace_list(
 }
 
 #[tauri::command]
+async fn events_after(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: EventsAfterPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "events.after".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "afterSeq": payload.after_seq.unwrap_or(0),
+                "limit": payload.limit,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
 async fn yuanbao_events_after(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -3518,6 +3539,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             command_cancel,
             diff_get,
             trace_list,
+            events_after,
             yuanbao_events_after,
             haha_cc_events_after,
             yuanbao_team_snapshot,

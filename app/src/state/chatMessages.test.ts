@@ -985,9 +985,94 @@ describe("chatMessages", () => {
     const next = replaceSessionMessages([], "sess_1", persisted, {
       taskIds: ["task_root"],
       includeUserMessages: true,
+      excludeTaskIds: ["task_child"],
     });
 
     expect(next.map((message) => message.id)).toEqual(["user_root", "assistant_root"]);
+  });
+
+  it("preserves other session-task history during active-task terminal refreshes", () => {
+    const localMessages: ChatMessageView[] = [
+      {
+        id: "old_user",
+        sessionId: "sess_1",
+        taskId: "task_old",
+        role: "user",
+        content: "previous request",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "old_assistant",
+        sessionId: "sess_1",
+        taskId: "task_old",
+        role: "assistant",
+        content: "previous answer",
+        createdAt: 2,
+        updatedAt: 2,
+      },
+      {
+        id: "stale_root",
+        sessionId: "sess_1",
+        taskId: "task_root",
+        role: "assistant",
+        content: "stale root answer",
+        createdAt: 3,
+        updatedAt: 3,
+      },
+      {
+        id: "child_tool",
+        sessionId: "sess_1",
+        taskId: "task_child",
+        role: "assistant",
+        content: "child worker tool output",
+        createdAt: 4,
+        updatedAt: 4,
+        metadata: {
+          kind: "tool_activity",
+        },
+      },
+    ];
+    const persisted: MessageRecord[] = [
+      {
+        id: "user_root",
+        sessionId: "sess_1",
+        taskId: "task_root",
+        role: "user",
+        content: "start root task",
+        createdAt: 10,
+      },
+      {
+        id: "assistant_root",
+        sessionId: "sess_1",
+        taskId: "task_root",
+        role: "assistant",
+        content: "fresh root answer",
+        createdAt: 11,
+      },
+      {
+        id: "assistant_child",
+        sessionId: "sess_1",
+        taskId: "task_child",
+        role: "assistant",
+        content: "child worker answer",
+        createdAt: 12,
+      },
+    ];
+
+    const next = replaceSessionMessages(localMessages, "sess_1", persisted, {
+      taskIds: ["task_root"],
+      includeUserMessages: true,
+      excludeTaskIds: ["task_child"],
+      preserveOtherTaskMessages: true,
+    });
+
+    expect(next.map((message) => message.id)).toEqual([
+      "old_user",
+      "old_assistant",
+      "user_root",
+      "assistant_root",
+    ]);
   });
 
   it("keeps local pending messages during a persisted-message refresh race", () => {

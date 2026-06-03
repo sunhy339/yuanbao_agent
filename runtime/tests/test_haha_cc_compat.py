@@ -69,6 +69,7 @@ def test_haha_cc_message_rejects_incomplete_server_messages() -> None:
         )
         is None
     )
+    assert to_haha_cc_server_message(_event("status", {"state": "retrying_provider"})) is None
     assert (
         to_haha_cc_server_message(
             _event("computer_use_permission_request", {"request": {"action": "click"}})
@@ -374,6 +375,12 @@ def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
 
 
 def test_special_chat_events_map_to_haha_cc_system_notifications() -> None:
+    assert to_haha_cc_server_message(_event("init", {"message": "Session ready"})) == {
+        "type": "system_notification",
+        "subtype": "init",
+        "message": "Session ready",
+        "data": {"message": "Session ready"},
+    }
     assert to_haha_cc_server_message(_event("compact_summary", {"summary": "Context compacted"})) == {
         "type": "system_notification",
         "subtype": "compact_summary",
@@ -391,6 +398,18 @@ def test_special_chat_events_map_to_haha_cc_system_notifications() -> None:
         "subtype": "memory_saved",
         "message": "Saved memory",
         "data": {"message": "Saved memory"},
+    }
+    assert to_haha_cc_server_message(_event("compact_boundary", {"message": "Boundary reached"})) == {
+        "type": "system_notification",
+        "subtype": "compact_boundary",
+        "message": "Boundary reached",
+        "data": {"message": "Boundary reached"},
+    }
+    assert to_haha_cc_server_message(_event("session_state_changed", {"state": "ready"})) == {
+        "type": "system_notification",
+        "subtype": "session_state_changed",
+        "message": "ready",
+        "data": {"state": "ready"},
     }
 
 

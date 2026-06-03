@@ -51,10 +51,14 @@ export type AgentEventType =
   | "status"
   | "api_retry"
   | "system_notification"
+  | "init"
+  | "compact_boundary"
   | "compact_summary"
   | "goal_event"
   | "memory_event"
   | "background_task"
+  | "session_state_changed"
+  | "task_started"
   | "task_summary"
   | "plan_update"
   | "ask_user_question"
@@ -147,6 +151,16 @@ export interface YuanbaoTokenUsage {
 
 export type HahaCcTokenUsage = YuanbaoTokenUsage;
 
+export type YuanbaoChatState =
+  | "idle"
+  | "thinking"
+  | "compacting"
+  | "tool_executing"
+  | "streaming"
+  | "permission_pending";
+
+export type HahaCcChatState = YuanbaoChatState;
+
 export interface YuanbaoTeamMemberStatus {
   agentId: string;
   role: string;
@@ -166,7 +180,7 @@ export type YuanbaoServerMessage =
   | { type: "computer_use_permission_request"; requestId: string; request: Record<string, unknown> }
   | { type: "message_complete"; usage: YuanbaoTokenUsage }
   | { type: "thinking"; text: string }
-  | { type: "status"; state: string; verb?: string; elapsed?: number; tokens?: number }
+  | { type: "status"; state: YuanbaoChatState; verb?: string; elapsed?: number; tokens?: number }
   | { type: "api_retry"; attempt: number; maxRetries: number; retryDelayMs: number; errorStatus: number | null; errorType?: string; errorMessage?: string }
   | { type: "error"; message: string; code: string; retryable?: boolean; businessErrorCode?: string }
   | { type: "system_notification"; subtype: string; message?: string; data?: unknown }
@@ -355,7 +369,7 @@ export interface ChatMessageCompletePayload {
 }
 
 export interface ChatStatusPayload {
-  state: "thinking" | "tool_executing" | "permission_pending" | "idle" | "streaming" | string;
+  state: YuanbaoChatState | string;
   verb?: string;
   elapsed?: number;
   tokens?: number;

@@ -20,10 +20,14 @@ _DIRECT_EVENT_TYPES = {
 }
 
 _SYSTEM_NOTIFICATION_EVENT_TYPES = {
+    "init",
+    "compact_boundary",
     "compact_summary",
     "goal_event",
     "memory_event",
     "background_task",
+    "session_state_changed",
+    "task_started",
     "task_summary",
     "plan_update",
 }
@@ -45,6 +49,14 @@ _TASK_PROGRESS_EVENT_TYPES = {
 }
 
 _TASK_STARTED_STATUSES = {"queued", "starting", "started", "running", "active", "in_progress"}
+_CHAT_STATUS_STATES = {
+    "idle",
+    "thinking",
+    "compacting",
+    "tool_executing",
+    "streaming",
+    "permission_pending",
+}
 
 _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
     "content_start": {"type", "blockType", "toolName", "toolUseId", "parentToolUseId"},
@@ -293,6 +305,8 @@ def _server_message_shape(message: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(shaped[key], str) and not shaped[key]:
             return None
     if event_type == "content_delta" and "text" not in shaped and "toolInput" not in shaped:
+        return None
+    if event_type == "status" and shaped.get("state") not in _CHAT_STATUS_STATES:
         return None
     return shaped
 
@@ -658,6 +672,8 @@ def _progress_notification_message(event_type: str, payload: dict[str, Any]) -> 
 
 
 def _system_notification_subtype(event_type: str, payload: dict[str, Any]) -> str | None:
+    if event_type in {"init", "compact_boundary", "session_state_changed", "task_started"}:
+        return event_type
     if event_type == "compact_summary":
         return "compact_summary"
     if event_type == "goal_event":
@@ -680,6 +696,9 @@ def _notification_text(payload: dict[str, Any]) -> str:
         payload.get("detail"),
         payload.get("reason"),
         payload.get("title"),
+        payload.get("state"),
+        payload.get("status"),
+        payload.get("phase"),
         payload.get("content"),
         payload.get("text"),
         payload.get("body"),

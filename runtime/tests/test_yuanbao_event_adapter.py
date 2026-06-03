@@ -55,6 +55,14 @@ def test_yuanbao_adapter_rejects_missing_required_fields() -> None:
     )
 
 
+def test_yuanbao_adapter_rejects_unknown_status_states() -> None:
+    assert to_yuanbao_server_message(_event("status", {"state": "thinking", "phase": "private"})) == {
+        "type": "status",
+        "state": "thinking",
+    }
+    assert to_yuanbao_server_message(_event("status", {"state": "retrying_provider"})) is None
+
+
 def test_yuanbao_adapter_normalizes_usage() -> None:
     assert normalize_yuanbao_usage(
         {
@@ -134,6 +142,12 @@ def test_collect_yuanbao_server_messages_uses_same_flat_extraction_rules() -> No
 
 
 def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> None:
+    assert to_yuanbao_server_message(_event("init", {"message": "Session ready"})) == {
+        "type": "system_notification",
+        "subtype": "init",
+        "message": "Session ready",
+        "data": {"message": "Session ready"},
+    }
     assert to_yuanbao_server_message(
         _event("compact_summary", {"summary": "Context compacted", "phase": "completed"})
     ) == {
@@ -153,6 +167,24 @@ def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> N
         "subtype": "memory_saved",
         "message": "Saved MEMORY.md",
         "data": {"message": "Saved MEMORY.md"},
+    }
+    assert to_yuanbao_server_message(_event("compact_boundary", {"summary": "Compaction boundary"})) == {
+        "type": "system_notification",
+        "subtype": "compact_boundary",
+        "message": "Compaction boundary",
+        "data": {"summary": "Compaction boundary"},
+    }
+    assert to_yuanbao_server_message(_event("session_state_changed", {"state": "ready"})) == {
+        "type": "system_notification",
+        "subtype": "session_state_changed",
+        "message": "ready",
+        "data": {"state": "ready"},
+    }
+    assert to_yuanbao_server_message(_event("task_started", {"summary": "Task started"})) == {
+        "type": "system_notification",
+        "subtype": "task_started",
+        "message": "Task started",
+        "data": {"summary": "Task started"},
     }
 
 
@@ -192,6 +224,75 @@ def test_yuanbao_adapter_truncates_large_progress_data_only_on_flat_message() ->
     assert message["subtype"] == "task_progress"
     assert len(message["data"]["chunk"]) < len(chunk)
     assert message["data"]["chunkTruncated"] is True
+
+
+def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
+    events = [
+        _event("connected", {"sessionId": "sess_1"}),
+        _event("status", {"state": "thinking", "verb": "plan", "phase": "local-only"}),
+        _event("content_start", {"blockType": "text", "messageId": "msg_1"}),
+        _event("content_delta", {"text": "Hi", "messageId": "msg_1"}),
+        _event(
+            "message_complete",
+            {
+                "usage": {
+                    "inputTokens": 10,
+                    "outputTokens": 2,
+                    "cacheReadTokens": 4,
+                    "cacheCreationTokens": 1,
+                }
+            },
+        ),
+    ]
+    payloads = [
+        {
+            "eventId": event.event_id,
+            "sessionId": event.session_id,
+            "taskId": event.task_id,
+            "type": event.type,
+            "ts": event.ts,
+            "payload": event.payload,
+            "visibility": event.visibility,
+            "yuanbao": to_yuanbao_server_message(event),
+            "hahaCc": to_yuanbao_server_message(event),
+        }
+        for event in events
+    ]
+
+    flat_messages = [
+        frame["payload"]
+        for payload in payloads
+        for frame in to_yuanbao_output_frames(payload)
+        if frame["kind"] == "yuanbao_message"
+    ]
+
+    assert flat_messages == [
+        {"type": "connected", "sessionId": "sess_1"},
+        {"type": "status", "state": "thinking", "verb": "plan"},
+        {"type": "content_start", "blockType": "text"},
+        {"type": "content_delta", "text": "Hi"},
+        {
+            "type": "message_complete",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_tokens": 4,
+                "cache_creation_tokens": 1,
+            },
+        },
+    ]
+    assert collect_yuanbao_server_messages(
+        [
+            {**payload, "sequence": index + 1}
+            for index, payload in enumerate(payloads)
+        ],
+        after_seq=0,
+    ) == {
+        "messages": flat_messages,
+        "lastSeq": 5,
+    }
+    assert all("eventId" not in message for message in flat_messages)
+    assert all("messageId" not in message for message in flat_messages)
 
 
 def test_yuanbao_adapter_maps_collaboration_snapshot_to_stable_team_update() -> None:

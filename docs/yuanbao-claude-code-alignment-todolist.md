@@ -511,3 +511,35 @@
 - 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_agent_role_and_visibility.py -q -k "yuanbao or haha_cc or rpc_writer or events_after"` 通过，34 passed，32 deselected。
 - 2026-06-03：`python -m compileall -q runtime/src/local_agent_runtime` 通过。
 - 说明：本批次只收口 flat message 输出帧和补拉契约；Computer Use、完整桌面/IM adapter 生态仍按后续单独 track 推进。
+
+## Batch 15：flat 输出能力硬化
+
+目标：继续提升 Yuanbao/haha-cc flat ServerMessage 的稳定性，让外部 adapter 更容易按固定协议消费。
+
+- [x] 收紧 `status.state` flat 输出，只允许 `idle/thinking/compacting/tool_executing/streaming/permission_pending`。
+- [x] shared 类型新增 `YuanbaoChatState` / `HahaCcChatState`，并让 `YuanbaoServerMessage` 的 `status.state` 使用该枚举。
+- [x] 补齐 `system_notification` 子类型映射：`init`、`compact_boundary`、`session_state_changed`、`task_started`。
+- [x] `system_notification.message` 兜底读取 `state/status/phase`，避免外部 adapter 收到只有 subtype、没有可读文本的状态类通知。
+- [x] 增加典型聊天回合 golden sequence：验证 stdout `yuanbao_message` 与 `collect_yuanbao_server_messages` 补拉结果同形同序。
+- [x] 增加非法状态过滤测试，避免本地 runtime 临时状态泄漏进 flat ServerMessage。
+
+建议文件：
+
+- `runtime/src/local_agent_runtime/yuanbao_event_adapter.py`
+- `shared/src/events.ts`
+- `runtime/tests/test_yuanbao_event_adapter.py`
+- `runtime/tests/test_haha_cc_compat.py`
+
+验收：
+
+- flat status 只输出 haha-cc ChatState 集合。
+- notification 子类型覆盖方案中列出的基础系统通知。
+- 典型聊天回合的实时 frame 与历史补拉结果一致。
+
+进展：
+
+- 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_agent_role_and_visibility.py runtime/tests/test_provider_turns.py -q -k "yuanbao or haha or status or system_notification or events_after or runtime_ping"` 通过，42 passed，84 deselected。
+- 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_collaboration_events.py runtime/tests/test_replay.py runtime/tests/test_p9_release_checks.py runtime/tests/test_provider_turns.py -q -k "yuanbao or haha or team or collab or status or thinking or permission_pending or compacting or replay or runtime_ping or events_after"` 通过，64 passed，74 deselected。
+- 2026-06-03：`python -m compileall -q runtime/src/local_agent_runtime` 通过。
+- 2026-06-03：`npm --prefix app run typecheck` 通过。
+- 2026-06-03：`npm --prefix app test -- src/lib/runtimeClient.test.ts src/hooks/useEventSubscription.test.tsx src/state/chatMessages.test.ts` 通过，98 passed。

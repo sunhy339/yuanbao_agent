@@ -392,16 +392,16 @@
 
 目标：把后端 collaboration 能力转成稳定前端展示。
 
-- [ ] 聚合 `collab.task.created`。
-- [ ] 聚合 `collab.task.claimed`。
-- [ ] 聚合 `collab.task.completed`。
-- [ ] 聚合 `collab.task.failed`。
-- [ ] 聚合 `collab.worker.upserted`。
-- [ ] 聚合 `collab.worker.heartbeat`。
-- [ ] 聚合 `collab.message.sent`。
-- [ ] 输出稳定 `team_update`。
-- [ ] 成员字段固定 `agentId/role/status/currentTask`。
-- [ ] 增加 team timeline 测试。
+- [x] 聚合 `collab.task.created`。
+- [x] 聚合 `collab.task.claimed`。
+- [x] 聚合 `collab.task.completed`。
+- [x] 聚合 `collab.task.failed`。
+- [x] 聚合 `collab.worker.upserted`。
+- [x] 聚合 `collab.worker.heartbeat`。
+- [x] 聚合 `collab.message.sent`。
+- [x] 输出稳定 `team_update`。
+- [x] 成员字段固定 `agentId/role/status/currentTask`。
+- [x] 增加 team timeline 测试。
 
 建议文件：
 
@@ -412,6 +412,13 @@
 验收：
 
 - 前端可以不读原始 collab 事件也能展示 agent team 状态。
+
+进展：
+
+- 2026-06-03：`CollaborationService` 发布 `collab.task.*` / `collab.worker.*` / `collab.message.sent` 时附带 session 级 `team` snapshot，`events.after` 可恢复 session-scope worker team events。
+- 2026-06-03：`yuanbao_event_adapter` 将 task/worker/message/budget collaboration timeline 收敛为稳定 `team_update`，仅保留 haha-cc 同形 `agentId/role/status/currentTask` 成员字段；`collab.team.created/deleted` 继续保留团队生命周期事件。
+- 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_collaboration_events.py -q` 通过，31 passed。
+- 2026-06-03：`python -m pytest runtime/tests/test_collaboration_runtime.py runtime/tests/test_worker_runner.py runtime/tests/test_worker_process_transport.py runtime/tests/test_process_worker_e2e.py runtime/tests/test_multi_subagent_regression.py -q -k "collab or worker or team or task"` 通过，34 passed，7 skipped，3 deselected。
 
 ## Batch 12：前端切换到 Yuanbao 命名
 

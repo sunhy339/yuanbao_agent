@@ -132,3 +132,93 @@ def test_yuanbao_adapter_truncates_large_progress_data_only_on_flat_message() ->
     assert message["subtype"] == "task_progress"
     assert len(message["data"]["chunk"]) < len(chunk)
     assert message["data"]["chunkTruncated"] is True
+
+
+def test_yuanbao_adapter_maps_collaboration_snapshot_to_stable_team_update() -> None:
+    message = to_yuanbao_server_message(
+        _event(
+            "collab.task.completed",
+            {
+                "team": {
+                    "teamName": "sess_1",
+                    "tasks": [
+                        {
+                            "id": "child_1",
+                            "title": "Write docs",
+                            "status": "completed",
+                            "assignedWorkerId": "worker_1",
+                            "result": {"summary": "Docs finished."},
+                            "metadata": {"agentType": "writer"},
+                        },
+                        {
+                            "id": "child_2",
+                            "title": "Review docs",
+                            "status": "running",
+                            "assignedWorkerId": "worker_2",
+                            "metadata": {"agentType": "reviewer"},
+                        },
+                    ],
+                    "workers": [
+                        {"id": "worker_1", "role": "writer", "status": "idle"},
+                        {"id": "worker_2", "role": "reviewer", "status": "busy", "currentTaskId": "child_2"},
+                    ],
+                },
+                "task": {"id": "child_1", "sessionId": "sess_1"},
+            },
+        )
+    )
+
+    assert message == {
+        "type": "team_update",
+        "teamName": "sess_1",
+        "members": [
+            {
+                "agentId": "worker_1",
+                "role": "writer",
+                "status": "completed",
+                "currentTask": "Docs finished.",
+            },
+            {
+                "agentId": "worker_2",
+                "role": "reviewer",
+                "status": "running",
+                "currentTask": "Review docs",
+            },
+        ],
+    }
+
+
+def test_yuanbao_adapter_keeps_team_lifecycle_distinct_from_task_timeline() -> None:
+    assert to_yuanbao_server_message(_event("collab.team.created", {"teamName": "docs"})) == {
+        "type": "team_created",
+        "teamName": "docs",
+    }
+    assert to_yuanbao_server_message(_event("collab.team.deleted", {"teamName": "docs"})) == {
+        "type": "team_deleted",
+        "teamName": "docs",
+    }
+    assert to_yuanbao_server_message(
+        _event(
+            "collab.task.created",
+            {
+                "task": {
+                    "id": "child_1",
+                    "sessionId": "sess_1",
+                    "title": "Inspect repo",
+                    "status": "queued",
+                    "metadata": {"agentType": "explorer"},
+                }
+            },
+        )
+    ) == {
+        "type": "team_update",
+        "teamName": "sess_1",
+        "members": [
+            {
+                "agentId": "child_1",
+                "role": "explorer",
+                "status": "running",
+                "currentTask": "Inspect repo",
+            }
+        ],
+    }

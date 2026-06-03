@@ -20,6 +20,10 @@ class AgentStoreMixin:
         current_task_id = self._optional_string(params, "currentTaskId")
         capabilities = self._string_list(params.get("capabilities", []), "capabilities")
         metadata = self._dict_value(params.get("metadata", {}), "metadata")
+        for key in ("sessionId", "session_id", "teamName", "team"):
+            value = self._optional_string(params, key)
+            if value is not None and key not in metadata:
+                metadata[key] = value
         now = self.now()
         self._conn.execute(
             """

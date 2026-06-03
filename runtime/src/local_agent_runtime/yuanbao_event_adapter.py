@@ -302,23 +302,21 @@ def _task_update_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[s
 
 def _team_message(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     team_name = _team_name(payload)
-    if event_type in {"collab.team.created", "collab.task.created", "collab.worker.upserted"}:
+    if event_type == "collab.team.created":
         return {
             "type": "team_created",
             "teamName": team_name,
         }
-    if event_type in {"collab.team.deleted", "collab.worker.deleted"}:
+    if event_type == "collab.team.deleted":
         return {
             "type": "team_deleted",
             "teamName": team_name,
         }
-    if event_type == "collab.message.sent":
-        return {
-            "type": "team_update",
-            "teamName": team_name,
-            "members": _team_members(payload),
-        }
-    if event_type.startswith("collab.task.") or event_type.startswith("collab.worker."):
+    if (
+        event_type == "collab.message.sent"
+        or event_type.startswith("collab.task.")
+        or event_type.startswith("collab.worker.")
+    ):
         return {
             "type": "team_update",
             "teamName": team_name,
@@ -330,6 +328,11 @@ def _team_message(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | 
 def _team_name(payload: dict[str, Any]) -> str:
     for key in ("teamName", "team_name", "name"):
         value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    team = payload.get("team")
+    if isinstance(team, dict):
+        value = team.get("teamName") or team.get("team_name") or team.get("name") or team.get("sessionId")
         if isinstance(value, str) and value.strip():
             return value.strip()
     task = payload.get("task")
@@ -351,32 +354,117 @@ def _team_name(payload: dict[str, Any]) -> str:
 
 
 def _team_members(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    team = payload.get("team")
+    if isinstance(team, dict):
+        members = _team_members_from_snapshot(team, payload)
+        if members:
+            return members
     workers = payload.get("workers")
     if isinstance(workers, list):
-        return [_team_member_from_worker(worker) for worker in workers if isinstance(worker, dict)]
+        return [
+            member
+            for worker in workers
+            if isinstance(worker, dict)
+            for member in (_team_member_from_worker(worker),)
+            if member
+        ]
     worker = payload.get("worker")
     if isinstance(worker, dict):
-        return [_team_member_from_worker(worker)]
+        member = _team_member_from_worker(worker)
+        return [member] if member else []
     message = payload.get("message")
     if isinstance(message, dict):
-        return [_team_member_from_message(message)]
+        member = _team_member_from_message(message)
+        return [member] if member else []
     budget = payload.get("budget")
     if isinstance(budget, dict):
-        return [_team_member_from_budget(payload, budget)]
+        member = _team_member_from_budget(payload, budget)
+        return [member] if member else []
     task = payload.get("task")
     if isinstance(task, dict):
-        return [
-            {
-                "agentId": str(task.get("workerId") or task.get("id") or "task"),
-                "role": str(task.get("agentType") or task.get("role") or "worker"),
-                "status": _team_status(task.get("status")),
-                "currentTask": task.get("title") or task.get("description") or task.get("id"),
-            }
-        ]
+        member = _team_member_from_task(task)
+        return [member] if member else []
     return []
 
 
-def _team_member_from_worker(worker: dict[str, Any]) -> dict[str, Any]:
+def _team_members_from_snapshot(team: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_members = team.get("members")
+    if isinstance(raw_members, list) and raw_members:
+        return [
+            member
+            for raw_member in raw_members
+            if isinstance(raw_member, dict)
+            for member in (_team_member_shape(raw_member),)
+            if member
+        ]
+
+    workers = [worker for worker in team.get("workers", []) if isinstance(worker, dict)] if isinstance(team.get("workers"), list) else []
+    tasks = [task for task in team.get("tasks", []) if isinstance(task, dict)] if isinstance(team.get("tasks"), list) else []
+    worker_by_id = {
+        str(worker.get("id") or worker.get("workerId")): worker
+        for worker in workers
+        if worker.get("id") or worker.get("workerId")
+    }
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else None
+
+    members: list[dict[str, Any]] = []
+    assigned_worker_ids: set[str] = set()
+    for task in tasks:
+        worker_id = _string_value(task.get("assignedWorkerId"), task.get("workerId"))
+        worker = worker_by_id.get(worker_id or "")
+        member = _team_member_from_task(task, worker=worker, message=message)
+        if member:
+            members.append(member)
+        if worker_id:
+            assigned_worker_ids.add(worker_id)
+
+    for worker in workers:
+        worker_id = _string_value(worker.get("id"), worker.get("workerId"))
+        if worker_id and worker_id in assigned_worker_ids:
+            continue
+        member = _team_member_from_worker(worker)
+        if member:
+            members.append(member)
+
+    return _dedupe_team_members(members)
+
+
+def _team_member_from_task(
+    task: dict[str, Any],
+    *,
+    worker: dict[str, Any] | None = None,
+    message: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    worker_id = _string_value(
+        task.get("assignedWorkerId"),
+        task.get("workerId"),
+        worker.get("id") if isinstance(worker, dict) else None,
+        worker.get("workerId") if isinstance(worker, dict) else None,
+        task.get("id"),
+    )
+    role = _string_value(
+        worker.get("role") if isinstance(worker, dict) else None,
+        worker.get("agentType") if isinstance(worker, dict) else None,
+        metadata.get("agentType"),
+        task.get("agentType"),
+        task.get("role"),
+        "worker",
+    )
+    if not worker_id or not role:
+        return None
+    member: dict[str, Any] = {
+        "agentId": worker_id,
+        "role": role,
+        "status": _team_status(task.get("status")),
+    }
+    current_task = _task_current_task(task, message=message)
+    if current_task:
+        member["currentTask"] = current_task
+    return _team_member_shape(member)
+
+
+def _team_member_from_worker(worker: dict[str, Any]) -> dict[str, Any] | None:
     member = {
         "agentId": str(worker.get("id") or worker.get("workerId") or worker.get("name") or "worker"),
         "role": str(worker.get("role") or worker.get("agentType") or "worker"),
@@ -385,30 +473,90 @@ def _team_member_from_worker(worker: dict[str, Any]) -> dict[str, Any]:
     current_task = worker.get("currentTask") or worker.get("currentTaskId")
     if current_task is not None:
         member["currentTask"] = str(current_task)
-    return member
+    return _team_member_shape(member)
 
 
-def _team_member_from_message(message: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _team_member_from_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    return _team_member_shape({
         "agentId": str(message.get("senderWorkerId") or message.get("senderId") or "worker"),
         "role": str(message.get("senderRole") or message.get("role") or message.get("kind") or "worker"),
         "status": "running",
         "currentTask": message.get("body") or message.get("taskId") or message.get("id"),
-    }
+    })
 
 
-def _team_member_from_budget(payload: dict[str, Any], budget: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _team_member_from_budget(payload: dict[str, Any], budget: dict[str, Any]) -> dict[str, Any] | None:
+    return _team_member_shape({
         "agentId": str(budget.get("workerId") or budget.get("agentId") or "worker"),
         "role": str(budget.get("role") or budget.get("agentType") or "worker"),
         "status": "running",
         "currentTask": f"{payload.get('dimension') or 'budget'} budget consumed {payload.get('consumed') or 0}",
+    })
+
+
+def _task_current_task(task: dict[str, Any], *, message: dict[str, Any] | None = None) -> str | None:
+    if isinstance(message, dict):
+        message_task_id = _string_value(message.get("taskId"))
+        task_id = _string_value(task.get("id"))
+        body = _string_value(message.get("body"))
+        if body and (not message_task_id or message_task_id == task_id):
+            return body
+    result = task.get("result")
+    if isinstance(result, dict):
+        summary = _string_value(result.get("summary"), result.get("resultSummary"), result.get("message"))
+        if summary:
+            return summary
+    error = task.get("error")
+    if isinstance(error, dict):
+        message_text = _string_value(error.get("message"), error.get("summary"), error.get("detail"))
+        if message_text:
+            return message_text
+    return _string_value(task.get("title"), task.get("description"), task.get("id"))
+
+
+def _team_member_shape(member: dict[str, Any]) -> dict[str, Any] | None:
+    agent_id = _string_value(member.get("agentId"), member.get("agent_id"), member.get("id"))
+    role = _string_value(member.get("role"), member.get("agentType"), member.get("name"))
+    if not agent_id or not role:
+        return None
+    shaped = {
+        "agentId": agent_id,
+        "role": role,
+        "status": _team_status(member.get("status")),
     }
+    current_task = _string_value(member.get("currentTask"), member.get("current_task"))
+    if current_task:
+        shaped["currentTask"] = current_task
+    return shaped
+
+
+def _dedupe_team_members(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for member in members:
+        agent_id = member.get("agentId")
+        if not isinstance(agent_id, str) or not agent_id:
+            continue
+        deduped[agent_id] = member
+    return list(deduped.values())
 
 
 def _team_status(value: Any) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"running", "busy", "claimed", "active", "in_progress"}:
+    if normalized in {
+        "running",
+        "busy",
+        "claimed",
+        "active",
+        "in_progress",
+        "queued",
+        "pending",
+        "planning",
+        "starting",
+        "started",
+        "blocked",
+        "waiting_approval",
+        "verifying",
+    }:
         return "running"
     if normalized in {"completed", "done", "succeeded"}:
         return "completed"

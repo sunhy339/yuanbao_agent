@@ -265,37 +265,91 @@ def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
     assert to_haha_cc_server_message(
         _event(
             "collab.worker.heartbeat",
-            {"worker": {"id": "worker_1", "role": "reviewer", "status": "busy", "currentTaskId": "child_1"}},
+            {
+                "team": {
+                    "teamName": "sess_1",
+                    "workers": [
+                        {"id": "worker_1", "role": "reviewer", "status": "busy", "currentTaskId": "child_1"}
+                    ],
+                    "tasks": [
+                        {
+                            "id": "child_1",
+                            "title": "Review patch",
+                            "status": "running",
+                            "assignedWorkerId": "worker_1",
+                            "metadata": {"agentType": "reviewer"},
+                        }
+                    ],
+                },
+                "worker": {"id": "worker_1", "role": "reviewer", "status": "busy", "currentTaskId": "child_1"},
+            },
         )
     ) == {
         "type": "team_update",
-        "teamName": "reviewer",
+        "teamName": "sess_1",
         "members": [
             {
                 "agentId": "worker_1",
                 "role": "reviewer",
                 "status": "running",
-                "currentTask": "child_1",
+                "currentTask": "Review patch",
             }
         ],
     }
-    assert to_haha_cc_server_message(_event("collab.task.created", {"task": {"sessionId": "sess_1"}})) == {
-        "type": "team_created",
+    assert to_haha_cc_server_message(
+        _event(
+            "collab.task.created",
+            {
+                "task": {
+                    "id": "child_1",
+                    "sessionId": "sess_1",
+                    "title": "Inspect workspace",
+                    "status": "queued",
+                    "metadata": {"agentType": "explorer"},
+                }
+            },
+        )
+    ) == {
+        "type": "team_update",
         "teamName": "sess_1",
+        "members": [
+            {
+                "agentId": "child_1",
+                "role": "explorer",
+                "status": "running",
+                "currentTask": "Inspect workspace",
+            }
+        ],
     }
     assert to_haha_cc_server_message(
         _event(
             "collab.message.sent",
-            {"message": {"taskId": "child_1", "senderWorkerId": "worker_1", "kind": "result", "body": "Done"}},
+            {
+                "team": {
+                    "teamName": "sess_1",
+                    "tasks": [
+                        {
+                            "id": "child_1",
+                            "title": "Inspect workspace",
+                            "status": "completed",
+                            "assignedWorkerId": "worker_1",
+                            "result": {"summary": "Done"},
+                            "metadata": {"agentType": "explorer"},
+                        }
+                    ],
+                    "workers": [{"id": "worker_1", "role": "explorer", "status": "idle"}],
+                },
+                "message": {"taskId": "child_1", "senderWorkerId": "worker_1", "kind": "result", "body": "Done"},
+            },
         )
     ) == {
         "type": "team_update",
-        "teamName": "child_1",
+        "teamName": "sess_1",
         "members": [
             {
                 "agentId": "worker_1",
-                "role": "result",
-                "status": "running",
+                "role": "explorer",
+                "status": "completed",
                 "currentTask": "Done",
             }
         ],

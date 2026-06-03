@@ -145,7 +145,21 @@ class EventStoreMixin:
             )
         if normalized_type.startswith("collab."):
             if not str(task_id).startswith("ctask_"):
-                return None
+                event_session_id = getattr(event, "session_id", None)
+                if not event_session_id and isinstance(payload, dict):
+                    event_session_id = payload.get("sessionId") or payload.get("session_id")
+                if not event_session_id:
+                    return None
+                return self._append_trace_event_row(
+                    task_id=str(task_id or event_session_id),
+                    session_id=str(event_session_id),
+                    event_type=normalized_type,
+                    source=self._trace_source(normalized_type),
+                    related_id=self._trace_related_id(payload),
+                    payload=payload,
+                    created_at=getattr(event, "ts", None),
+                    visibility=event_visibility,
+                )
             return self.append_collaboration_trace_event(
                 task_id=task_id,
                 session_id=getattr(event, "session_id", None),

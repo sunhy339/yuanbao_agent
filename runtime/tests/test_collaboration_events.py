@@ -100,9 +100,19 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert created_event["visibility"] == "panel"
     assert created_event["payload"]["task"]["id"] == task["id"]
     assert created_event["payload"]["task"]["title"] == "Publish collaboration events"
+    assert created_event["payload"]["team"]["teamName"] == session["id"]
+    assert created_event["payload"]["team"]["tasks"][0]["id"] == task["id"]
     assert created_event["hahaCc"] == {
-        "type": "team_created",
+        "type": "team_update",
         "teamName": session["id"],
+        "members": [
+            {
+                "agentId": task["id"],
+                "role": "worker",
+                "status": "running",
+                "currentTask": "Publish collaboration events",
+            }
+        ],
     }
 
     assert claimed_event["sessionId"] == session["id"]
@@ -112,6 +122,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert claimed_event["payload"]["task"]["assignedWorkerId"] == worker["id"]
     assert claimed_event["payload"]["worker"]["id"] == worker["id"]
     assert claimed_event["payload"]["worker"]["currentTaskId"] == task["id"]
+    assert claimed_event["payload"]["team"]["teamName"] == session["id"]
     assert claimed_event["hahaCc"] == {
         "type": "team_update",
         "teamName": session["id"],
@@ -120,7 +131,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
                 "agentId": worker["id"],
                 "role": "worker",
                 "status": "running",
-                "currentTask": task["id"],
+                "currentTask": "Publish collaboration events",
             }
         ],
     }
@@ -132,13 +143,14 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert message_event["payload"]["message"]["senderWorkerId"] == worker["id"]
     assert message_event["payload"]["message"]["taskId"] == task["id"]
     assert message_event["payload"]["message"]["payload"]["confidence"] == 0.95
+    assert message_event["payload"]["team"]["teamName"] == session["id"]
     assert message_event["hahaCc"] == {
         "type": "team_update",
-        "teamName": task["id"],
+        "teamName": session["id"],
         "members": [
             {
                 "agentId": worker["id"],
-                "role": "result",
+                "role": "worker",
                 "status": "running",
                 "currentTask": "Collaboration event emitted.",
             }
@@ -150,6 +162,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert completed_event["payload"]["task"]["id"] == completed["id"]
     assert completed_event["payload"]["task"]["status"] == "completed"
     assert completed_event["payload"]["worker"]["status"] == "idle"
+    assert completed_event["payload"]["team"]["teamName"] == session["id"]
     assert completed_event["hahaCc"] == {
         "type": "team_update",
         "teamName": session["id"],
@@ -157,7 +170,8 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
             {
                 "agentId": worker["id"],
                 "role": "worker",
-                "status": "idle",
+                "status": "completed",
+                "currentTask": "Task completed.",
             }
         ],
     }
@@ -179,6 +193,128 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
         message_event["hahaCc"],
         completed_event["hahaCc"],
     ]
+
+    yuanbao_after = runtime_harness.call(
+        "events.yuanbaoAfter",
+        {"sessionId": session["id"], "afterSeq": 0},
+    )["result"]["messages"]
+    team_updates = [message for message in yuanbao_after if message.get("type") == "team_update"]
+    assert team_updates[-4:] == [
+        created_event["hahaCc"],
+        claimed_event["hahaCc"],
+        message_event["hahaCc"],
+        completed_event["hahaCc"],
+    ]
+
+
+def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _result(runtime_harness.call("workspace.open", {"path": str(workspace_root)}), "workspace")
+    session = _result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "failed child task"}),
+        "session",
+    )
+    worker = _result(
+        runtime_harness.call(
+            "collab.worker.upsert",
+            {
+                "workerId": "agent_failure_worker",
+                "name": "Failure Worker",
+                "role": "reviewer",
+                "status": "idle",
+                "sessionId": session["id"],
+                "capabilities": ["collab"],
+            },
+        ),
+        "worker",
+    )
+    assert worker["metadata"]["sessionId"] == session["id"]
+
+    worker_event = _event(runtime_harness, "collab.worker.upserted")
+    assert worker_event["sessionId"] == session["id"]
+    assert worker_event["taskId"] == session["id"]
+    assert worker_event["hahaCc"] == {
+        "type": "team_update",
+        "teamName": session["id"],
+        "members": [
+            {
+                "agentId": worker["id"],
+                "role": "reviewer",
+                "status": "idle",
+            }
+        ],
+    }
+
+    task = _result(
+        runtime_harness.call(
+            "collab.task.create",
+            {
+                "sessionId": session["id"],
+                "title": "Review risky migration",
+                "description": "Find problems before merge.",
+                "metadata": {"agentType": "reviewer"},
+            },
+        ),
+        "task",
+    )
+    runtime_harness.call("collab.task.claim", {"taskId": task["id"], "workerId": worker["id"]})
+    heartbeat = _result(
+        runtime_harness.call(
+            "collab.worker.heartbeat",
+            {
+                "workerId": worker["id"],
+                "currentTaskId": task["id"],
+                "status": "busy",
+            },
+        ),
+        "worker",
+    )
+    failed = _result(
+        runtime_harness.call(
+            "collab.task.fail",
+            {
+                "taskId": task["id"],
+                "workerId": worker["id"],
+                "error": {"message": "Validation failed."},
+            },
+        ),
+        "task",
+    )
+
+    heartbeat_event = _event(runtime_harness, "collab.worker.heartbeat")
+    failed_event = _event(runtime_harness, "collab.task.failed")
+
+    assert heartbeat["currentTaskId"] == task["id"]
+    assert heartbeat_event["hahaCc"] == {
+        "type": "team_update",
+        "teamName": session["id"],
+        "members": [
+            {
+                "agentId": worker["id"],
+                "role": "reviewer",
+                "status": "running",
+                "currentTask": "Review risky migration",
+            }
+        ],
+    }
+    assert failed["status"] == "failed"
+    assert failed_event["hahaCc"] == {
+        "type": "team_update",
+        "teamName": session["id"],
+        "members": [
+            {
+                "agentId": worker["id"],
+                "role": "reviewer",
+                "status": "error",
+                "currentTask": "Validation failed.",
+            }
+        ],
+    }
+
+    session_events = runtime_harness.call("events.after", {"sessionId": session["id"], "afterSeq": 0})["result"]["events"]
+    assert any(event["type"] == "collab.worker.upserted" for event in session_events)
+    assert any(event.get("yuanbao") == failed_event["hahaCc"] for event in session_events)
 
 
 def test_session_update_emits_haha_cc_title_event(runtime_harness: Any, tmp_path: Path) -> None:

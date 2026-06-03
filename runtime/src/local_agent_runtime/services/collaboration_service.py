@@ -125,11 +125,12 @@ class CollaborationService:
         task_id = self._string_or_none(task.get("id"))
         if task_id is None:
             return
+        payload = self._with_team_snapshot(result, session_id=self._string_or_empty(task.get("sessionId")))
         self._publish(
             session_id=self._string_or_empty(task.get("sessionId")),
             task_id=task_id,
             event_type=event_type,
-            payload=result,
+            payload=payload,
         )
 
     def _publish_worker_event(self, result: dict[str, Any], event_type: str) -> None:
@@ -137,13 +138,16 @@ class CollaborationService:
         if not isinstance(worker, dict):
             return
         task = self._task_for_id(worker.get("currentTaskId"))
-        if task is None:
+        session_id = self._string_or_empty(task.get("sessionId")) if isinstance(task, dict) else self._session_id_from_worker(worker)
+        if not session_id:
             return
+        task_id = task["id"] if isinstance(task, dict) else session_id
+        payload = self._with_team_snapshot(result, session_id=session_id)
         self._publish(
-            session_id=self._string_or_empty(task.get("sessionId")),
-            task_id=task["id"],
+            session_id=session_id,
+            task_id=task_id,
             event_type=event_type,
-            payload=result,
+            payload=payload,
         )
 
     def _publish_message_event(self, result: dict[str, Any], event_type: str) -> None:
@@ -153,11 +157,12 @@ class CollaborationService:
         task = self._task_for_id(message.get("taskId"))
         if task is None:
             return
+        payload = self._with_team_snapshot(result, session_id=self._string_or_empty(task.get("sessionId")))
         self._publish(
             session_id=self._string_or_empty(task.get("sessionId")),
             task_id=task["id"],
             event_type=event_type,
-            payload=result,
+            payload=payload,
         )
 
     def _task_for_id(self, value: Any) -> dict[str, Any] | None:
@@ -170,6 +175,50 @@ class CollaborationService:
             return None
         return task if isinstance(task, dict) else None
 
+    def _with_team_snapshot(self, result: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+        if not session_id:
+            return result
+        snapshot = self._team_snapshot(session_id)
+        if not snapshot:
+            return result
+        payload = dict(result)
+        payload["team"] = snapshot
+        return payload
+
+    def _team_snapshot(self, session_id: str) -> dict[str, Any]:
+        tasks = self._tasks_for_session(session_id)
+        workers = self._workers_for_tasks(tasks)
+        return {
+            "teamName": session_id,
+            "sessionId": session_id,
+            "tasks": tasks,
+            "workers": workers,
+        }
+
+    def _tasks_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        try:
+            result = self._store.list_collaboration_tasks({"sessionId": session_id})
+        except (AttributeError, ValueError):
+            return []
+        tasks = result.get("tasks")
+        return [task for task in tasks if isinstance(task, dict)] if isinstance(tasks, list) else []
+
+    def _workers_for_tasks(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        worker_ids = {
+            worker_id
+            for worker_id in (self._string_or_none(task.get("assignedWorkerId")) for task in tasks)
+            if worker_id is not None
+        }
+        workers: list[dict[str, Any]] = []
+        for worker_id in sorted(worker_ids):
+            try:
+                worker = self._store.get_agent_worker({"workerId": worker_id}).get("worker")
+            except (AttributeError, ValueError):
+                continue
+            if isinstance(worker, dict):
+                workers.append(self._enrich_worker(worker, now_ms=self._store.now()))
+        return workers
+
     def _existing_worker(self, worker_id: str | None) -> dict[str, Any] | None:
         if worker_id is None:
             return None
@@ -181,6 +230,19 @@ class CollaborationService:
 
     def _worker_id_from_params(self, params: dict[str, Any]) -> str | None:
         return self._string_or_none(params.get("workerId")) or self._string_or_none(params.get("id"))
+
+    def _session_id_from_worker(self, worker: dict[str, Any]) -> str:
+        for key in ("sessionId", "session_id", "teamName", "team"):
+            value = self._string_or_none(worker.get(key))
+            if value:
+                return value
+        metadata = worker.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("sessionId", "session_id", "teamName", "team"):
+                value = self._string_or_none(metadata.get(key))
+                if value:
+                    return value
+        return ""
 
     def _enrich_worker_result(self, result: dict[str, Any], *, now_ms: int | None = None) -> dict[str, Any]:
         worker = result.get("worker")

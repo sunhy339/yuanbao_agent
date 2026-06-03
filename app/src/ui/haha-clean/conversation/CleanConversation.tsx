@@ -128,6 +128,79 @@ function readToolInputRecord(message: SessionWorkspaceMessage) {
     : parseJson(typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "");
 }
 
+function normalizedToolName(value?: string | null) {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+function looksLikeInternalPayloadText(value: string) {
+  const text = value.trim();
+  if (!text) return true;
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  if (
+    lines.length >= 3 &&
+    /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
+  ) {
+    return true;
+  }
+  if (/^[{\[]/.test(text)) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") {
+        const keys = Object.keys(parsed as Record<string, unknown>);
+        return keys.some((key) => [
+          "_chatCompat",
+          "context",
+          "eventId",
+          "messages",
+          "metadata",
+          "options",
+          "payload",
+          "questions",
+          "requestId",
+          "sessionId",
+          "taskId",
+          "toolCallId",
+          "tool_results",
+          "workspaceRoot",
+        ].includes(key));
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+function cleanInlineDisplayText(value: string) {
+  const text = value.trim();
+  return text && !looksLikeInternalPayloadText(text) ? text : "";
+}
+
+function toolQuestionText(message: SessionWorkspaceMessage) {
+  const input = readToolInputRecord(message);
+  const questionRecord =
+    Array.isArray(input?.questions) && input.questions[0] && typeof input.questions[0] === "object"
+      ? input.questions[0] as Record<string, unknown>
+      : null;
+  return (
+    readMetadataString(message, ["question", "prompt", "summary", "message", "description"]) ||
+    readRecordString(input, ["question", "prompt", "summary", "message", "description"]) ||
+    readRecordString(questionRecord, ["question", "prompt", "summary", "message", "description"]) ||
+    ""
+  );
+}
+
+function isAskUserToolMessage(message: SessionWorkspaceMessage) {
+  return normalizedToolName(message.toolName || readMetadataString(message, ["toolName", "name"])) === "ask_user_question";
+}
+
+function cleanSpecialEventMetadataValue(key: string, value: unknown) {
+  if (SPECIAL_EVENT_METADATA_BLOCKLIST.has(key)) return "";
+  if (typeof value === "string") return cleanInlineDisplayText(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
 function summarizeNamedArray(record: Record<string, unknown>, keys: string[], noun: string) {
   for (const key of keys) {
     const value = record[key];
@@ -176,14 +249,18 @@ function summarizeToolResultText(value: string) {
 }
 
 function toolInlineSummary(message: SessionWorkspaceMessage) {
-  const structuredResult = readString(message.metadata?.resultSummary);
+  if (isAskUserToolMessage(message)) {
+    return compactText(toolQuestionText(message) || "等待你补充信息", 170);
+  }
+  const structuredResult = cleanInlineDisplayText(readString(message.metadata?.resultSummary));
   const result = summarizeToolResultText(readString(message.metadata?.resultText));
-  return compactText(structuredResult || result || message.content || "等待工具返回结果", 170);
+  return compactText(structuredResult || result || cleanInlineDisplayText(message.content) || "等待工具返回结果", 170);
 }
 
 function toolInlineTarget(message: SessionWorkspaceMessage) {
+  if (isAskUserToolMessage(message)) return "";
   const input = readToolInputRecord(message);
-  return compactText(readString(input?.path ?? input?.file ?? input?.cwd ?? input?.command ?? input?.query), 92);
+  return compactText(cleanInlineDisplayText(readString(input?.path ?? input?.file ?? input?.cwd ?? input?.command ?? input?.query)), 92);
 }
 
 function metadataPreviewRows(value: unknown): Array<{ label: string; value: string }> {
@@ -974,18 +1051,28 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
   const blocked = message.status === "blocked" || lifecycleStatus.toLowerCase() === "blocked";
   const failed = !blocked && (message.status === "failed" || message.metadata?.isError === true);
   const cancelled = message.status === "cancelled";
+  const askUserTool = isAskUserToolMessage(message);
+  const question = toolQuestionText(message);
   const input = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
   const result = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
-  const metadataTarget = readMetadataString(message, ["target", "inputSummary"]);
+  const metadataTarget = cleanInlineDisplayText(readMetadataString(message, ["target", "inputSummary"]));
   const fallbackInput = metadataTarget ? JSON.stringify({ target: metadataTarget }) : "";
   const previewRows = metadataPreviewRows(message.metadata?.resultPreview);
-  const details = [input ? `输入\n${input}` : "", result ? `结果\n${result}` : "", message.content].filter(Boolean).join("\n\n");
-  const title = toolActionTitle({
-    toolName: message.toolName,
-    title: readMetadataString(message, ["target", "inputSummary", "title", "label", "action"]),
-    input: input || fallbackInput,
-    rawDetail: result || message.content,
-  });
+  const safeContent = cleanInlineDisplayText(message.content);
+  const details = askUserTool
+    ? [
+        question ? `问题\n${question}` : "",
+        result && !looksLikeInternalPayloadText(result) ? `结果\n${result}` : "",
+      ].filter(Boolean).join("\n\n")
+    : [input ? `输入\n${input}` : "", result ? `结果\n${result}` : "", safeContent].filter(Boolean).join("\n\n");
+  const title = askUserTool
+    ? "需要你补充信息"
+    : toolActionTitle({
+        toolName: message.toolName,
+        title: cleanInlineDisplayText(readMetadataString(message, ["target", "inputSummary", "title", "label", "action"])),
+        input: input || fallbackInput,
+        rawDetail: result && !looksLikeInternalPayloadText(result) ? result : safeContent,
+      });
   const target = toolInlineTarget(message) || compactText(metadataTarget, 92);
   const showTarget = Boolean(target && !title.includes(target));
   const durationLabel = formatDuration(readRecordNumber(message.metadata, ["durationMs"]));
@@ -1125,10 +1212,10 @@ export const CleanSpecialEventBlock = memo(function CleanSpecialEventBlock({
   transcriptKind: CleanTranscriptKind;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const content = message.content.trim();
+  const content = cleanInlineDisplayText(message.content);
   const title = messageTitleForKind(transcriptKind, message);
   const summary = compactText(
-    readMetadataString(message, ["summary", "description", "message"]) || content,
+    cleanInlineDisplayText(readMetadataString(message, ["summary", "description", "message"])) || content,
     180,
   );
   const icon =
@@ -1141,8 +1228,17 @@ export const CleanSpecialEventBlock = memo(function CleanSpecialEventBlock({
     transcriptKind === "ask_user_question" ? <HelpCircle size={15} /> :
     <CircleAlert size={15} />;
   const metadataLines = Object.entries(message.metadata ?? {})
-    .filter(([key, value]) => key !== "kind" && value !== undefined && value !== null && typeof value !== "object")
-    .map(([key, value]) => `${key}: ${String(value)}`);
+    .filter(([key, value]) =>
+      key !== "kind" &&
+      !SPECIAL_EVENT_METADATA_BLOCKLIST.has(key) &&
+      value !== undefined &&
+      value !== null &&
+      typeof value !== "object")
+    .map(([key, value]) => {
+      const cleaned = cleanSpecialEventMetadataValue(key, value);
+      return cleaned ? `${key}: ${cleaned}` : "";
+    })
+    .filter(Boolean);
   const details = [content, metadataLines.join("\n")].filter(Boolean).join("\n\n");
 
   if (transcriptKind === "compact_summary") {
@@ -1234,6 +1330,27 @@ function readMetadataRecordList(message: SessionWorkspaceMessage, keys: string[]
   return readMetadataList(message, keys)
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
 }
+
+const SPECIAL_EVENT_METADATA_BLOCKLIST = new Set([
+  "_chatCompat",
+  "activeStep",
+  "completedSteps",
+  "context",
+  "currentStep",
+  "eventId",
+  "fingerprint",
+  "messages",
+  "options",
+  "payload",
+  "questions",
+  "requestId",
+  "sessionId",
+  "stepCount",
+  "taskId",
+  "toolCallId",
+  "tool_results",
+  "workspaceRoot",
+]);
 
 function formatAgentTaskStatus(status?: string) {
   const normalized = status?.toLowerCase() ?? "";

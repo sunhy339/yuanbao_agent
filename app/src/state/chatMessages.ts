@@ -1554,14 +1554,26 @@ export function appendSpecialEventMessage(
       : typeof payload.metadata?.requestId === "string" && payload.metadata.requestId.trim()
         ? payload.metadata.requestId.trim()
         : "";
-  const stableKey = normalizedKind === "computer_use_permission" && approvalId ? approvalId : "";
+  const askUserStableKey =
+    normalizedKind === "ask_user_question"
+      ? typeof payload.metadata?.requestId === "string" && payload.metadata.requestId.trim()
+        ? payload.metadata.requestId.trim()
+        : typeof payload.metadata?.toolCallId === "string" && payload.metadata.toolCallId.trim()
+          ? payload.metadata.toolCallId.trim()
+          : ""
+      : "";
+  const stableKey = normalizedKind === "computer_use_permission" && approvalId ? approvalId : askUserStableKey;
   const eventKey = stableKey || payload.eventId?.trim() || `${taskId}:${payload.now}`;
   const messageId = `${normalizedKind}:${eventKey}`;
   const existingIndex = current.findIndex((message) => message.id === messageId);
   const existingMessage = existingIndex >= 0 ? current[existingIndex] : undefined;
   const mergeExisting = Boolean(stableKey && existingMessage);
   const metadataSource = payload.metadata ?? {};
-  const content = [payload.content, payload.summary, payload.title]
+  const contentCandidates =
+    normalizedKind === "ask_user_question"
+      ? [payload.summary, payload.title, payload.content]
+      : [payload.summary, payload.content, payload.title];
+  const content = contentCandidates
     .map((value) => value?.trim() ?? "")
     .find(Boolean) ?? (mergeExisting ? existingMessage?.content ?? "" : "");
   const nextMessage: ChatMessageView = {

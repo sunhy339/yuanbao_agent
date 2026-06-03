@@ -210,6 +210,53 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     return "";
   }
 
+  function looksLikeInternalDisplayText(value: string): boolean {
+    const text = value.trim();
+    if (!text) return true;
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    if (
+      lines.length >= 3 &&
+      /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
+    ) {
+      return true;
+    }
+    if (/^[{\[]/.test(text)) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object") {
+          const keys = Object.keys(parsed as Record<string, unknown>);
+          return keys.some((key) => [
+            "_chatCompat",
+            "context",
+            "eventId",
+            "messages",
+            "metadata",
+            "options",
+            "payload",
+            "questions",
+            "requestId",
+            "sessionId",
+            "taskId",
+            "toolCallId",
+            "tool_results",
+            "workspaceRoot",
+          ].includes(key));
+        }
+      } catch {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function safePayloadDisplayText(value: string): string {
+    const text = value.trim();
+    if (!text || looksLikeInternalDisplayText(text)) {
+      return "";
+    }
+    return text;
+  }
+
   function readPayloadChunk(payload: unknown, keys: string[]): string {
     if (!payload || typeof payload !== "object") {
       return "";
@@ -356,9 +403,14 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
 
   function appendSpecialEventFromEnvelope(event: AgentEventEnvelope, kind: string) {
     const payload = event.payload as Record<string, unknown> | null | undefined;
-    const title = readPayloadText(payload, ["title", "label", "phase", "state", "type"]);
-    const summary = readPayloadText(payload, ["summary", "description", "message", "detail", "reason"]);
-    const content = readPayloadText(payload, ["content", "text", "body", "error"]);
+    const title = safePayloadDisplayText(readPayloadText(payload, ["title", "label", "phase", "state"]));
+    const summary = safePayloadDisplayText(readPayloadText(payload, ["summary", "description", "message", "detail", "reason", "errorMessage"]));
+    const rawContent = kind === "slash_command"
+      ? readPayloadText(payload, ["content", "text", "body"])
+      : readPayloadText(payload, ["content", "text", "body", "error"]);
+    const content = kind === "ask_user_question" || kind === "computer_use_permission"
+      ? ""
+      : safePayloadDisplayText(rawContent);
     const status = readPayloadText(payload, ["status"]);
     const blocksAssistantStream = kind === "ask_user_question" || kind === "computer_use_permission";
     if (blocksAssistantStream) {

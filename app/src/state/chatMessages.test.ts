@@ -182,6 +182,83 @@ describe("chatMessages", () => {
     });
   });
 
+  it("keeps ask-user question messages stable for the same request id", () => {
+    const first = appendSpecialEventMessage([], {
+      kind: "ask_user_question",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      eventId: "evt_1",
+      title: "需要你补充信息",
+      summary: "请选择状态列表",
+      content: "{\"options\":[{\"label\":\"状态列表\"}]}",
+      metadata: {
+        requestId: "ask_123",
+        toolCallId: "call_1",
+        question: "请选择状态列表",
+        options: [{ label: "状态列表" }],
+      },
+      now: 1,
+    });
+
+    const next = appendSpecialEventMessage(first, {
+      kind: "ask_user_question",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      eventId: "evt_2",
+      title: "需要你补充信息",
+      summary: "请选择状态列表（更新）",
+      content: "{\"options\":[{\"label\":\"状态列表\"},{\"label\":\"优先级清单\"}]}",
+      metadata: {
+        requestId: "ask_123",
+        toolCallId: "call_1",
+        question: "请选择状态列表（更新）",
+        options: [{ label: "状态列表" }, { label: "优先级清单" }],
+      },
+      now: 2,
+    });
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      id: "ask_user_question:ask_123",
+      content: "请选择状态列表（更新）",
+      metadata: {
+        kind: "ask_user_question",
+        requestId: "ask_123",
+        toolCallId: "call_1",
+        title: "需要你补充信息",
+        summary: "请选择状态列表（更新）",
+      },
+    });
+  });
+
+  it("prefers the human summary when recording special transcript events", () => {
+    const next = appendSpecialEventMessage([], {
+      kind: "system",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      eventId: "evt_system",
+      title: "Provider notice",
+      summary: "Switched to fallback model",
+      content: "{\"sessionId\":\"sess_1\",\"message\":\"debug\"}",
+      metadata: {
+        sessionId: "sess_1",
+        requestId: "req_1",
+        model: "fallback-model",
+      },
+      now: 1,
+    });
+
+    expect(next[0]).toMatchObject({
+      id: "system:evt_system",
+      content: "Switched to fallback model",
+      metadata: {
+        kind: "system",
+        title: "Provider notice",
+        summary: "Switched to fallback model",
+      },
+    });
+  });
+
   it("appends streaming thinking summary deltas", () => {
     const first = appendOrUpdateAssistantThinkingMessage(messages, {
       sessionId: "sess_1",

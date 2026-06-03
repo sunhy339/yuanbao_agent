@@ -186,6 +186,35 @@ def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> N
         "message": "Task started",
         "data": {"summary": "Task started"},
     }
+    assert to_yuanbao_server_message(
+        _event(
+            "system_notification",
+            {
+                "title": "模型配置已切换",
+                "summary": "Switched to fallback model",
+                "phase": "provider_preflight",
+                "model": "fallback-model",
+            },
+        )
+    ) == {
+        "type": "system_notification",
+        "subtype": "session_state_changed",
+        "message": "Switched to fallback model",
+        "data": {
+            "title": "模型配置已切换",
+            "summary": "Switched to fallback model",
+            "phase": "provider_preflight",
+            "model": "fallback-model",
+        },
+    }
+    assert to_yuanbao_server_message(
+        _event("system_notification", {"subtype": "custom_local", "summary": "Generic notice"})
+    ) == {
+        "type": "system_notification",
+        "subtype": "task_progress",
+        "message": "Generic notice",
+        "data": {"subtype": "custom_local", "summary": "Generic notice"},
+    }
 
 
 def test_yuanbao_adapter_maps_progress_events_to_task_progress_notifications() -> None:
@@ -293,6 +322,53 @@ def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
     }
     assert all("eventId" not in message for message in flat_messages)
     assert all("messageId" not in message for message in flat_messages)
+
+
+def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
+    messages = [
+        to_yuanbao_server_message(_event("connected", {"sessionId": "sess_1"})),
+        to_yuanbao_server_message(_event("content_start", {"blockType": "tool_use", "toolName": "read_file", "toolUseId": "call_1"})),
+        to_yuanbao_server_message(_event("content_delta", {"text": "hello"})),
+        to_yuanbao_server_message(_event("tool_use_complete", {"toolName": "read_file", "toolUseId": "call_1", "input": {"path": "README.md"}})),
+        to_yuanbao_server_message(_event("tool_result", {"toolUseId": "call_1", "content": "ok", "isError": False})),
+        to_yuanbao_server_message(_event("permission_request", {"requestId": "approval_1", "toolName": "run_command", "input": {"command": "pytest"}})),
+        to_yuanbao_server_message(_event("computer_use_permission_request", {"requestId": "approval_2", "request": {"action": "click"}})),
+        to_yuanbao_server_message(_event("message_complete", {"usage": {"inputTokens": 1, "outputTokens": 2}})),
+        to_yuanbao_server_message(_event("thinking", {"text": "plan"})),
+        to_yuanbao_server_message(_event("status", {"state": "streaming"})),
+        to_yuanbao_server_message(_event("api_retry", {"attempt": 1, "maxRetries": 3, "retryDelayMs": 250, "errorStatus": 429})),
+        to_yuanbao_server_message(_event("message.failed", {"content": "failed", "errorCode": "MODEL_ERROR"})),
+        to_yuanbao_server_message(_event("system_notification", {"summary": "notice"})),
+        to_yuanbao_server_message(_event("pong", {})),
+        to_yuanbao_server_message(_event("collab.team.created", {"teamName": "docs"})),
+        to_yuanbao_server_message(_event("collab.task.created", {"task": {"id": "child_1", "sessionId": "sess_1", "title": "Inspect", "status": "queued"}})),
+        to_yuanbao_server_message(_event("collab.team.deleted", {"teamName": "docs"})),
+        to_yuanbao_server_message(_event("task.updated", {"taskId": "task_1", "status": "running"})),
+        to_yuanbao_server_message(_event("session.updated", {"sessionId": "sess_1", "title": "New title", "changedFields": ["title"]})),
+    ]
+
+    assert [message["type"] for message in messages if message is not None] == [
+        "connected",
+        "content_start",
+        "content_delta",
+        "tool_use_complete",
+        "tool_result",
+        "permission_request",
+        "computer_use_permission_request",
+        "message_complete",
+        "thinking",
+        "status",
+        "api_retry",
+        "error",
+        "system_notification",
+        "pong",
+        "team_created",
+        "team_update",
+        "team_deleted",
+        "task_update",
+        "session_title_updated",
+    ]
+    assert all(message is not None for message in messages)
 
 
 def test_yuanbao_adapter_maps_collaboration_snapshot_to_stable_team_update() -> None:

@@ -411,6 +411,14 @@ def test_special_chat_events_map_to_haha_cc_system_notifications() -> None:
         "message": "ready",
         "data": {"state": "ready"},
     }
+    assert to_haha_cc_server_message(
+        _event("system_notification", {"summary": "Switched provider", "phase": "provider_preflight", "model": "fallback"})
+    ) == {
+        "type": "system_notification",
+        "subtype": "session_state_changed",
+        "message": "Switched provider",
+        "data": {"summary": "Switched provider", "phase": "provider_preflight", "model": "fallback"},
+    }
 
 
 def test_progress_events_map_to_haha_cc_task_progress_notifications() -> None:

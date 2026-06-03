@@ -57,6 +57,16 @@ _CHAT_STATUS_STATES = {
     "streaming",
     "permission_pending",
 }
+_SYSTEM_NOTIFICATION_SUBTYPES = {
+    "init",
+    "compact_summary",
+    "compact_boundary",
+    "memory_saved",
+    "task_started",
+    "task_progress",
+    "session_state_changed",
+    "goal_event",
+}
 
 _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
     "content_start": {"type", "blockType", "toolName", "toolUseId", "parentToolUseId"},
@@ -115,7 +125,9 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
 
     payload = event.payload if isinstance(event.payload, dict) else {}
     message: dict[str, Any] | None = None
-    if event.type in _DIRECT_EVENT_TYPES:
+    if event.type == "system_notification":
+        message = _system_notification_message(event.type, payload)
+    elif event.type in _DIRECT_EVENT_TYPES:
         message = _flatten_payload(event.type, payload)
         if event.type == "message_complete":
             message["usage"] = normalize_yuanbao_usage(payload.get("usage") or _raw_usage(payload))
@@ -672,6 +684,13 @@ def _progress_notification_message(event_type: str, payload: dict[str, Any]) -> 
 
 
 def _system_notification_subtype(event_type: str, payload: dict[str, Any]) -> str | None:
+    explicit_subtype = _string_value(payload.get("subtype"))
+    if explicit_subtype in _SYSTEM_NOTIFICATION_SUBTYPES:
+        return explicit_subtype
+    if event_type == "system_notification":
+        if _looks_like_session_state_change(payload):
+            return "session_state_changed"
+        return "task_progress"
     if event_type in {"init", "compact_boundary", "session_state_changed", "task_started"}:
         return event_type
     if event_type == "compact_summary":
@@ -686,6 +705,14 @@ def _system_notification_subtype(event_type: str, payload: dict[str, Any]) -> st
     if event_type in _TASK_PROGRESS_EVENT_TYPES:
         return "task_progress"
     return None
+
+
+def _looks_like_session_state_change(payload: dict[str, Any]) -> bool:
+    for key in ("sessionId", "session_id", "profileName", "profile_name", "model", "mode", "scope"):
+        if payload.get(key) not in (None, ""):
+            return True
+    phase = str(payload.get("phase") or "").strip().lower()
+    return phase in {"provider_preflight", "provider_recovery", "session", "session_state"}
 
 
 def _notification_text(payload: dict[str, Any]) -> str:

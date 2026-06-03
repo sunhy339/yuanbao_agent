@@ -161,6 +161,18 @@ export type YuanbaoChatState =
 
 export type HahaCcChatState = YuanbaoChatState;
 
+export type YuanbaoSystemNotificationSubtype =
+  | "init"
+  | "compact_summary"
+  | "compact_boundary"
+  | "memory_saved"
+  | "task_started"
+  | "task_progress"
+  | "session_state_changed"
+  | "goal_event";
+
+export type HahaCcSystemNotificationSubtype = YuanbaoSystemNotificationSubtype;
+
 export interface YuanbaoTeamMemberStatus {
   agentId: string;
   role: string;
@@ -183,7 +195,7 @@ export type YuanbaoServerMessage =
   | { type: "status"; state: YuanbaoChatState; verb?: string; elapsed?: number; tokens?: number }
   | { type: "api_retry"; attempt: number; maxRetries: number; retryDelayMs: number; errorStatus: number | null; errorType?: string; errorMessage?: string }
   | { type: "error"; message: string; code: string; retryable?: boolean; businessErrorCode?: string }
-  | { type: "system_notification"; subtype: string; message?: string; data?: unknown }
+  | { type: "system_notification"; subtype: YuanbaoSystemNotificationSubtype; message?: string; data?: unknown }
   | { type: "pong" }
   | { type: "team_update"; teamName: string; members: YuanbaoTeamMemberStatus[] }
   | { type: "team_created"; teamName: string }

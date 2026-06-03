@@ -543,3 +543,34 @@
 - 2026-06-03：`python -m compileall -q runtime/src/local_agent_runtime` 通过。
 - 2026-06-03：`npm --prefix app run typecheck` 通过。
 - 2026-06-03：`npm --prefix app test -- src/lib/runtimeClient.test.ts src/hooks/useEventSubscription.test.tsx src/state/chatMessages.test.ts` 通过，98 passed。
+
+## Batch 16：system notification 与核心类型覆盖
+
+目标：让 flat ServerMessage 输出不只“能发”，还在 shared 类型和测试里锁住完整核心能力。
+
+- [x] shared 新增 `YuanbaoSystemNotificationSubtype` / `HahaCcSystemNotificationSubtype`。
+- [x] `YuanbaoServerMessage` 的 `system_notification.subtype` 从散的 `string` 收紧为受控 union。
+- [x] 后端 `system_notification` 原始事件不再因缺少合法 subtype 被丢弃。
+- [x] 带 session/model/profile/phase 的系统通知归一为 `session_state_changed`，普通系统提示归一为 `task_progress`。
+- [x] 增加全核心 `ServerMessage` 类型覆盖测试，确保 19 类 flat 输出都能由后端 adapter 生成。
+
+建议文件：
+
+- `runtime/src/local_agent_runtime/yuanbao_event_adapter.py`
+- `shared/src/events.ts`
+- `runtime/tests/test_yuanbao_event_adapter.py`
+- `runtime/tests/test_haha_cc_compat.py`
+
+验收：
+
+- raw `system_notification` 能稳定进入 flat 输出。
+- shared 类型能约束 system notification 子类型。
+- 核心 haha-cc `ServerMessage` 类型覆盖不会退化。
+
+进展：
+
+- 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_agent_role_and_visibility.py runtime/tests/test_provider_turns.py -q -k "yuanbao or haha or system_notification or status or events_after or runtime_ping"` 通过，43 passed，84 deselected。
+- 2026-06-03：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_collaboration_events.py runtime/tests/test_replay.py runtime/tests/test_p9_release_checks.py runtime/tests/test_provider_turns.py -q -k "yuanbao or haha or team or collab or status or thinking or permission_pending or compacting or replay or runtime_ping or events_after or system_notification"` 通过，65 passed，74 deselected。
+- 2026-06-03：`python -m compileall -q runtime/src/local_agent_runtime` 通过。
+- 2026-06-03：`npm --prefix app run typecheck` 通过。
+- 2026-06-03：`npm --prefix app test -- src/lib/runtimeClient.test.ts src/hooks/useEventSubscription.test.tsx src/state/chatMessages.test.ts` 通过，98 passed。

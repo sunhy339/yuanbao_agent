@@ -310,10 +310,15 @@ export function applyEventToTask(current: TaskRecord | null, event: AgentEventEn
   }
 
   const payload = (event.payload ?? {}) as Partial<TaskUpdatedPayload> & {
+    source?: string;
+    taskKind?: string;
     resultSummary?: string;
     errorCode?: string;
     detail?: string;
   };
+  if (payload.source === "collaboration" || payload.taskKind === "collaboration_child") {
+    return current;
+  }
   const activeWorktree = readEventWorktree(event, payload);
 
   return {
@@ -340,12 +345,17 @@ export function taskRecordFromEvent(event: AgentEventEnvelope): TaskRecord | nul
   }
 
   const payload = (event.payload ?? {}) as Partial<TaskUpdatedPayload> & {
+    source?: string;
+    taskKind?: string;
     goal?: string;
     title?: string;
     resultSummary?: string;
     detail?: string;
     errorCode?: string;
   };
+  if (payload.source === "collaboration" || payload.taskKind === "collaboration_child") {
+    return null;
+  }
   const status = payload.status ?? coerceTaskStatus(event, "running");
   const activeWorktree = readEventWorktree(event, payload);
   return {

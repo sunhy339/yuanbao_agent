@@ -12,6 +12,7 @@ from typing import Any
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestration.types import OrchestrationResult
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.planner.types import PlanResult, Subtask
 from local_agent_runtime.planner.service import Planner
 from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
@@ -1507,9 +1508,16 @@ def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> N
         plan=[],
     )
     captured: dict[str, Any] = {}
+    decomposed_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Coordinate workers", description="Coordinate workers", dependencies=[]),
+        ],
+        dag={"sub-0": []},
+        execution_order=["sub-0"],
+    )
 
     runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
-        lambda **_kwargs: SimpleNamespace(subtasks=[], execution_order=[], dag={})
+        lambda **_kwargs: decomposed_plan
     )
     runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
 
@@ -1535,6 +1543,7 @@ def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> N
     )
 
     assert captured["child_timeout_ms"] == 900_000
+    assert captured["plan"] is decomposed_plan
 
 
 def test_swarm_execution_emits_replayable_planning_thinking(tmp_path: Any) -> None:
@@ -1549,7 +1558,7 @@ def test_swarm_execution_emits_replayable_planning_thinking(tmp_path: Any) -> No
     )
 
     runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
-        lambda **_kwargs: SimpleNamespace(subtasks=[], execution_order=[], dag={})
+        lambda **_kwargs: PlanResult(subtasks=[], execution_order=[], dag={})
     )
     runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
     runtime.server._orchestrator._swarm.execute = (  # noqa: SLF001
@@ -1612,9 +1621,16 @@ def test_supervisor_execution_passes_autonomy_timeout_to_children(tmp_path: Any)
         plan=[],
     )
     captured: dict[str, Any] = {}
+    decomposed_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Review worker output", description="Review worker output", dependencies=[]),
+        ],
+        dag={"sub-0": []},
+        execution_order=["sub-0"],
+    )
 
     runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
-        lambda **_kwargs: SimpleNamespace(subtasks=[], execution_order=[], dag={})
+        lambda **_kwargs: decomposed_plan
     )
     runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
 
@@ -1640,6 +1656,7 @@ def test_supervisor_execution_passes_autonomy_timeout_to_children(tmp_path: Any)
     )
 
     assert captured["child_timeout_ms"] == 900_000
+    assert captured["plan"] is decomposed_plan
 
 
 def test_react_loop_injects_task_focus_into_provider_context(tmp_path: Any) -> None:

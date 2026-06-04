@@ -164,12 +164,62 @@ class CollaborationService:
         if task_id is None:
             return
         payload = self._with_team_snapshot(result, session_id=self._string_or_empty(task.get("sessionId")))
+        session_id = self._string_or_empty(task.get("sessionId"))
         self._publish(
-            session_id=self._string_or_empty(task.get("sessionId")),
+            session_id=session_id,
+            task_id=task_id,
+            event_type=self._canonical_task_event_type(event_type),
+            payload=self._canonical_task_payload(payload, event_type=event_type),
+        )
+        self._publish(
+            session_id=session_id,
             task_id=task_id,
             event_type=event_type,
             payload=payload,
         )
+
+    def _canonical_task_event_type(self, event_type: str) -> str:
+        return "task.created" if event_type == "collab.task.created" else "task.updated"
+
+    def _canonical_task_payload(self, payload: dict[str, Any], *, event_type: str) -> dict[str, Any]:
+        task = payload.get("task")
+        task_record = task if isinstance(task, dict) else {}
+        worker = payload.get("worker")
+        worker_record = worker if isinstance(worker, dict) else {}
+        metadata = task_record.get("metadata") if isinstance(task_record.get("metadata"), dict) else {}
+        result = task_record.get("result") if isinstance(task_record.get("result"), dict) else {}
+        error = task_record.get("error") if isinstance(task_record.get("error"), dict) else {}
+        summary = self._string_or_none(result.get("summary")) or self._string_or_none(result.get("resultSummary"))
+        error_message = self._string_or_none(error.get("message")) or self._string_or_none(error.get("summary"))
+        title = self._string_or_none(task_record.get("title")) or self._string_or_none(task_record.get("description"))
+        status = self._string_or_none(task_record.get("status"))
+        progress = summary or error_message or title or status or event_type.removeprefix("collab.task.")
+        parent_task_id = self._string_or_none(task_record.get("parentTaskId"))
+        session_id = self._string_or_none(task_record.get("sessionId"))
+        task_id = self._string_or_none(task_record.get("id")) or ""
+        worker_id = self._string_or_none(task_record.get("assignedWorkerId")) or self._string_or_none(worker_record.get("id"))
+        payload_out: dict[str, Any] = {
+            "source": "collaboration",
+            "taskKind": "collaboration_child",
+            "taskId": task_id,
+            "status": status or event_type.removeprefix("collab.task."),
+            "progress": progress,
+            "currentStep": progress,
+            "title": title,
+            "summary": summary or error_message,
+            "resultSummary": summary or error_message,
+            "description": self._string_or_none(task_record.get("description")),
+            "parentTaskId": parent_task_id,
+            "sessionId": session_id,
+            "agentType": self._string_or_none(metadata.get("agentType")) or self._string_or_none(task_record.get("agentType")),
+            "workerId": worker_id,
+            "workerName": self._string_or_none(worker_record.get("name")),
+            "collaborationEventType": event_type,
+            "collaborationTask": task_record,
+        }
+        if worker_record:
+            payload_out["worker"] = worker_record
+        return {key: value for key, value in payload_out.items() if value is not None}
 
     def _publish_worker_event(self, result: dict[str, Any], event_type: str) -> None:
         worker = result.get("worker")

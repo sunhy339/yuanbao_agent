@@ -67,22 +67,34 @@ def test_subagent_dispatch_records_child_collaboration_trace(tmp_path: Path) -> 
         assert worker["metadata"]["parentRuntimeTaskId"] == parent_task["id"]
         assert worker["capabilities"] == ["subagent", "collaboration"]
         event_types = [event["type"] for event in events]
-        assert event_types[:3] == [
+        assert event_types[:6] == [
+            "task.created",
             "collab.task.created",
+            "task.updated",
             "collab.task.claimed",
+            "task.updated",
             "collab.task.updated",
         ]
-        assert event_types[-2:] == ["collab.task.completed", "collab.message.sent"]
+        assert event_types[-3:] == ["task.updated", "collab.task.completed", "collab.message.sent"]
 
         trace_events = store.list_trace_events({"taskId": child_task["id"]})["traceEvents"]
         trace_types = [event["type"] for event in trace_events]
-        assert trace_types[:3] == [
+        assert trace_types[:6] == [
+            "task.created",
             "collab.task.created",
+            "task.updated",
             "collab.task.claimed",
+            "task.updated",
             "collab.task.updated",
         ]
-        assert trace_types[-2:] == ["collab.task.completed", "collab.message.sent"]
+        assert trace_types[-3:] == ["task.updated", "collab.task.completed", "collab.message.sent"]
         assert trace_events[0]["sessionId"] == session["id"]
+        assert trace_events[0]["hahaCc"] == {
+            "type": "task_update",
+            "taskId": child_task["id"],
+            "status": "queued",
+            "progress": "Inspect runtime gaps",
+        }
         assert trace_events[-1]["payload"]["message"]["taskId"] == child_task["id"]
         assert trace_events[-1]["payload"]["message"]["payload"]["executionMode"] == "process-rpc"
 

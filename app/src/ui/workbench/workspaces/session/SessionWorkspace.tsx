@@ -24,6 +24,7 @@ import {
 import { shouldDisplayTaskScaffold } from "./taskPhase";
 import { buildRuntimeItems } from "./runtimeItemBuilder";
 import { buildConversationActivity, ConversationActivity } from "./ConversationActivity";
+import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { ConversationTaskDigest } from "./ConversationTaskDigest";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
 import { isChatVisibleEvent } from "./visibilityRouting";
@@ -320,6 +321,7 @@ export function SessionWorkspace({
   patches,
   traces,
   toolCalls,
+  collaboration,
   backgroundJobs,
   onApprove,
   onReject,
@@ -691,6 +693,14 @@ export function SessionWorkspace({
     />
   );
   const visibleTaskDigest = taskDigestReady ? taskDigest : null;
+  const hasCollaborationWork = Boolean(
+    (collaboration?.workers?.length ?? 0) > 0 ||
+      (collaboration?.childTasks?.length ?? 0) > 0 ||
+      (collaboration?.results?.length ?? 0) > 0,
+  );
+  const visibleCollaborationPanel = hasCollaborationWork ? (
+    <AgentCollaborationPanel collaboration={collaboration} />
+  ) : null;
 
   useEffect(() => {
     const column = conversationColumnRef.current;
@@ -773,6 +783,7 @@ export function SessionWorkspace({
                   <div className="message-stream-loading" aria-label="加载消息">
                     <div className="message-stream-loading-bar" />
                   </div>
+                  {visibleCollaborationPanel}
                   {visibleTaskDigest}
                 </>
               ) : activityItems.length === 0 ? (
@@ -782,6 +793,7 @@ export function SessionWorkspace({
                     <h2>还没有消息</h2>
                     <p>从下方输入区发送第一条消息。</p>
                   </div>
+                  {visibleCollaborationPanel}
                   {visibleTaskDigest}
                 </>
               ) : (
@@ -800,6 +812,7 @@ export function SessionWorkspace({
                     onStopCommandJob={onStopCommandJob}
                     busyId={busyId}
                   />
+                  {visibleCollaborationPanel}
                   {visibleTaskDigest}
                 </>
               )}

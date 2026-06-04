@@ -742,6 +742,9 @@ class ApprovalFlowMixin:
         """Resume supervisor execution after plan approval."""
         session_id = state["session_id"]
         try:
+            from ..planner.types import plan_result_from_dict, plan_result_to_dict
+
+            plan = plan_result_from_dict(state.get("plan") or {})
             result = self._supervisor.execute(
                 state["goal"], state["context"],
                 session_id=session_id, task=task,
@@ -750,6 +753,7 @@ class ApprovalFlowMixin:
                 completed_ids=set(state["completed"]),
                 failed_ids=set(state["failed"]),
                 prior_results=state["results"],
+                plan=plan,
             )
 
             if result.paused:
@@ -759,10 +763,10 @@ class ApprovalFlowMixin:
                         session_id=session_id,
                         goal=state["goal"],
                         context=state["context"],
-                        plan_json=json.dumps({"subtasks": [], "dag": {}, "execution_order": []}, ensure_ascii=False),
-                        completed_ids=list(state["completed"]),
-                        failed_ids=list(state["failed"]),
-                        results=state["results"],
+                        plan_json=json.dumps(plan_result_to_dict(plan), ensure_ascii=False),
+                        completed_ids=result.completed or list(state["completed"]),
+                        failed_ids=result.failed or list(state["failed"]),
+                        results=result.results or state["results"],
                     )
                 return task
 
@@ -789,6 +793,9 @@ class ApprovalFlowMixin:
         """Resume swarm execution after plan approval."""
         session_id = state["session_id"]
         try:
+            from ..planner.types import plan_result_from_dict, plan_result_to_dict
+
+            plan = plan_result_from_dict(state.get("plan") or {})
             result = self._swarm.execute(
                 state["goal"], state["context"],
                 session_id=session_id, task=task,
@@ -797,6 +804,7 @@ class ApprovalFlowMixin:
                 completed_ids=set(state["completed"]),
                 failed_ids=set(state["failed"]),
                 prior_results=state["results"],
+                plan=plan,
             )
 
             if result.paused:
@@ -806,10 +814,10 @@ class ApprovalFlowMixin:
                         session_id=session_id,
                         goal=state["goal"],
                         context=state["context"],
-                        plan_json=json.dumps({"subtasks": [], "dag": {}, "execution_order": []}, ensure_ascii=False),
-                        completed_ids=list(state["completed"]),
-                        failed_ids=list(state["failed"]),
-                        results=state["results"],
+                        plan_json=json.dumps(plan_result_to_dict(plan), ensure_ascii=False),
+                        completed_ids=result.completed or list(state["completed"]),
+                        failed_ids=result.failed or list(state["failed"]),
+                        results=result.results or state["results"],
                     )
                 return task
 

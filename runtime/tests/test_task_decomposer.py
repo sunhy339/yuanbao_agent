@@ -6,7 +6,14 @@ from typing import Any
 import pytest
 
 from local_agent_runtime.planner.decomposer import TaskDecomposer
-from local_agent_runtime.planner.types import Subtask, looks_like_shell_command, normalize_subtask_verification_requirements
+from local_agent_runtime.planner.types import (
+    PlanResult,
+    Subtask,
+    looks_like_shell_command,
+    normalize_subtask_verification_requirements,
+    plan_result_from_dict,
+    plan_result_to_dict,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +36,55 @@ class MockProvider:
 class FailingProvider:
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         raise TimeoutError("provider timed out")
+
+
+# ---------------------------------------------------------------------------
+# Plan serialization tests
+# ---------------------------------------------------------------------------
+
+
+def test_plan_result_round_trips_agent_contract_fields() -> None:
+    plan = PlanResult(
+        subtasks=[
+            Subtask(
+                id="sub-0",
+                title="Inspect session trace",
+                description="Read persisted trace events.",
+                dependencies=[],
+                agent_type="planner",
+                owned_scope=["runtime/src/local_agent_runtime"],
+                expected_artifacts=[{"kind": "analysis", "path": "trace-report"}],
+                verification_requirements=[{"kind": "command", "command": "python -m pytest runtime/tests -q"}],
+                status="completed",
+                result="Trace reviewed.",
+            ),
+            Subtask(
+                id="sub-1",
+                title="Patch execution flow",
+                description="Reuse the approved plan for execution.",
+                dependencies=["sub-0"],
+                agent_type="worker",
+                owned_scope=["runtime/src/local_agent_runtime/orchestrator"],
+            ),
+        ],
+        dag={"sub-0": [], "sub-1": ["sub-0"]},
+        execution_order=["sub-0", "sub-1"],
+        provider_response={"source": "test"},
+    )
+
+    restored = plan_result_from_dict(plan_result_to_dict(plan))
+
+    assert restored.execution_order == ["sub-0", "sub-1"]
+    assert restored.provider_response == {"source": "test"}
+    assert restored.subtasks[0].agent_type == "planner"
+    assert restored.subtasks[0].owned_scope == ["runtime/src/local_agent_runtime"]
+    assert restored.subtasks[0].expected_artifacts == [{"kind": "analysis", "path": "trace-report"}]
+    assert restored.subtasks[0].verification_requirements == [
+        {"kind": "command", "command": "python -m pytest runtime/tests -q"}
+    ]
+    assert restored.subtasks[0].status == "completed"
+    assert restored.subtasks[0].result == "Trace reviewed."
+    assert restored.subtasks[1].agent_type == "worker"
 
 
 # ---------------------------------------------------------------------------

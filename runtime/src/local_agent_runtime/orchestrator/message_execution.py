@@ -27,7 +27,7 @@ from ..tools import build_builtin_tools
 from ..tools.run_command import _powershell_execution_command
 from ..tools.registry import ToolRegistry
 from ..orchestration import OrchestrationMode
-from ..planner.types import child_tool_allowlist_for_agent
+from ..planner.types import child_tool_allowlist_for_agent, plan_result_to_dict
 from ..store.sqlite_store import SQLiteStore
 
 
@@ -185,27 +185,7 @@ class MessageExecutionMixin:
     ) -> None:
         if not hasattr(self._store, "upsert_pending_dag_state"):
             return
-        subtasks = list(getattr(plan, "subtasks", []) or [])
-        seen = {str(getattr(subtask, "id", "")) for subtask in subtasks}
-        for subtask in extra_subtasks or []:
-            subtask_id = str(getattr(subtask, "id", "") or "")
-            if subtask_id and subtask_id not in seen:
-                subtasks.append(subtask)
-                seen.add(subtask_id)
-        execution_order = list(getattr(plan, "execution_order", []) or [])
-        for subtask in extra_subtasks or []:
-            subtask_id = str(getattr(subtask, "id", "") or "")
-            if subtask_id:
-                execution_order.append(subtask_id)
-        plan_data = {
-            "subtasks": [
-                {"id": s.id, "title": s.title, "description": s.description,
-                 "dependencies": s.dependencies, "status": s.status, "result": s.result}
-                for s in subtasks
-            ],
-            "dag": getattr(plan, "dag", {}),
-            "execution_order": execution_order,
-        }
+        plan_data = plan_result_to_dict(plan, extra_subtasks=extra_subtasks)
         self._store.upsert_pending_dag_state(
             task_id=task["id"],
             session_id=session_id,
@@ -677,15 +657,7 @@ class MessageExecutionMixin:
                         "executionOrder": plan.execution_order,
                     },
                 )
-                plan_data = {
-                    "subtasks": [
-                        {"id": s.id, "title": s.title, "description": s.description,
-                         "dependencies": s.dependencies, "status": s.status, "result": s.result}
-                        for s in plan.subtasks
-                    ],
-                    "dag": plan.dag,
-                    "execution_order": plan.execution_order,
-                }
+                plan_data = plan_result_to_dict(plan)
                 if hasattr(self._store, "upsert_pending_dag_state"):
                     self._store.upsert_pending_dag_state(
                         task_id=task["id"],
@@ -1483,15 +1455,7 @@ class MessageExecutionMixin:
                 "orchestrationMode": orchestration_mode,
             },
         )
-        plan_data = {
-            "subtasks": [
-                {"id": s.id, "title": s.title, "description": s.description,
-                 "dependencies": s.dependencies, "status": s.status, "result": s.result}
-                for s in plan.subtasks
-            ],
-            "dag": plan.dag,
-            "execution_order": plan.execution_order,
-        }
+        plan_data = plan_result_to_dict(plan)
         context_with_mode = {**context, "orchestration_mode": orchestration_mode}
         if hasattr(self._store, "upsert_pending_dag_state"):
             self._store.upsert_pending_dag_state(
@@ -2155,6 +2119,7 @@ class MessageExecutionMixin:
                 session_id=session_id, task=task,
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+                plan=plan,
             )
             self._publish_planning_thinking(
                 session_id=session_id,
@@ -2301,6 +2266,7 @@ class MessageExecutionMixin:
                 session_id=session_id, task=task,
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+                plan=plan,
             )
             self._publish_planning_thinking(
                 session_id=session_id,

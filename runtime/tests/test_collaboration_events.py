@@ -86,14 +86,45 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     )
 
     created_event = _event(runtime_harness, "collab.task.created")
+    canonical_created_event = _event(runtime_harness, "task.created")
     claimed_event = _event(runtime_harness, "collab.task.claimed")
+    canonical_updated_event = _event(runtime_harness, "task.updated")
     message_event = _event(runtime_harness, "collab.message.sent")
     completed_event = _event(runtime_harness, "collab.task.completed")
 
-    assert _event_index(runtime_harness, "collab.task.created") < _event_index(
+    assert _event_index(runtime_harness, "task.created") < _event_index(
+        runtime_harness,
+        "collab.task.created",
+    ) < _event_index(
+        runtime_harness,
+        "task.updated",
+    ) < _event_index(
         runtime_harness,
         "collab.task.claimed",
     ) < _event_index(runtime_harness, "collab.message.sent") < _event_index(runtime_harness, "collab.task.completed")
+
+    assert canonical_created_event["sessionId"] == session["id"]
+    assert canonical_created_event["taskId"] == task["id"]
+    assert canonical_created_event["visibility"] == "panel"
+    assert canonical_created_event["payload"]["source"] == "collaboration"
+    assert canonical_created_event["payload"]["taskKind"] == "collaboration_child"
+    assert canonical_created_event["payload"]["title"] == "Publish collaboration events"
+    assert canonical_created_event["hahaCc"] == {
+        "type": "task_update",
+        "taskId": task["id"],
+        "status": "queued",
+        "progress": "Publish collaboration events",
+    }
+
+    assert canonical_updated_event["payload"]["source"] == "collaboration"
+    assert canonical_updated_event["payload"]["taskKind"] == "collaboration_child"
+    assert canonical_updated_event["payload"]["workerId"] == worker["id"]
+    assert canonical_updated_event["hahaCc"] == {
+        "type": "task_update",
+        "taskId": task["id"],
+        "status": "claimed",
+        "progress": "Publish collaboration events",
+    }
 
     assert created_event["sessionId"] == session["id"]
     assert created_event["taskId"] == task["id"]
@@ -179,25 +210,32 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     trace_events = runtime_harness.call("trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
     trace_types = [event["type"] for event in trace_events]
     assert trace_types == [
+        "task.created",
         "collab.task.created",
+        "task.updated",
         "collab.task.claimed",
         "collab.message.sent",
+        "task.updated",
         "collab.task.completed",
     ]
     assert trace_events[0]["sessionId"] == session["id"]
     assert trace_events[0]["taskId"] == task["id"]
     assert {event["visibility"] for event in trace_events} == {"panel"}
-    assert [event["hahaCc"] for event in trace_events] == [
-        created_event["hahaCc"],
-        claimed_event["hahaCc"],
-        message_event["hahaCc"],
-        completed_event["hahaCc"],
-    ]
+    assert trace_events[0]["hahaCc"] == canonical_created_event["hahaCc"]
+    assert trace_events[2]["hahaCc"] == canonical_updated_event["hahaCc"]
+    assert trace_events[-2]["hahaCc"]["type"] == "task_update"
+    assert trace_events[-2]["hahaCc"]["status"] == "completed"
 
     yuanbao_after = runtime_harness.call(
         "events.yuanbaoAfter",
         {"sessionId": session["id"], "afterSeq": 0},
     )["result"]["messages"]
+    task_updates = [message for message in yuanbao_after if message.get("type") == "task_update"]
+    assert task_updates[-3:] == [
+        canonical_created_event["hahaCc"],
+        canonical_updated_event["hahaCc"],
+        trace_events[-2]["hahaCc"],
+    ]
     team_updates = [message for message in yuanbao_after if message.get("type") == "team_update"]
     assert team_updates[-4:] == [
         created_event["hahaCc"],

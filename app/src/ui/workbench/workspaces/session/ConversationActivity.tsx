@@ -121,8 +121,6 @@ function isCollapsibleCommandRuntimeItem(item: RuntimeTimelineItem) {
     return false;
   }
   return (
-    isVerificationCommand(command) ||
-    WORKLOG_VERIFICATION_COMMAND_RE.test(command) ||
     WORKLOG_CONTEXT_COMMAND_RE.test(command) ||
     WORKLOG_ROUTINE_MUTATION_COMMAND_RE.test(command)
   );

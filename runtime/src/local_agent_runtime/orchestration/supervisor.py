@@ -99,15 +99,16 @@ class SupervisorOrchestrator:
         completed_ids: set[str] | None = None,
         failed_ids: set[str] | None = None,
         prior_results: dict[str, str] | None = None,
+        plan: PlanResult | None = None,
     ) -> OrchestrationResult:
         """Decompose goal, execute sub-tasks with review, synthesize results."""
         provider_context = context.get("_provider_context") if isinstance(context.get("_provider_context"), dict) else None
-        # Decompose
-        plan = self._decomposer.decompose(
-            goal,
-            context.get("description", ""),
-            provider_context=provider_context,
-        )
+        if plan is None:
+            plan = self._decomposer.decompose(
+                goal,
+                context.get("description", ""),
+                provider_context=provider_context,
+            )
 
         completed: set[str] = set(completed_ids or ())
         failed: set[str] = set(failed_ids or ())

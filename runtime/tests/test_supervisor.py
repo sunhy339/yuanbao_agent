@@ -7,6 +7,7 @@ import pytest
 
 from local_agent_runtime.orchestration.supervisor import SupervisorOrchestrator
 from local_agent_runtime.orchestration.types import OrchestrationResult
+from local_agent_runtime.planner.types import PlanResult, Subtask
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,56 @@ def _make_task() -> dict[str, Any]:
 
 
 class TestSupervisorApproved:
+    def test_uses_supplied_plan_without_decomposing_again(self) -> None:
+        mock_sub = MockSubagentService()
+        mock_prov = MockProvider(
+            decompose_subtasks=[
+                {"id": "sub-0", "title": "Template task", "description": "Should not run", "dependencies": []},
+            ],
+            reviews=[
+                json.dumps({"approved": True, "feedback": ""}),
+                json.dumps({"approved": True, "feedback": ""}),
+            ],
+        )
+        plan = PlanResult(
+            subtasks=[
+                Subtask(
+                    id="custom-0",
+                    title="Inspect approved plan",
+                    description="Read the approved decomposition.",
+                    dependencies=[],
+                    agent_type="planner",
+                ),
+                Subtask(
+                    id="custom-1",
+                    title="Verify execution contract",
+                    description="Check the execution path.",
+                    dependencies=["custom-0"],
+                    agent_type="reviewer",
+                ),
+            ],
+            dag={"custom-0": [], "custom-1": ["custom-0"]},
+            execution_order=["custom-0", "custom-1"],
+        )
+        supervisor = SupervisorOrchestrator(provider=mock_prov, subagent_service=mock_sub)
+
+        result = supervisor.execute(
+            "Use approved supervisor plan",
+            {},
+            session_id="sess-1",
+            task=_make_task(),
+            plan=plan,
+        )
+
+        assert result.success is True
+        assert mock_prov._decompose_called is False
+        assert [call["title"] for call in mock_sub.calls] == [
+            "Inspect approved plan",
+            "Verify execution contract",
+        ]
+        assert mock_sub.calls[0]["agentType"] == "planner"
+        assert mock_sub.calls[1]["agentType"] == "reviewer"
+
     def test_all_approved_first_try(self) -> None:
         mock_sub = MockSubagentService()
         mock_prov = MockProvider(

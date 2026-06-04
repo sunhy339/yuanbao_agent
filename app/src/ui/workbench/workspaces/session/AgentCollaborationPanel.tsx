@@ -64,9 +64,15 @@ function summarizeStructuredRecord(record: Record<string, unknown> | null) {
 
 function getTaskSummary(task: SessionWorkspaceChildTask) {
   if (task.errorMessage) {
+    if (/^[A-Z][A-Z0-9_:-]{3,}$/.test(task.errorMessage.trim())) {
+      return undefined;
+    }
     return compactText(task.errorMessage, 96);
   }
   if (task.attention) {
+    if (/^[A-Z][A-Z0-9_:-]{3,}$/.test(task.attention.trim())) {
+      return undefined;
+    }
     return compactText(task.attention, 96);
   }
   const structured = summarizeStructuredRecord(parseStructuredSummary(task.summary));
@@ -171,7 +177,7 @@ function groupChildTasks(childTasks: SessionWorkspaceChildTask[]): TaskCard[] {
       tone: getStatusTone(task.status),
       pulse: isRuntimeInFlight(task.status),
       summary: getTaskSummary(task),
-      footer: getTaskFooter(task) || undefined,
+      footer: undefined,
     });
   }
 
@@ -246,8 +252,9 @@ function getResultSummary(result: SessionWorkspaceChildTaskResult) {
   return compactText(summary, 92);
 }
 
-function getVisibleResults(results: SessionWorkspaceChildTaskResult[]) {
+function getVisibleResults(results: SessionWorkspaceChildTaskResult[], visibleTaskIds: Set<string>) {
   return results
+    .filter((result) => !result.taskId || !visibleTaskIds.has(result.taskId))
     .map((result) => ({
       ...result,
       displaySummary: getResultSummary(result),
@@ -288,7 +295,8 @@ export function AgentCollaborationPanel({
 
   const taskCards = groupChildTasks(childTasks);
   const visibleWorkers = getVisibleWorkers(workers);
-  const visibleResults = getVisibleResults(results);
+  const visibleTaskIds = new Set(taskCards.map((task) => task.id));
+  const visibleResults = getVisibleResults(results, visibleTaskIds);
   const onlyCollapsedPlannerScans =
     taskCards.length > 0 &&
     taskCards.every((task) => task.collapsedKind === "planner_scan") &&
@@ -351,7 +359,6 @@ export function AgentCollaborationPanel({
               <span>
                 {compactMeta([
                   worker.mode,
-                  worker.claimedTaskId ? `task: ${worker.claimedTaskId}` : null,
                   worker.healthState,
                 ]).join(" · ") || worker.id}
               </span>

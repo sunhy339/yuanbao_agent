@@ -136,7 +136,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
     const rightPane = screen.getByLabelText("右侧文件工作区");
     expect(rightPane).toBeInTheDocument();
-    expect(within(rightPane).getByText("文件")).toBeInTheDocument();
+    expect(within(rightPane).getByRole("tab", { name: "文件" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
@@ -904,7 +904,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("python")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "复制" })).toBeInTheDocument();
     expect(screen.getByText("return")).toBeInTheDocument();
-    expect(screen.getByRole("separator", { name: "调整文件列表宽度" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "调整右侧工作区宽度" })).toBeInTheDocument();
     expect(screen.queryByText(/## Can do/)).not.toBeInTheDocument();
     expect(screen.queryByText(/# # 1/)).not.toBeInTheDocument();
     expect(screen.queryByText(/### 这次改了哪些文件/)).not.toBeInTheDocument();
@@ -1913,7 +1913,8 @@ describe("SessionWorkspace", () => {
 
     expect(screen.queryByLabelText("计划步骤")).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("真实 Agent 任务")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("真实 Agent 任务")).toBeInTheDocument();
+    expect(screen.getByText("Implement food sprite polish")).toBeInTheDocument();
     expect(screen.queryByText(/worker: Worker 1/)).not.toBeInTheDocument();
     expect(screen.queryByText("Food rendering updated.")).not.toBeInTheDocument();
   });
@@ -2483,7 +2484,9 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("真实 Agent 任务")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("真实 Agent 任务")).toBeInTheDocument();
+    expect(screen.getByText("Explore workspace")).toBeInTheDocument();
+    expect(screen.getByText("Apply fixes")).toBeInTheDocument();
     expect(screen.queryByText(/类型: explorer/)).not.toBeInTheDocument();
     expect(screen.queryByText(/4.5s/)).not.toBeInTheDocument();
     expect(screen.queryByText(/2 产物/)).not.toBeInTheDocument();

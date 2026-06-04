@@ -106,4 +106,26 @@ describe("eventRecordViews worktree routing", () => {
     expect(next?.status).toBe("running");
     expect(next?.resultSummary).toBe("Completion is waiting for runtime work to settle.");
   });
+
+  it("keeps collaboration child task updates out of root task records", () => {
+    const current: TaskRecord = {
+      id: "task_1",
+      sessionId: "sess_1",
+      type: "chat",
+      status: "running",
+      goal: "Root task",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const event = taskEvent("task.updated", {
+      source: "collaboration",
+      taskKind: "collaboration_child",
+      taskId: "ctask_child",
+      status: "completed",
+      title: "Analyze codebase",
+    });
+
+    expect(taskRecordFromEvent(event)).toBeNull();
+    expect(applyEventToTask(current, event)).toBe(current);
+  });
 });

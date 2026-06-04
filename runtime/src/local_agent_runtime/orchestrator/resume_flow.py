@@ -184,22 +184,9 @@ class ResumeFlowMixin:
     def _resume_dag_execution(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         """Resume a paused DAG execution from its saved checkpoint."""
         try:
-            from ..planner.types import PlanResult, Subtask as PlanSubtask
+            from ..planner.types import plan_result_from_dict, plan_result_to_dict
 
-            plan_data = state["plan"]
-            subtasks = [
-                PlanSubtask(
-                    id=s["id"], title=s["title"], description=s["description"],
-                    dependencies=s["dependencies"], status=s.get("status", "pending"),
-                    result=s.get("result"),
-                )
-                for s in plan_data["subtasks"]
-            ]
-            plan = PlanResult(
-                subtasks=subtasks,
-                dag=plan_data["dag"],
-                execution_order=plan_data["execution_order"],
-            )
+            plan = plan_result_from_dict(state["plan"])
 
             execution = self._dag_executor.execute(
                 plan,
@@ -217,15 +204,7 @@ class ResumeFlowMixin:
 
             if execution.get("paused"):
                 # Paused again — update persisted state
-                updated_plan_data = {
-                    "subtasks": [
-                        {"id": s.id, "title": s.title, "description": s.description,
-                         "dependencies": s.dependencies, "status": s.status, "result": s.result}
-                        for s in plan.subtasks
-                    ],
-                    "dag": plan.dag,
-                    "execution_order": plan.execution_order,
-                }
+                updated_plan_data = plan_result_to_dict(plan)
                 if hasattr(self._store, "upsert_pending_dag_state"):
                     self._store.upsert_pending_dag_state(
                         task_id=task["id"],

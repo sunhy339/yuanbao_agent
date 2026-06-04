@@ -7,6 +7,7 @@ import pytest
 
 from local_agent_runtime.orchestration.swarm import SwarmOrchestrator
 from local_agent_runtime.orchestration.types import OrchestrationResult
+from local_agent_runtime.planner.types import PlanResult, Subtask
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +87,72 @@ def _make_task() -> dict[str, Any]:
 
 
 class TestSwarmSequential:
+    def test_uses_supplied_plan_without_decomposing_again(self) -> None:
+        mock_sub = MockSubagentService()
+        mock_prov = MockProvider(
+            subtasks=[
+                {"id": "sub-0", "title": "Template task", "description": "Should not run", "dependencies": []},
+            ],
+            handoffs=[
+                json.dumps({"next_subtask_id": "custom-1", "handoff_prompt": None, "done": False}),
+                json.dumps({"done": True}),
+            ],
+        )
+        plan = PlanResult(
+            subtasks=[
+                Subtask(
+                    id="custom-0",
+                    title="Inspect current session",
+                    description="Read persisted session events.",
+                    dependencies=[],
+                    agent_type="planner",
+                ),
+                Subtask(
+                    id="custom-1",
+                    title="Patch execution flow",
+                    description="Reuse the approved plan.",
+                    dependencies=["custom-0"],
+                    agent_type="worker",
+                ),
+            ],
+            dag={"custom-0": [], "custom-1": ["custom-0"]},
+            execution_order=["custom-0", "custom-1"],
+        )
+        swarm = SwarmOrchestrator(provider=mock_prov, subagent_service=mock_sub)
+
+        result = swarm.execute(
+            "Use approved plan",
+            {},
+            session_id="sess-1",
+            task=_make_task(),
+            plan=plan,
+        )
+
+        assert result.success is True
+        assert mock_prov._decompose_called is False
+        assert [call["title"] for call in mock_sub.calls] == [
+            "Inspect current session",
+            "Patch execution flow",
+        ]
+        assert mock_sub.calls[0]["agentType"] == "planner"
+        assert mock_sub.calls[1]["agentType"] == "worker"
+
+    def test_new_execution_clears_previous_handoff_prompt(self) -> None:
+        mock_sub = MockSubagentService()
+        mock_prov = MockProvider(handoffs=[json.dumps({"done": True})])
+        plan = PlanResult(
+            subtasks=[Subtask(id="sub-0", title="Fresh task", description="Use fresh description", dependencies=[])],
+            dag={"sub-0": []},
+            execution_order=["sub-0"],
+        )
+        swarm = SwarmOrchestrator(provider=mock_prov, subagent_service=mock_sub)
+        swarm._last_handoff_prompt = "Continue from a different task"  # noqa: SLF001
+
+        swarm.execute("Fresh goal", {}, session_id="sess-1", task=_make_task(), plan=plan)
+
+        assert mock_sub.calls[0]["planningPrompt"] == "Use fresh description"
+        assert "Continue from a different task" not in mock_sub.calls[0]["prompt"]
+
     def test_sequential_handoff(self) -> None:
         mock_sub = MockSubagentService()
         mock_prov = MockProvider(

@@ -147,6 +147,25 @@ class EventStoreMixin:
                 created_at=getattr(event, "ts", None),
                 visibility=event_visibility,
             )
+        if self._is_collaboration_child_task_event(normalized_type, task_id, payload):
+            event_session_id = getattr(event, "session_id", None)
+            if not event_session_id and isinstance(payload, dict):
+                event_session_id = payload.get("sessionId") or payload.get("session_id")
+            if not event_session_id:
+                return None
+            collaboration_task_id = task_id
+            if isinstance(payload, dict):
+                collaboration_task_id = payload.get("taskId") or payload.get("task_id") or task_id
+            return self.append_collaboration_trace_event(
+                task_id=str(collaboration_task_id),
+                session_id=str(event_session_id),
+                event_type=normalized_type,
+                source=self._trace_source(normalized_type),
+                related_id=self._trace_related_id(payload),
+                payload=payload,
+                created_at=getattr(event, "ts", None),
+                visibility=event_visibility,
+            )
         if normalized_type.startswith("collab."):
             if not str(task_id).startswith("ctask_"):
                 event_session_id = getattr(event, "session_id", None)
@@ -184,6 +203,17 @@ class EventStoreMixin:
             created_at=getattr(event, "ts", None),
             visibility=event_visibility,
         )
+
+    def _is_collaboration_child_task_event(self, event_type: str, task_id: Any, payload: Any) -> bool:
+        if event_type not in {"task.created", "task.updated"}:
+            return False
+        if isinstance(payload, dict):
+            if payload.get("source") == "collaboration" or payload.get("taskKind") == "collaboration_child":
+                return True
+            payload_task_id = payload.get("taskId") or payload.get("task_id")
+            if isinstance(payload_task_id, str) and payload_task_id.startswith("ctask_"):
+                return True
+        return isinstance(task_id, str) and task_id.startswith("ctask_")
 
     def list_trace_events(self, params: dict[str, Any]) -> dict[str, Any]:
         task_id = params.get("taskId") or params.get("task_id")

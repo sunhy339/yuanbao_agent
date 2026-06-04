@@ -387,6 +387,63 @@ describe("buildSessionCollaboration", () => {
     });
     expect(collaboration.results?.[0]?.summary).toBe("Found workspace and composer gaps.");
   });
+
+  it("surfaces canonical collaboration task updates as child tasks", () => {
+    const collaboration = buildSessionCollaboration(
+      [
+        {
+          eventId: "evt_child_created",
+          sessionId: "sess_1",
+          taskId: "ctask_123abc",
+          type: "task.created",
+          ts: 1000,
+          payload: {
+            source: "collaboration",
+            taskKind: "collaboration_child",
+            taskId: "ctask_123abc",
+            status: "queued",
+            title: "Analyze codebase",
+            agentType: "planner",
+          },
+        } as AgentEventEnvelope,
+        {
+          eventId: "evt_child_completed",
+          sessionId: "sess_1",
+          taskId: "ctask_123abc",
+          type: "task.updated",
+          ts: 1500,
+          payload: {
+            source: "collaboration",
+            taskKind: "collaboration_child",
+            taskId: "ctask_123abc",
+            status: "completed",
+            title: "Analyze codebase",
+            summary: "Inspected README and source files.",
+            workerId: "worker_1",
+            worker: {
+              id: "worker_1",
+              name: "Planner",
+              role: "planner",
+              status: "idle",
+            },
+          },
+        } as AgentEventEnvelope,
+      ],
+      [],
+    );
+
+    expect(collaboration.childTasks).toHaveLength(1);
+    expect(collaboration.childTasks?.[0]).toMatchObject({
+      id: "ctask_123abc",
+      title: "Analyze codebase",
+      status: "completed",
+      summary: "Inspected README and source files.",
+      workerId: "worker_1",
+      workerName: "Planner",
+      completedAt: 1500,
+    });
+    expect(collaboration.results?.[0]?.summary).toBe("Inspected README and source files.");
+  });
 });
 
 describe("buildSessionBackgroundJobs", () => {

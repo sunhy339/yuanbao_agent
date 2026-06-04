@@ -260,6 +260,33 @@ function readRecordString(record: Record<string, unknown>, key: string): string 
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function looksLikeMachineId(value?: string): boolean {
+  if (!value) {
+    return false;
+  }
+  return /^(?:c?task|evt|msg|trace|tool|cmd|appr|worker|child|subtask|sub)[_-]?[0-9a-f]{6,}$/i.test(value.trim());
+}
+
+function readableCollaborationTitle(record: Record<string, unknown>, currentTitle: string | undefined, fallback: string) {
+  const metadata = readChildRecord(record, "metadata");
+  const agentType = readRecordString(record, "agentType") ?? (metadata ? readRecordString(metadata, "agentType") : undefined);
+  const candidates = [
+    readRecordString(record, "title"),
+    readRecordString(record, "description"),
+    readRecordString(record, "summary"),
+    readRecordString(record, "goal"),
+    currentTitle,
+  ];
+  const selected = candidates.find((candidate) => candidate && !looksLikeMachineId(candidate));
+  if (selected) {
+    return selected;
+  }
+  if (agentType && !looksLikeMachineId(agentType)) {
+    return `${agentType} 子任务`;
+  }
+  return fallback;
+}
+
 function readRecordNumber(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -374,12 +401,14 @@ export function buildSessionCollaboration(
       type: event.type,
       payload: event.payload,
       time: event.ts,
+      taskId: event.taskId,
     })),
     ...traceEvents.map((trace) => ({
       id: trace.id,
       type: trace.type,
       payload: trace.payload,
       time: trace.createdAt,
+      taskId: trace.taskId,
     })),
   ].sort((left, right) => left.time - right.time);
 
@@ -427,7 +456,7 @@ export function buildSessionCollaboration(
       (isTerminalChildTaskStatus(status) ? time : undefined);
     childTasks.set(id, {
       id,
-      title: readRecordString(task, "title") ?? current?.title ?? id,
+      title: readableCollaborationTitle(task, current?.title, "子任务"),
       status,
       workerId: readRecordString(task, "assignedWorkerId") ?? current?.workerId,
       summary: readResultSummary(task) ?? current?.summary,
@@ -446,7 +475,7 @@ export function buildSessionCollaboration(
       results.set(`${id}:result`, {
         id: `${id}:result`,
         taskId: id,
-        title: readRecordString(task, "title") ?? current?.title ?? id,
+        title: readableCollaborationTitle(task, current?.title, "子任务结果"),
         status,
         summary,
         updatedAt: completedAt ?? readRecordNumber(task, "updatedAt") ?? time,
@@ -465,6 +494,26 @@ export function buildSessionCollaboration(
       rememberWorker(readChildRecord(payload, "worker"), event.time);
     }
 
+    if (
+      (event.type === "task.created" || event.type === "task.updated") &&
+      (readRecordString(payload, "source") === "collaboration" ||
+        readRecordString(payload, "taskKind") === "collaboration_child")
+    ) {
+      const task = readChildRecord(payload, "collaborationTask") ?? {
+        id: readRecordString(payload, "taskId") ?? event.taskId,
+        title: readRecordString(payload, "title"),
+        description: readRecordString(payload, "description"),
+        status: readRecordString(payload, "status"),
+        summary: readRecordString(payload, "summary") ?? readRecordString(payload, "resultSummary"),
+        assignedWorkerId: readRecordString(payload, "workerId"),
+        agentType: readRecordString(payload, "agentType"),
+        updatedAt: event.time,
+        completedAt: isTerminalChildTaskStatus(readRecordString(payload, "status")) ? event.time : undefined,
+      };
+      rememberTask(task, event.time);
+      rememberWorker(readChildRecord(payload, "worker"), event.time);
+    }
+
     if (event.type.startsWith("task.planning.subtask.")) {
       const id = readRecordString(payload, "subtaskId") ?? readRecordString(payload, "id") ?? readRecordString(payload, "taskId");
       if (id) {
@@ -472,7 +521,11 @@ export function buildSessionCollaboration(
         const planningTask: Record<string, unknown> = {
           ...payload,
           id,
-          title: readRecordString(payload, "subtaskTitle") ?? readRecordString(payload, "title") ?? id,
+          title: readableCollaborationTitle(
+            { ...payload, title: readRecordString(payload, "subtaskTitle") ?? readRecordString(payload, "title") },
+            childTasks.get(id)?.title,
+            "子任务",
+          ),
           status,
           summary: readRecordString(payload, "summary") ?? readRecordString(payload, "result"),
           updatedAt: event.time,

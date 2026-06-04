@@ -252,3 +252,126 @@ class PlanResult:
     dag: dict[str, list[str]]  # adjacency list {id: [dependency IDs]}
     execution_order: list[str]  # topological sort result
     provider_response: dict[str, object] | None = None
+
+
+def _unique_strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _dict_alias(data: dict[str, object], *keys: str) -> object:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None
+
+
+def subtask_to_dict(subtask: Subtask) -> dict[str, object]:
+    return {
+        "id": subtask.id,
+        "title": subtask.title,
+        "description": subtask.description,
+        "dependencies": list(subtask.dependencies),
+        "agentType": normalize_subtask_agent_type(subtask.agent_type),
+        "ownedScope": list(subtask.owned_scope),
+        "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+        "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
+        "status": subtask.status,
+        "result": subtask.result,
+    }
+
+
+def subtask_from_dict(data: dict[str, object]) -> Subtask:
+    subtask_id = str(data.get("id") or "").strip()
+    title = str(data.get("title") or subtask_id or "Subtask").strip()
+    description = str(data.get("description") or "").strip()
+    result_value = data.get("result")
+    result = str(result_value) if result_value is not None else None
+    status = str(data.get("status") or "queued").strip() or "queued"
+    return Subtask(
+        id=subtask_id,
+        title=title,
+        description=description,
+        dependencies=_unique_strings(data.get("dependencies")),
+        agent_type=normalize_subtask_agent_type(_dict_alias(data, "agentType", "agent_type")),
+        owned_scope=normalize_subtask_owned_scope(_dict_alias(data, "ownedScope", "owned_scope", "writeScope", "write_scope")),
+        expected_artifacts=normalize_subtask_expected_artifacts(_dict_alias(data, "expectedArtifacts", "expected_artifacts")),
+        verification_requirements=normalize_subtask_verification_requirements(
+            _dict_alias(data, "verificationRequirements", "verification_requirements")
+        ),
+        status=status,
+        result=result,
+    )
+
+
+def plan_result_to_dict(plan: PlanResult, *, extra_subtasks: list[Subtask] | None = None) -> dict[str, object]:
+    subtasks = list(plan.subtasks)
+    seen = {str(subtask.id) for subtask in subtasks if str(subtask.id).strip()}
+    for subtask in extra_subtasks or []:
+        subtask_id = str(subtask.id).strip()
+        if subtask_id and subtask_id not in seen:
+            subtasks.append(subtask)
+            seen.add(subtask_id)
+
+    execution_order = _unique_strings(list(plan.execution_order))
+    for subtask in subtasks:
+        if subtask.id and subtask.id not in execution_order:
+            execution_order.append(subtask.id)
+
+    dag: dict[str, list[str]] = {}
+    for key, value in (plan.dag or {}).items():
+        dag[str(key)] = _unique_strings(value)
+    for subtask in subtasks:
+        dag.setdefault(subtask.id, list(subtask.dependencies))
+
+    data: dict[str, object] = {
+        "subtasks": [subtask_to_dict(subtask) for subtask in subtasks],
+        "dag": dag,
+        "execution_order": execution_order,
+    }
+    if plan.provider_response is not None:
+        data["providerResponse"] = dict(plan.provider_response)
+    return data
+
+
+def plan_result_from_dict(data: dict[str, object]) -> PlanResult:
+    raw_subtasks = data.get("subtasks")
+    subtasks = [
+        subtask_from_dict(item)
+        for item in raw_subtasks
+        if isinstance(raw_subtasks, list) and isinstance(item, dict)
+    ] if isinstance(raw_subtasks, list) else []
+    subtasks = [subtask for subtask in subtasks if subtask.id]
+
+    raw_dag = data.get("dag")
+    dag: dict[str, list[str]] = {}
+    if isinstance(raw_dag, dict):
+        for key, value in raw_dag.items():
+            key_text = str(key).strip()
+            if key_text:
+                dag[key_text] = _unique_strings(value)
+    for subtask in subtasks:
+        dag.setdefault(subtask.id, list(subtask.dependencies))
+
+    raw_order = data.get("execution_order") or data.get("executionOrder")
+    execution_order = _unique_strings(raw_order)
+    for subtask in subtasks:
+        if subtask.id not in execution_order:
+            execution_order.append(subtask.id)
+
+    provider_response = data.get("providerResponse")
+    return PlanResult(
+        subtasks=subtasks,
+        dag=dag,
+        execution_order=execution_order,
+        provider_response=dict(provider_response) if isinstance(provider_response, dict) else None,
+    )

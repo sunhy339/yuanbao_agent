@@ -93,18 +93,20 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   const runtimeTimelineEvents = useMemo<AgentEventLike[]>(() => {
     const merged = new Map<string, AgentEventLike>();
 
-    sessionScopedTraceEvents.forEach((trace: any) => {
-      if (!trace?.type) return;
-      const eventId = String(trace.id ?? `${trace.type}:${trace.taskId ?? ""}:${trace.sequence ?? trace.createdAt ?? ""}`);
-      merged.set(`trace:${eventId}`, {
-        type: trace.type,
-        payload: trace.payload ?? {},
-        taskId: trace.taskId,
-        sessionId: trace.sessionId,
-        eventId,
-        ts: trace.createdAt ?? 0,
+    sessionScopedTraceEvents
+      .filter((trace: any) => trace?.uiReplayScope !== "panel")
+      .forEach((trace: any) => {
+        if (!trace?.type) return;
+        const eventId = String(trace.id ?? `${trace.type}:${trace.taskId ?? ""}:${trace.sequence ?? trace.createdAt ?? ""}`);
+        merged.set(`trace:${eventId}`, {
+          type: trace.type,
+          payload: trace.payload ?? {},
+          taskId: trace.taskId,
+          sessionId: trace.sessionId,
+          eventId,
+          ts: trace.createdAt ?? 0,
+        });
       });
-    });
 
     sessionScopedEvents.forEach((event: any) => {
       if (!event?.type) return;
@@ -383,7 +385,10 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
 
   const sessionBackgroundJobs = useMemo(
     () => {
-      const eventJobs = buildSessionBackgroundJobs(sessionScopedEvents, sessionScopedTraceEvents);
+      const eventJobs = buildSessionBackgroundJobs(
+        sessionScopedEvents,
+        sessionScopedTraceEvents.filter((trace: any) => trace?.uiReplayScope !== "panel"),
+      );
       const commandLogs = Object.values(commandLogCacheById).filter((log) => !viewSessionId || sessionTaskIds.has(log.taskId));
       return mergeSessionBackgroundJobs(eventJobs, commandLogs);
     },

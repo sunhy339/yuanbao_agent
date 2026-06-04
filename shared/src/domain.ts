@@ -515,6 +515,7 @@ export interface TraceEventRecord<TPayload = unknown> {
   createdAt: number;
   sequence: number;
   visibility?: EventVisibility;
+  uiReplayScope?: "chat" | "panel";
   yuanbao?: YuanbaoServerMessage;
   hahaCc?: HahaCcServerMessage;
 }

@@ -510,6 +510,7 @@ export function App() {
     sessionId: string | null | undefined,
     _taskCandidates: TaskRecord[] = taskHistory,
     isCancelled: () => boolean = () => false,
+    options: { replayToChat?: boolean } = {},
   ) {
     if (!sessionId) return;
     const [loadedTraceEvents, commandResult] = await Promise.all([
@@ -522,12 +523,18 @@ export function App() {
     if (isCancelled()) return;
     rememberChildTaskIdsFromTrace(loadedTraceEvents);
     if (loadedTraceEvents.length) {
-      setTraceEvents((current) => mergeTraceEvents(current, loadedTraceEvents));
-      setChatMessages((current) =>
-        replayTraceEventsToChatMessages(current, loadedTraceEvents, {
-          childTaskIds: childTaskIdsRef.current,
-        }),
-      );
+      const scopedTraceEvents = loadedTraceEvents.map((trace) => ({
+        ...trace,
+        uiReplayScope: options.replayToChat ? "chat" as const : "panel" as const,
+      }));
+      setTraceEvents((current) => mergeTraceEvents(current, scopedTraceEvents));
+      if (options.replayToChat) {
+        setChatMessages((current) =>
+          replayTraceEventsToChatMessages(current, scopedTraceEvents, {
+            childTaskIds: childTaskIdsRef.current,
+          }),
+        );
+      }
     }
     const loadedCommandLogs = commandResult.commandLogs;
     if (loadedCommandLogs.length) {
@@ -548,6 +555,7 @@ export function App() {
           sessionId,
           undefined,
           () => messageLoadRequestRef.current !== requestId,
+          { replayToChat: true },
         ),
         runtimeClient.listMessages({ sessionId, limit: 500 }),
       ]);

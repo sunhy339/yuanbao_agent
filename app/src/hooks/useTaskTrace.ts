@@ -64,7 +64,10 @@ export function useTaskTrace(deps: UseTaskTraceDeps) {
       if (!isCancelled()) {
         setTraceEvents((current) => {
           const next = new Map(current.map((trace) => [trace.id, trace]));
-          result.traceEvents.forEach((trace) => next.set(trace.id, trace));
+          result.traceEvents.forEach((trace) => next.set(trace.id, {
+            ...trace,
+            uiReplayScope: "panel",
+          }));
           return Array.from(next.values()).sort((left, right) => {
             const timeDiff = (left.createdAt ?? 0) - (right.createdAt ?? 0);
             if (timeDiff !== 0) return timeDiff;

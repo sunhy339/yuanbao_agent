@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -10,6 +10,7 @@ import type {
   ScheduledTaskListResult,
   SessionListResult,
   TaskListResult,
+  AgentEventEnvelope,
 } from "@shared";
 import type { HostStatus } from "./lib/runtimeClient";
 
@@ -27,6 +28,7 @@ const runtimeMocks = vi.hoisted(() => ({
   listTrace: vi.fn(),
   commandLogList: vi.fn(),
   subscribeEvents: vi.fn(),
+  eventHandler: null as ((event: AgentEventEnvelope) => void) | null,
   canOpenLocalAppPaths: vi.fn(),
 }));
 
@@ -130,18 +132,24 @@ function setupRuntimeMocks() {
   runtimeMocks.eventsAfter.mockResolvedValue({ events: [], truncated: false });
   runtimeMocks.listTrace.mockResolvedValue({ traceEvents: [] });
   runtimeMocks.commandLogList.mockResolvedValue({ commandLogs: [] });
-  runtimeMocks.subscribeEvents.mockResolvedValue(vi.fn());
+  runtimeMocks.subscribeEvents.mockImplementation(async (handler: (event: AgentEventEnvelope) => void) => {
+    runtimeMocks.eventHandler = handler;
+    return vi.fn();
+  });
   runtimeMocks.canOpenLocalAppPaths.mockReturnValue(false);
 }
 
 beforeEach(() => {
   for (const mock of Object.values(runtimeMocks)) {
-    mock.mockReset();
+    if (typeof mock === "function" && "mockReset" in mock) {
+      mock.mockReset();
+    }
   }
   if (!HTMLElement.prototype.scrollTo) {
     HTMLElement.prototype.scrollTo = vi.fn();
   }
   setupRuntimeMocks();
+  runtimeMocks.eventHandler = null;
 });
 
 afterEach(() => {
@@ -277,6 +285,83 @@ describe("App session message recovery", () => {
       afterSeq: 0,
       limit: 500,
     });
+  });
+
+  it("does not replay recovered trace events into chat after task status refreshes", async () => {
+    const user = userEvent.setup();
+    runtimeMocks.listTasks.mockResolvedValue({
+      tasks: [
+        {
+          id: "task_alpha",
+          sessionId: "sess_alpha",
+          type: "chat",
+          status: "running",
+          goal: "keep working",
+          createdAt: 90,
+          updatedAt: 90,
+        },
+      ],
+    } satisfies TaskListResult);
+    runtimeMocks.eventsAfter.mockResolvedValue({ events: [], truncated: false });
+
+    render(<App />);
+
+    const sessionRail = await screen.findByLabelText("会话");
+    await user.click(await within(sessionRail).findByRole("button", { name: "打开会话 Alpha Session" }));
+    expect(await screen.findByText("Alpha persisted request")).toBeInTheDocument();
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+    expect(screen.queryByText(/python -m pytest/i)).not.toBeInTheDocument();
+    runtimeMocks.eventsAfter.mockClear();
+    runtimeMocks.eventsAfter.mockImplementation(async ({ sessionId }: { sessionId: string }) => {
+      if (sessionId !== "sess_alpha") {
+        return { events: [], truncated: false };
+      }
+      return {
+        truncated: false,
+        events: [
+          {
+            id: "evt_alpha_command_start",
+            sessionId: "sess_alpha",
+            taskId: "task_alpha",
+            type: "command.started",
+            source: "command",
+            payload: {
+              commandId: "cmd_alpha_late",
+              toolUseId: "tool_alpha_late",
+              toolName: "run_command",
+              command: "python -m pytest",
+              target: "python -m pytest",
+              inputSummary: "python -m pytest",
+            },
+            createdAt: 120,
+            sequence: 1,
+            visibility: "chat",
+          },
+        ],
+      };
+    });
+
+    act(() => {
+      runtimeMocks.eventHandler?.({
+        eventId: "evt_alpha_task_update",
+        sessionId: "sess_alpha",
+        taskId: "task_alpha",
+        type: "task.updated",
+        ts: 130,
+        visibility: "chat",
+        payload: {
+          status: "running",
+          summary: "still working",
+        },
+      });
+    });
+
+    await waitFor(() => expect(runtimeMocks.eventsAfter).toHaveBeenCalledWith({
+      sessionId: "sess_alpha",
+      afterSeq: 0,
+      limit: 500,
+    }));
+    expect(screen.queryByText(/python -m pytest/i)).not.toBeInTheDocument();
   });
 
   it("reloads persisted messages when activating already-open session tabs", async () => {

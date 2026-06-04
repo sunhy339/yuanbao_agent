@@ -404,6 +404,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         createdAt: event.ts,
         sequence: event.seq ?? event.ts,
         visibility: event.visibility,
+        uiReplayScope: "chat",
         yuanbao: event.yuanbao ?? event.hahaCc,
         hahaCc: event.hahaCc ?? event.yuanbao,
       };

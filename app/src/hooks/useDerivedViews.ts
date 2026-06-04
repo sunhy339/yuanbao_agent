@@ -265,6 +265,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         id: approval.approvalId,
         title: approval.patchSummary ?? approval.command,
         kind: approval.kind,
+        patchId: approval.patchId,
         status: approval.status,
         summary: approval.requestSummary,
         filesChanged: approval.filesChanged,

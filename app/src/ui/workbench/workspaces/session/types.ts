@@ -188,6 +188,7 @@ export interface SessionWorkspaceApproval {
   id: string;
   title: string;
   kind?: string;
+  patchId?: string;
   status: string;
   summary?: string;
   filesChanged?: number;
@@ -473,6 +474,7 @@ export interface RuntimeTimelineItem {
   id: string;
   kind: "approval" | "patch" | "trace" | "tool" | "command" | "task" | "memory";
   sourceId?: string;
+  patchId?: string;
   toolUseId?: string;
   parentToolUseId?: string;
   toolGroupId?: string;

@@ -195,6 +195,7 @@ function buildApprovalCardView(
     : undefined;
   const isWorktreeMerge = kind === "worktree_merge";
   const isCompletionReview = kind === "completion_review";
+  const isPlanApproval = kind === "plan";
   const completionEvidence = isCompletionReview ? buildCompletionEvidenceView(request) : undefined;
   const worktreeBranch = readRequestText(request, "branchName", "worktree");
   const worktreeTarget = readRequestText(request, "targetBranch", "main");
@@ -205,6 +206,8 @@ function buildApprovalCardView(
     ? `Worktree merge ${worktreeBranch} -> ${worktreeTarget}`
     : isCompletionReview
       ? "Completion review required"
+      : isPlanApproval
+        ? "计划审批"
       : readRequestText(request, "summary", readRequestText(request, "patchSummary", current?.patchSummary ?? "patch approval request"));
   const defaultCommand = !hasRequestDetails && !current
     ? "unknown"
@@ -214,6 +217,8 @@ function buildApprovalCardView(
         ? `merge ${worktreeBranch} -> ${worktreeTarget}`
         : isCompletionReview
           ? "review completion evidence"
+          : isPlanApproval
+            ? "approve execution plan"
           : current?.command ?? "command";
   const command = readRequestText(request, "command", defaultCommand);
   const cwd = readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", readRequestText(request, "worktreePath", current?.cwd ?? ".")));
@@ -225,6 +230,8 @@ function buildApprovalCardView(
         ? "writes files"
         : isCompletionReview
           ? completionEvidence?.gateStatus ?? "completion evidence requires review"
+          : isPlanApproval
+            ? "plan requires approval before execution"
           : "executes command"),
   );
   const requestSummary = !hasRequestDetails
@@ -237,6 +244,8 @@ function buildApprovalCardView(
         ? compactSummary([command, worktreeDiffSummary, worktreeReviewSummary, worktreeStrategySummary])
         : isCompletionReview
           ? completionEvidence?.summary ?? `${readRequestText(request, "reason", "completion evidence requires review")} | ${readRequestText(request, "summary", "").slice(0, 120)}`
+          : isPlanApproval
+            ? summarizePlanApprovalRequest(request)
           : `${command} | cwd ${cwd}`;
   const previewRows = readApprovalPreviewRows(payload.preview, request, kind);
   const mergedCompletionEvidence = mergeCompletionReviewConclusion(
@@ -306,6 +315,23 @@ function compactSummary(parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" | ");
 }
 
+function readPlanSubtaskCount(request: Record<string, unknown>): number | undefined {
+  const explicit = readRequestOptionalNumber(request, ["subtaskCount", "taskCount"]);
+  if (explicit !== undefined) return explicit;
+  const subtasks = request["subtasks"];
+  return Array.isArray(subtasks) ? subtasks.length : undefined;
+}
+
+function summarizePlanApprovalRequest(request: Record<string, unknown>): string {
+  const mode = readRequestText(request, "orchestrationMode", readRequestText(request, "mode", "plan"));
+  const count = readPlanSubtaskCount(request);
+  const goal = readRequestText(request, "goal", "");
+  return compactSummary([
+    count !== undefined ? `已拆分 ${count} 个 ${mode} 子任务` : `${mode} 计划等待审批`,
+    goal ? compactSummary([goal]).slice(0, 120) : "",
+  ]);
+}
+
 function readApprovalPreviewRows(
   rawPreview: unknown,
   request: Record<string, unknown>,
@@ -339,8 +365,18 @@ function readApprovalPreviewRows(
     request["direction"] !== undefined || request["amount"] !== undefined
       ? `${String(request["direction"] ?? "down")} ${String(request["amount"] ?? "")}`.trim()
       : "";
+  const planOrder = Array.isArray(request["executionOrder"])
+    ? request["executionOrder"].map((item) => String(item)).filter(Boolean).join(" -> ")
+    : "";
   const rows =
-    kind === "run_command"
+    kind === "plan"
+      ? [
+          row("目标", request["goal"]),
+          row("模式", request["orchestrationMode"] ?? request["mode"] ?? "plan"),
+          row("子任务", readPlanSubtaskCount(request)),
+          row("执行顺序", planOrder),
+        ]
+      : kind === "run_command"
       ? [
           row("命令", request["command"]),
           ...(isNotebookExecution ? [row("Notebook", request["path"]), row("Cell", request["cellIndex"])] : []),

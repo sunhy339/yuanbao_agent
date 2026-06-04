@@ -796,6 +796,17 @@ class ApprovalFlowMixin:
             from ..planner.types import plan_result_from_dict, plan_result_to_dict
 
             plan = plan_result_from_dict(state.get("plan") or {})
+            publish_planning_thinking = getattr(self, "_publish_planning_thinking", None)
+            if callable(publish_planning_thinking):
+                publish_planning_thinking(
+                    session_id=session_id,
+                    task=task,
+                    text=f"计划已批准，正在派发 {len(plan.subtasks)} 个 swarm 子任务。",
+                    phase="subtasks_started",
+                    mode="swarm",
+                    payload={"subtaskCount": len(plan.subtasks)},
+                )
+            publish_swarm_subtask_event = getattr(self, "_publish_swarm_subtask_event", None)
             result = self._swarm.execute(
                 state["goal"], state["context"],
                 session_id=session_id, task=task,
@@ -805,6 +816,17 @@ class ApprovalFlowMixin:
                 failed_ids=set(state["failed"]),
                 prior_results=state["results"],
                 plan=plan,
+                on_subtask_callback=(
+                    lambda subtask_id, event, details: publish_swarm_subtask_event(
+                        session_id=session_id,
+                        task=task,
+                        subtask_id=subtask_id,
+                        event=event,
+                        details=details,
+                    )
+                    if callable(publish_swarm_subtask_event)
+                    else None
+                ),
             )
 
             if result.paused:
@@ -827,6 +849,15 @@ class ApprovalFlowMixin:
                 event_type="task.planning.completed",
                 payload={"mode": "swarm", "handoffs": result.handoff_count},
             )
+            if callable(publish_planning_thinking):
+                publish_planning_thinking(
+                    session_id=session_id,
+                    task=task,
+                    text="swarm 子任务已执行完成，正在合并结果。",
+                    phase="synthesizing",
+                    mode="swarm",
+                    payload={"handoffs": result.handoff_count},
+                )
             return self._complete_task(
                 session_id=session_id, task=task,
                 summary=result.summary, context=state["context"],

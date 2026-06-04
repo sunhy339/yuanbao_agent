@@ -2926,6 +2926,54 @@
   overflow-wrap: anywhere;
 }
 
+.hc-plan-approval,
+.hc-completion-evidence {
+  display: grid;
+  gap: 8px;
+}
+
+.hc-plan-approval-summary {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 8px 10px;
+}
+
+.hc-plan-approval-summary span {
+  color: var(--hc-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.hc-plan-approval-summary strong {
+  color: var(--hc-text);
+  font-size: 13px;
+}
+
+.hc-plan-approval-summary small,
+.hc-completion-evidence p,
+.hc-completion-evidence li {
+  color: var(--hc-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.hc-plan-subtask-list {
+  border-top: 0;
+  padding: 0;
+}
+
+.hc-completion-evidence p {
+  margin: 0;
+}
+
+.hc-completion-evidence ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
 .hc-tool-preview {
   display: grid;
   gap: 5px;

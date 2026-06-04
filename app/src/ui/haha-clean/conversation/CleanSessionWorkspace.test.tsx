@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationActivityItem } from "../../workbench/workspaces/session/types";
-import { CleanSessionWorkspace, filterCleanDuplicateToolMessages, filterCleanLowSignalMessages, filterCleanLowSignalSpecialEvents } from "./CleanSessionWorkspace";
+import { CleanSessionWorkspace, dedupeCleanMessages, filterCleanDuplicateToolMessages, filterCleanLowSignalMessages, filterCleanLowSignalSpecialEvents } from "./CleanSessionWorkspace";
 
 afterEach(() => {
   cleanup();
@@ -546,6 +546,56 @@ describe("CleanSessionWorkspace", () => {
     ] as const;
 
     expect(filterCleanLowSignalMessages([...messages]).map((message) => message.id)).toEqual(["assistant"]);
+  });
+
+  it("dedupes replayed thinking/progress messages with the same operational text", () => {
+    const messages = [
+      {
+        id: "thinking:live",
+        role: "assistant",
+        content: "正在用 swarm 模式拆分并安排多 agent 协作。",
+        createdAt: 1,
+        metadata: { kind: "assistant_thinking" },
+      },
+      {
+        id: "progress:replay",
+        role: "assistant",
+        content: "正在用 swarm 模式拆分并安排多 agent 协作。",
+        createdAt: 2,
+        metadata: { kind: "assistant_progress" },
+      },
+      {
+        id: "assistant",
+        role: "assistant",
+        content: "下一步会派发 agent。",
+        createdAt: 3,
+      },
+    ] as const;
+
+    expect(dedupeCleanMessages([...messages]).map((message) => message.id)).toEqual(["thinking:live", "assistant"]);
+  });
+
+  it("dedupes repeated collaboration agent summaries by child task ids", () => {
+    const agentTasks = [
+      { id: "sub-0", title: "定位输出链路", status: "completed" },
+      { id: "sub-1", title: "收敛审批展示", status: "running" },
+    ];
+    const messages = [
+      {
+        id: "background:live",
+        role: "assistant",
+        content: "1 个完成 / 1 个运行中",
+        metadata: { kind: "background_task", agentTasks },
+      },
+      {
+        id: "background:replay",
+        role: "assistant",
+        content: "1 个完成 / 1 个运行中",
+        metadata: { kind: "background_task", agentTasks: [...agentTasks].reverse() },
+      },
+    ] as const;
+
+    expect(dedupeCleanMessages([...messages]).map((message) => message.id)).toEqual(["background:live"]);
   });
 
   it("keeps final summaries, actionable plans, and attention states visible", () => {

@@ -264,6 +264,105 @@ describe("CleanConversation", () => {
     expect(onCopyRuntimeText).toHaveBeenCalledWith("文件差异", expect.not.stringContaining("+new_game"));
   });
 
+  it("renders plan approvals as task panels instead of raw json", () => {
+    render(
+      <CleanRuntimeBlock
+        item={{
+          id: "approval:plan",
+          kind: "approval",
+          sourceId: "appr_plan",
+          toolName: "plan",
+          title: "计划审批",
+          status: "pending",
+          summary: "已拆分 2 个 swarm 子任务",
+          rawDetail: JSON.stringify({
+            goal: "多 agent 优化输出",
+            orchestrationMode: "swarm",
+            subtaskCount: 2,
+            subtasks: [
+              {
+                id: "sub-0",
+                title: "定位输出链路",
+                description: "检查后端事件与前端回放路径。",
+                agentType: "planner",
+                dependencies: [],
+              },
+              {
+                id: "sub-1",
+                title: "收敛审批展示",
+                description: "把计划审批渲染成子任务面板。",
+                agentType: "worker",
+                dependencies: ["sub-0"],
+              },
+            ],
+          }),
+          previewRows: [
+            { label: "模式", value: "swarm" },
+            { label: "子任务", value: "2" },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("定位输出链路")).toBeInTheDocument();
+    expect(screen.getByText("收敛审批展示")).toBeInTheDocument();
+    expect(screen.queryByText(/"subtasks"/)).not.toBeInTheDocument();
+  });
+
+  it("renders completion review evidence without exposing json by default", () => {
+    render(
+      <CleanRuntimeBlock
+        item={{
+          id: "approval:completion",
+          kind: "approval",
+          sourceId: "appr_done",
+          toolName: "completion_review",
+          title: "完成确认",
+          status: "approved",
+          summary: "Completion review required",
+          rawDetail: JSON.stringify({
+            completionEvidence: {
+              counts: { changedFiles: 1 },
+            },
+          }),
+          completionEvidence: {
+            summary: "缺少实际验证命令。",
+            metrics: [{ label: "files", value: "1" }],
+            issues: ["Report the exact command run."],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("缺少实际验证命令。")).toBeInTheDocument();
+    expect(screen.getByText("Report the exact command run.")).toBeInTheDocument();
+    expect(screen.queryByText(/"completionEvidence"/)).not.toBeInTheDocument();
+  });
+
+  it("does not expose path-like text from non-patch approvals as patch files", async () => {
+    const user = userEvent.setup();
+    const onLoadPatch = vi.fn();
+    render(
+      <CleanRuntimeBlock
+        onLoadPatch={onLoadPatch}
+        item={{
+          id: "approval:plan-path",
+          kind: "approval",
+          sourceId: "appr_cannot_be_patch",
+          toolName: "plan",
+          title: "计划审批",
+          status: "pending",
+          code: "plan",
+          rawDetail: JSON.stringify({ goal: "检查 snake_game/game.py", subtasks: [] }),
+        }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /snake_game\/game\.py/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /查看原始详情/ }));
+    expect(onLoadPatch).not.toHaveBeenCalled();
+  });
+
   it("syncs diff tabs with the right file pane", async () => {
     const user = userEvent.setup();
     const onOpenFile = vi.fn();
@@ -1012,7 +1111,7 @@ describe("CleanConversation", () => {
     await user.click(screen.getByRole("button", { name: "允许一次" }));
     await user.click(screen.getByRole("button", { name: /snake_game\/rules\.py/ }));
     expect(onOpenFile).toHaveBeenCalledWith("snake_game/rules.py");
-    expect(onLoadPatch).toHaveBeenCalledWith("approval-1");
+    expect(onLoadPatch).not.toHaveBeenCalled();
     expect(onApprove).toHaveBeenCalledWith("approval-1");
 
     await user.click(screen.getByRole("button", { name: "拒绝" }));
@@ -1020,6 +1119,34 @@ describe("CleanConversation", () => {
 
     await user.click(screen.getByRole("button", { name: "始终允许" }));
     expect(onApproveAlways).toHaveBeenCalledWith("approval-1");
+  });
+
+  it("loads approval file diffs only with a real patch id", async () => {
+    const user = userEvent.setup();
+    const onLoadPatch = vi.fn();
+    const onOpenFile = vi.fn();
+
+    render(
+      <CleanRuntimeBlock
+        item={{
+          id: "approval:patch",
+          kind: "approval",
+          sourceId: "approval-1",
+          patchId: "patch-real",
+          toolName: "apply_patch",
+          title: "apply_patch",
+          status: "pending",
+          code: JSON.stringify({ path: "snake_game/rules.py" }),
+          rawDetail: "modified snake_game/rules.py (+2/-1)",
+        }}
+        onLoadPatch={onLoadPatch}
+        onOpenFile={onOpenFile}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /snake_game\/rules\.py/ }));
+    expect(onOpenFile).toHaveBeenCalledWith("snake_game/rules.py");
+    expect(onLoadPatch).toHaveBeenCalledWith("patch-real");
   });
 
   it("shows structured approval preview rows for non-file approvals", () => {

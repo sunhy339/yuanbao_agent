@@ -88,6 +88,12 @@ class MessageExecutionMixin:
         elif event == "completed":
             status = str(details.get("status") or "completed").strip() or "completed"
             line = f"Finished subtask: {title} ({status})"
+        elif event == "failed":
+            status = str(details.get("status") or "failed").strip() or "failed"
+            line = f"Failed subtask: {title}"
+        elif event == "skipped":
+            status = str(details.get("status") or "skipped").strip() or "skipped"
+            line = f"Skipped subtask: {title}"
         else:
             return
         self._publish(
@@ -103,6 +109,50 @@ class MessageExecutionMixin:
             },
             visibility="panel",
         )
+
+    def _publish_swarm_subtask_event(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        subtask_id: str,
+        event: str,
+        details: dict[str, Any],
+    ) -> None:
+        event_type = f"task.planning.subtask.{event}"
+        payload = {
+            **details,
+            "subtaskId": details.get("subtaskId") or subtask_id,
+            "id": details.get("id") or subtask_id,
+            "mode": "swarm",
+        }
+        self._publish(session_id=session_id, task=task, event_type=event_type, payload=payload)
+        self._publish_root_subtask_progress(
+            session_id=session_id,
+            task=task,
+            event=event,
+            details=payload,
+        )
+
+    def _plan_approval_request(
+        self,
+        *,
+        goal: str,
+        plan: Any,
+        orchestration_mode: str | None = None,
+    ) -> dict[str, Any]:
+        plan_data = plan_result_to_dict(plan)
+        subtasks = plan_data.get("subtasks") if isinstance(plan_data.get("subtasks"), list) else []
+        request: dict[str, Any] = {
+            "goal": goal,
+            "subtaskCount": len(getattr(plan, "subtasks", []) or []),
+            "subtasks": subtasks,
+            "executionOrder": getattr(plan, "execution_order", []) or plan_data.get("execution_order") or [],
+            "dag": plan_data.get("dag") or {},
+        }
+        if orchestration_mode:
+            request["orchestrationMode"] = orchestration_mode
+        return request
 
     def _publish_root_child_progress(
         self,
@@ -595,6 +645,8 @@ class MessageExecutionMixin:
                     "subtaskCount": len(plan.subtasks),
                     "executionOrder": plan.execution_order,
                     "source": plan_source,
+                    "subtasks": plan_result_to_dict(plan).get("subtasks", []),
+                    "dag": plan_result_to_dict(plan).get("dag", {}),
                 },
             )
             # --- Decision trace: decomposition ---
@@ -646,16 +698,11 @@ class MessageExecutionMixin:
             config = self._store.get_config({})["config"]
             approval_mode = config.get("policy", {}).get("approvalMode", "on_write_or_command")
             if approval_mode == "strict":
-                plan_summary = [f"- {s.id}: {s.title}" for s in plan.subtasks]
+                approval_request = self._plan_approval_request(goal=goal, plan=plan)
                 approval = self._store.create_approval(
                     task_id=task["id"],
                     kind="plan",
-                    request={
-                        "goal": goal,
-                        "subtaskCount": len(plan.subtasks),
-                        "subtasks": plan_summary,
-                        "executionOrder": plan.execution_order,
-                    },
+                    request=approval_request,
                 )
                 plan_data = plan_result_to_dict(plan)
                 if hasattr(self._store, "upsert_pending_dag_state"):
@@ -678,12 +725,7 @@ class MessageExecutionMixin:
                         "approvalId": approval["id"],
                         "taskId": task["id"],
                         "kind": "plan",
-                        "request": {
-                            "goal": goal,
-                            "subtaskCount": len(plan.subtasks),
-                            "subtasks": plan_summary,
-                            "executionOrder": plan.execution_order,
-                        },
+                        "request": approval_request,
                     },
                 )
                 self._fire_hooks("on_approval_required", session_id, task, extra_context={"approvalId": approval["id"], "kind": "plan"})
@@ -1443,17 +1485,15 @@ class MessageExecutionMixin:
         if approval_mode != "strict":
             return None
 
-        plan_summary = [f"- {s.id}: {s.title}" for s in plan.subtasks]
+        approval_request = self._plan_approval_request(
+            goal=goal,
+            plan=plan,
+            orchestration_mode=orchestration_mode,
+        )
         approval = self._store.create_approval(
             task_id=task["id"],
             kind="plan",
-            request={
-                "goal": goal,
-                "subtaskCount": len(plan.subtasks),
-                "subtasks": plan_summary,
-                "executionOrder": plan.execution_order,
-                "orchestrationMode": orchestration_mode,
-            },
+            request=approval_request,
         )
         plan_data = plan_result_to_dict(plan)
         context_with_mode = {**context, "orchestration_mode": orchestration_mode}
@@ -1477,13 +1517,7 @@ class MessageExecutionMixin:
                 "approvalId": approval["id"],
                 "taskId": task["id"],
                 "kind": "plan",
-                "request": {
-                    "goal": goal,
-                    "subtaskCount": len(plan.subtasks),
-                    "subtasks": plan_summary,
-                    "executionOrder": plan.execution_order,
-                    "orchestrationMode": orchestration_mode,
-                },
+                "request": approval_request,
             },
         )
         self._fire_hooks("on_approval_required", session_id, task, extra_context={"approvalId": approval["id"], "kind": "plan"})
@@ -2078,6 +2112,8 @@ class MessageExecutionMixin:
                     "subtaskCount": len(plan.subtasks),
                     "executionOrder": plan.execution_order,
                     "mode": "supervisor",
+                    "subtasks": plan_result_to_dict(plan).get("subtasks", []),
+                    "dag": plan_result_to_dict(plan).get("dag", {}),
                 },
             )
             self._publish_planning_thinking(
@@ -2225,6 +2261,8 @@ class MessageExecutionMixin:
                     "subtaskCount": len(plan.subtasks),
                     "executionOrder": plan.execution_order,
                     "mode": "swarm",
+                    "subtasks": plan_result_to_dict(plan).get("subtasks", []),
+                    "dag": plan_result_to_dict(plan).get("dag", {}),
                 },
             )
             self._publish_planning_thinking(
@@ -2267,6 +2305,13 @@ class MessageExecutionMixin:
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 plan=plan,
+                on_subtask_callback=lambda subtask_id, event, details: self._publish_swarm_subtask_event(
+                    session_id=session_id,
+                    task=task,
+                    subtask_id=subtask_id,
+                    event=event,
+                    details=details,
+                ),
             )
             self._publish_planning_thinking(
                 session_id=session_id,

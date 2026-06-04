@@ -35,22 +35,25 @@ Respond with a JSON array of sub-tasks. Each sub-task MUST have:
 
 Guidelines:
 - Each sub-task should be independently executable
+- Titles are user-visible. Make them domain-specific and natural for the parent goal, using the user's language when possible.
+- Do not reuse the example titles verbatim. Avoid generic "Analyze / Implement / Verify" pipelines unless the goal really needs that shape.
 - Use "worker" for implementation, file edits, command execution, tests, or verification
 - Use "planner" only for planning/risk-analysis tasks that should not modify files
 - Use "reviewer" for read-only critique of existing or newly produced work
 - Use "summarizer" only for the final synthesis step
 - Use dependencies to express ordering constraints
-- Keep the number of sub-tasks between 2 and 10; use more subtasks when the parent goal explicitly names separate backend, frontend, test, documentation, or verification deliverables
+- Keep the number of sub-tasks between 2 and 10. Prefer fewer subtasks for vague or narrow requests; use more only when the parent goal explicitly names separate backend, frontend, test, documentation, or verification deliverables
 - Make descriptions specific and actionable
 - Preserve explicit artifact names, test-count requirements, and validation commands from the parent goal inside the relevant sub-task descriptions
+- Do not add a verification sub-task just because code might change. Include verification when the user asked for it, edits are planned, or the repository context names a concrete fast check.
 - Do not collapse implementation and verification into a vague "implement changes" sub-task when the parent goal names concrete deliverables
 
 Example response:
 ```json
 [
-  {{"id": "sub-0", "title": "Analyze codebase", "description": "Search and analyze the relevant source files...", "dependencies": [], "agentType": "planner"}},
-  {{"id": "sub-1", "title": "Implement changes", "description": "Apply the required modifications...", "dependencies": ["sub-0"], "agentType": "worker"}},
-  {{"id": "sub-2", "title": "Verify results", "description": "Run tests and verify...", "dependencies": ["sub-1"], "agentType": "worker"}}
+  {{"id": "sub-0", "title": "定位消息重放来源", "description": "Trace the session replay path and identify where duplicate transcript records are introduced.", "dependencies": [], "agentType": "planner"}},
+  {{"id": "sub-1", "title": "收敛审批卡数据结构", "description": "Update the approval event and rendering path so plan approvals use structured task data instead of raw JSON.", "dependencies": ["sub-0"], "agentType": "worker"}},
+  {{"id": "sub-2", "title": "确认回放显示一致", "description": "Run the focused checks named by the repo or summarize why no concrete check is available.", "dependencies": ["sub-1"], "agentType": "worker"}}
 ]
 ```
 """

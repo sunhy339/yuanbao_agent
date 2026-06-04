@@ -738,13 +738,115 @@ function patchReviewPrompt(item: RuntimeTimelineItem, files: PatchFileSummary[])
   ].join("\n");
 }
 
+function approvalKind(item: RuntimeTimelineItem) {
+  return normalizedToolName(item.toolName || item.meta?.find((entry) => /^[a-z_]+$/i.test(entry)) || item.title);
+}
+
+function isPatchApproval(item: RuntimeTimelineItem) {
+  const kind = approvalKind(item);
+  return (
+    ["apply_patch", "write_file", "delete_file"].includes(kind) ||
+    Boolean(item.patchId || item.diffLines?.length || item.rawDetail?.includes("diff --git"))
+  );
+}
+
 function approvalFileSummaries(item: RuntimeTimelineItem) {
+  if (!isPatchApproval(item)) return [];
   const files = patchFileSummaries(item).filter((file) => !file.path.trim().startsWith("{"));
   if (files.length) return files;
   const source = [item.code, item.rawDetail].filter(Boolean).join("\n");
   const found = /"path"\s*:\s*"([^"]+)"/.exec(source)?.[1] ?? /(?:path|file|target)\s*[:=]\s*["']?([^"',\n\r]+)["']?/i.exec(source)?.[1];
   if (!found) return [];
   return [{ path: found.replace(/^[ab]\//, "").trim(), status: "修改" }];
+}
+
+function approvalRequestRecord(item: RuntimeTimelineItem) {
+  return parseJson(item.rawDetail || "") || parseJson(item.code || "") || null;
+}
+
+function planSubtasksFromRecord(record: Record<string, unknown> | null) {
+  const raw = Array.isArray(record?.subtasks) ? record.subtasks : [];
+  return raw
+    .map((entry, index) => {
+      if (typeof entry === "string") {
+        const match = /^\s*-?\s*([^:：]+)[:：]\s*(.+)$/.exec(entry);
+        return {
+          id: match?.[1]?.trim() || `sub-${index}`,
+          title: match?.[2]?.trim() || entry.trim(),
+          description: "",
+          agentType: "",
+          dependencies: [] as string[],
+        };
+      }
+      if (!entry || typeof entry !== "object") return null;
+      const subtask = entry as Record<string, unknown>;
+      return {
+        id: readString(subtask.id) || readString(subtask.subtaskId) || `sub-${index}`,
+        title: readString(subtask.title) || readString(subtask.subtaskTitle) || `子任务 ${index + 1}`,
+        description: readString(subtask.description) || readString(subtask.summary),
+        agentType: readString(subtask.agentType) || readString(subtask.agent_type),
+        dependencies: Array.isArray(subtask.dependencies) ? subtask.dependencies.map(readString).filter(Boolean) : [],
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+}
+
+function PlanApprovalPreview({ item }: { item: RuntimeTimelineItem }) {
+  const record = approvalRequestRecord(item);
+  const subtasks = planSubtasksFromRecord(record);
+  const mode = readRecordString(record, ["orchestrationMode", "mode"]) || "plan";
+  const goal = readRecordString(record, ["goal"]);
+  const count = readRecordNumber(record, ["subtaskCount", "taskCount"]) ?? subtasks.length;
+  if (!record && !subtasks.length) return null;
+  return (
+    <div className="hc-plan-approval">
+      <div className="hc-plan-approval-summary">
+        <span>{mode}</span>
+        <strong>{count ? `已拆分 ${count} 个子任务` : "执行计划"}</strong>
+        {goal ? <small>{compactText(goal, 160)}</small> : null}
+      </div>
+      {subtasks.length ? (
+        <div className="hc-agent-task-list hc-plan-subtask-list">
+          {subtasks.slice(0, 8).map((task, index) => (
+            <article key={`${task.id}:${index}`} data-tone="recorded">
+              <Circle size={10} />
+              <div>
+                <strong>{task.title}</strong>
+                <small>{[task.agentType ? readableAgentLabel(task.agentType) : "", task.dependencies.length ? `依赖 ${task.dependencies.join(", ")}` : ""].filter(Boolean).join(" · ")}</small>
+                {task.description ? <p>{compactText(task.description, 180)}</p> : null}
+              </div>
+              <em>{task.id}</em>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CompletionEvidencePreview({ item }: { item: RuntimeTimelineItem }) {
+  const evidence = item.completionEvidence;
+  if (!evidence) return null;
+  return (
+    <div className="hc-completion-evidence">
+      <p>{evidence.summary}</p>
+      {evidence.metrics.length ? (
+        <dl className="hc-approval-preview" aria-label="完成审查指标">
+          {evidence.metrics.slice(0, 6).map((metric) => (
+            <div key={`${metric.label}:${metric.value}`}>
+              <dt>{metric.label}</dt>
+              <dd>{metric.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {evidence.issues.length ? (
+        <ul>
+          {evidence.issues.slice(0, 4).map((issue, index) => <li key={`${index}:${issue}`}>{issue}</li>)}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
 function readMetadataString(message: SessionWorkspaceMessage, keys: string[]) {
@@ -1933,7 +2035,9 @@ function ApprovalRuntimeBlock({
   onOpenFile?: (path: string) => void;
   busyId?: string | null;
 }) {
-  const [expanded, setExpanded] = useState(shouldExpandByDefault(item));
+  const kind = approvalKind(item);
+  const structured = kind === "plan" || Boolean(item.completionEvidence);
+  const [expanded, setExpanded] = useState(() => shouldExpandByDefault(item) && !structured);
   const files = useMemo(() => approvalFileSummaries(item), [item]);
   const output = item.rawDetail || item.code || "";
   const canApprove = Boolean(
@@ -1970,7 +2074,7 @@ function ApprovalRuntimeBlock({
               key={file.path}
               onClick={() => {
                 onOpenFile?.(file.path);
-                if (item.sourceId) void onLoadPatch?.(item.sourceId);
+                if (item.patchId) void onLoadPatch?.(item.patchId);
               }}
             >
               <code>{file.path}</code>
@@ -1979,6 +2083,8 @@ function ApprovalRuntimeBlock({
           ))}
         </div>
       ) : null}
+      {kind === "plan" ? <PlanApprovalPreview item={item} /> : null}
+      {item.completionEvidence ? <CompletionEvidencePreview item={item} /> : null}
       {item.previewRows?.length ? (
         <dl className="hc-approval-preview" aria-label="审批预览">
           {item.previewRows.slice(0, 5).map((row) => (
@@ -2007,7 +2113,7 @@ function ApprovalRuntimeBlock({
       {output || hasDiff ? (
         <button type="button" className="hc-diff-toggle" onClick={() => setExpanded((open) => !open)}>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          {expanded ? "收起详情" : hasDiff ? "查看差异" : "查看详情"}
+          {expanded ? "收起详情" : hasDiff ? "查看差异" : structured ? "查看原始详情" : "查看详情"}
         </button>
       ) : null}
       {expanded && hasDiff ? <DiffPreview item={item} onCopyRuntimeText={onCopyRuntimeText} onOpenFile={onOpenFile} /> : null}

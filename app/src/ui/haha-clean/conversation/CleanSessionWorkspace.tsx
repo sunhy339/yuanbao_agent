@@ -586,6 +586,64 @@ export function filterCleanLowSignalMessages(messages: SessionWorkspaceMessage[]
   return messages.filter((message) => !shouldHideLowSignalSpecialMessage(message));
 }
 
+function normalizeDedupeText(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function isOperationalProgressText(value: string) {
+  const text = normalizeDedupeText(value);
+  if (!text) return false;
+  return (
+    LOW_SIGNAL_TASK_STEP_PATTERNS.some((pattern) => pattern.test(text)) ||
+    /正在用\s*swarm\s*模式拆分/.test(text) ||
+    /已拆分\s*\d+\s*个\s*(?:swarm|supervisor)?\s*子任务/.test(text) ||
+    /计划已批准，正在派发/.test(text) ||
+    /swarm\s*子任务已执行完成/.test(text)
+  );
+}
+
+function backgroundTaskFingerprint(message: SessionWorkspaceMessage) {
+  if (messageMetadataKind(message) !== "background_task") return "";
+  const tasks = Array.isArray(message.metadata?.agentTasks) ? message.metadata.agentTasks : [];
+  const ids = tasks
+    .map((task) => {
+      if (!task || typeof task !== "object") return "";
+      const record = task as Record<string, unknown>;
+      const id = typeof record.id === "string" ? record.id : "";
+      const title = typeof record.title === "string" ? record.title : "";
+      return id || title;
+    })
+    .filter(Boolean)
+    .sort();
+  return ids.length ? `background:${ids.join("|")}` : "";
+}
+
+function cleanMessageDedupeKey(message: SessionWorkspaceMessage) {
+  const kind = messageMetadataKind(message);
+  const text = normalizeDedupeText(messageSummaryText(message));
+  if (kind === "background_task") {
+    return backgroundTaskFingerprint(message);
+  }
+  if (kind === "assistant_thinking" || kind === "assistant_progress") {
+    return text ? `progress:${message.taskId ?? ""}:${text}` : "";
+  }
+  if (!kind && message.role === "assistant" && isOperationalProgressText(text)) {
+    return `progress:${message.taskId ?? ""}:${text}`;
+  }
+  return "";
+}
+
+export function dedupeCleanMessages(messages: SessionWorkspaceMessage[]) {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const key = cleanMessageDedupeKey(message);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function filterCleanDuplicateToolMessages(items: ConversationActivityItem[]) {
   const foldableRuntimes = activityRuntimeItems(items).filter(shouldFoldDuplicateRuntime);
   if (!foldableRuntimes.length) {
@@ -744,8 +802,9 @@ export function CleanSessionWorkspace({
   const activityItems = useMemo(
     () => {
       const collaborationMessages = summarizeAgentTasks(collaboration);
+      const cleanMessages = dedupeCleanMessages(filterCleanLowSignalMessages([...messages, ...collaborationMessages]));
       return filterCleanDuplicateToolMessages(
-        buildConversationActivity(filterCleanLowSignalMessages([...messages, ...collaborationMessages]), visibleRuntimeItems),
+        buildConversationActivity(cleanMessages, visibleRuntimeItems),
       );
     },
     [collaboration, messages, visibleRuntimeItems],

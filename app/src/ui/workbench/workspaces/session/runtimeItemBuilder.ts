@@ -678,6 +678,7 @@ export function buildRuntimeItems({
       id: `approval:${approval.id}`,
       kind: "approval",
       sourceId: approval.id,
+      patchId: approval.patchId,
       title: formatApprovalDisplayTitle({
         title: approval.title,
         kind: approval.kind,

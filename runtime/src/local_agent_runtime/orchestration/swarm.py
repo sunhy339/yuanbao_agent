@@ -74,6 +74,7 @@ class SwarmOrchestrator:
         failed_ids: set[str] | None = None,
         prior_results: dict[str, str] | None = None,
         plan: PlanResult | None = None,
+        on_subtask_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> OrchestrationResult:
         """Decompose goal, execute sub-tasks with handoff, synthesize results."""
         self._last_handoff_prompt = None
@@ -112,6 +113,7 @@ class SwarmOrchestrator:
                 failed.add(subtask.id)
                 pending.discard(subtask.id)
                 results[subtask.id] = "Skipped: dependency failed"
+                self._emit_subtask_event(on_subtask_callback, subtask, "skipped")
                 subtask_results.append(self._subtask_to_dict(subtask))
                 current_id = self._pick_next_available(pending, completed, failed, subtask_map)
                 continue
@@ -121,13 +123,16 @@ class SwarmOrchestrator:
                 failed.add(subtask.id)
                 pending.discard(subtask.id)
                 results[subtask.id] = "Skipped: dependencies not met"
+                self._emit_subtask_event(on_subtask_callback, subtask, "skipped")
                 subtask_results.append(self._subtask_to_dict(subtask))
                 current_id = self._pick_next_available(pending, completed, failed, subtask_map)
                 continue
 
             # Execute
             subtask.status = "running"
+            self._emit_subtask_event(on_subtask_callback, subtask, "started")
             prompt_override = self._last_handoff_prompt
+            dispatch_result: dict[str, Any] | None = None
             try:
                 dispatch_result = self._subagent.dispatch({
                     "prompt": build_subtask_prompt(
@@ -189,6 +194,12 @@ class SwarmOrchestrator:
                 results[subtask.id] = f"Failed: {exc}"
 
             pending.discard(subtask.id)
+            self._emit_subtask_event(
+                on_subtask_callback,
+                subtask,
+                "completed" if subtask.status == "completed" else "failed",
+                dispatch_result=dispatch_result,
+            )
             subtask_results.append(self._subtask_to_dict(subtask))
 
             # Cooperative pause
@@ -240,6 +251,44 @@ class SwarmOrchestrator:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _emit_subtask_event(
+        self,
+        callback: Callable[[str, str, dict[str, Any]], None] | None,
+        subtask: Subtask,
+        event: str,
+        *,
+        dispatch_result: dict[str, Any] | None = None,
+    ) -> None:
+        if callback is None:
+            return
+        result = dispatch_result if isinstance(dispatch_result, dict) else {}
+        task_record = result.get("task") if isinstance(result.get("task"), dict) else {}
+        worker = result.get("worker") if isinstance(result.get("worker"), dict) else {}
+        details: dict[str, Any] = {
+            "subtaskId": subtask.id,
+            "id": subtask.id,
+            "subtaskTitle": subtask.title,
+            "title": subtask.title,
+            "description": subtask.description,
+            "dependencies": list(subtask.dependencies),
+            "agentType": normalize_subtask_agent_type(subtask.agent_type),
+            "status": subtask.status,
+            "summary": subtask.result,
+            "ownedScope": list(subtask.owned_scope),
+            "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+            "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
+        }
+        child_task_id = result.get("childTaskId") or task_record.get("id")
+        if child_task_id:
+            details["childTaskId"] = str(child_task_id)
+        worker_id = result.get("workerId") or worker.get("id")
+        if worker_id:
+            details["workerId"] = str(worker_id)
+        worker_name = result.get("workerName") or worker.get("name")
+        if worker_name:
+            details["workerName"] = str(worker_name)
+        callback(subtask.id, event, details)
 
     def _handoff_decision(
         self,

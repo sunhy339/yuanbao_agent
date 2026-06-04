@@ -126,4 +126,119 @@ describe("useDerivedViews", () => {
     expect(result.current.sessionContextPreview).toBeUndefined();
     expect(result.current.contextStatusLabel).toBe("-- 上下文");
   });
+
+  it("derives session transcript and runtime items from the active session tab", () => {
+    const { result } = renderHook(() => useDerivedViews(makeDeps({
+      activeTab: { id: "session:sess_beta", kind: "session", title: "Beta", sessionId: "sess_beta", closable: true } as any,
+      session: {
+        id: "sess_alpha",
+        workspaceId: "ws_test",
+        title: "Alpha",
+        status: "active",
+        workspaceRoot: "D:/py/alpha",
+        createdAt: 1,
+        updatedAt: 10,
+      } as any,
+      sessions: [
+        {
+          id: "sess_alpha",
+          workspaceId: "ws_test",
+          title: "Alpha",
+          status: "active",
+          workspaceRoot: "D:/py/alpha",
+          createdAt: 1,
+          updatedAt: 10,
+        },
+        {
+          id: "sess_beta",
+          workspaceId: "ws_test",
+          title: "Beta",
+          status: "active",
+          workspaceRoot: "D:/py/beta",
+          createdAt: 2,
+          updatedAt: 20,
+        },
+      ] as any,
+      chatMessages: [
+        {
+          id: "msg_alpha",
+          sessionId: "sess_alpha",
+          role: "assistant",
+          content: "Alpha answer",
+          createdAt: 10,
+          updatedAt: 10,
+        },
+        {
+          id: "msg_beta",
+          sessionId: "sess_beta",
+          role: "assistant",
+          content: "Beta answer",
+          createdAt: 20,
+          updatedAt: 20,
+        },
+      ],
+      traceEvents: [
+        {
+          id: "evt_alpha_tool",
+          sessionId: "sess_alpha",
+          taskId: "task_alpha",
+          type: "tool.completed",
+          source: "tool",
+          payload: {
+            toolCallId: "tool_alpha",
+            toolName: "read_file",
+            target: "alpha/README.md",
+            resultSummary: "read alpha/README.md",
+          },
+          createdAt: 10,
+          sequence: 1,
+          visibility: "chat",
+        },
+        {
+          id: "evt_beta_tool",
+          sessionId: "sess_beta",
+          taskId: "task_beta",
+          type: "tool.completed",
+          source: "tool",
+          payload: {
+            toolCallId: "tool_beta",
+            toolName: "run_command",
+            target: "npm test",
+            resultSummary: "npm test passed",
+          },
+          createdAt: 20,
+          sequence: 2,
+          visibility: "chat",
+        },
+      ],
+      taskHistory: [
+        { id: "task_alpha", sessionId: "sess_alpha", status: "completed", goal: "alpha", createdAt: 1, updatedAt: 1 } as any,
+        { id: "task_beta", sessionId: "sess_beta", status: "completed", goal: "beta", createdAt: 2, updatedAt: 2 } as any,
+      ],
+      commandLogCacheById: {
+        cmd_alpha: {
+          id: "cmd_alpha",
+          taskId: "task_alpha",
+          command: "alpha command",
+          cwd: "D:/py/alpha",
+          status: "completed",
+          startedAt: 10,
+        },
+        cmd_beta: {
+          id: "cmd_beta",
+          taskId: "task_beta",
+          command: "beta command",
+          cwd: "D:/py/beta",
+          status: "completed",
+          startedAt: 20,
+        },
+      } as any,
+    })));
+
+    expect(result.current.visibleChatMessages.map((message: any) => message.content)).toEqual(["Beta answer"]);
+    expect(result.current.sessionTaskCount).toBe(1);
+    expect(result.current.sessionToolCalls.map((tool: any) => tool.toolUseId)).toEqual(["tool_beta"]);
+    expect(result.current.sessionBackgroundJobs.map((job: any) => job.command)).toEqual(["beta command"]);
+    expect(result.current.cwdLabel).toBe("D:/py/beta");
+  });
 });

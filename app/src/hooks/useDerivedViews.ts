@@ -29,6 +29,7 @@ import { computeToolTimelineItems, computeApprovalCards, computeApprovalByPatchI
 import type { AgentEventLike } from "../state/viewComputations";
 import { buildSessionContextPreview, buildSessionCollaboration, buildSessionBackgroundJobs, mergeSessionBackgroundJobs } from "../state/sessionDerivedViews";
 import { workspaceNameFromPath } from "../state/providerConfig";
+import { resolveSessionForTab } from "../ui/workbench/sessionRouting";
 
 export interface UseDerivedViewsDeps {
   // Core state
@@ -71,6 +72,17 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   } = deps;
 
   const runtimeReady = Boolean(hostStatus && config);
+  const activeSessionRecord = resolveSessionForTab(activeTab, deps.sessions, session);
+  const viewSession = activeTab.kind === "session" ? activeSessionRecord : session;
+  const viewSessionId = activeTab.kind === "session" ? viewSession?.id ?? activeTab.sessionId : viewSession?.id;
+  const sessionScopedEvents = useMemo(
+    () => viewSessionId ? events.filter((event: any) => !event?.sessionId || event.sessionId === viewSessionId) : events,
+    [events, viewSessionId],
+  );
+  const sessionScopedTraceEvents = useMemo(
+    () => viewSessionId ? traceEvents.filter((trace: any) => !trace?.sessionId || trace.sessionId === viewSessionId) : traceEvents,
+    [traceEvents, viewSessionId],
+  );
 
   // Provider status views
   const providerStatusView = getProviderStatusView(providerSettings, providerTestResult);
@@ -81,7 +93,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   const runtimeTimelineEvents = useMemo<AgentEventLike[]>(() => {
     const merged = new Map<string, AgentEventLike>();
 
-    traceEvents.forEach((trace: any) => {
+    sessionScopedTraceEvents.forEach((trace: any) => {
       if (!trace?.type) return;
       const eventId = String(trace.id ?? `${trace.type}:${trace.taskId ?? ""}:${trace.sequence ?? trace.createdAt ?? ""}`);
       merged.set(`trace:${eventId}`, {
@@ -94,7 +106,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
       });
     });
 
-    events.forEach((event: any) => {
+    sessionScopedEvents.forEach((event: any) => {
       if (!event?.type) return;
       const eventId = String(event.eventId ?? event.id ?? `${event.type}:${event.taskId ?? ""}:${event.ts ?? event.createdAt ?? ""}`);
       merged.set(`event:${eventId}`, {
@@ -106,29 +118,29 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     });
 
     return Array.from(merged.values());
-  }, [events, traceEvents]);
+  }, [sessionScopedEvents, sessionScopedTraceEvents]);
 
   const toolTimelineItems = useMemo<ToolTimelineItem[]>(
     () => computeToolTimelineItems(runtimeTimelineEvents),
     [runtimeTimelineEvents],
   );
   const approvalCards = useMemo<ApprovalCardView[]>(
-    () => computeApprovalCards(events),
-    [events],
+    () => computeApprovalCards(sessionScopedEvents),
+    [sessionScopedEvents],
   );
   const approvalByPatchId = useMemo(
     () => computeApprovalByPatchId(approvalCards),
     [approvalCards],
   );
   const patchCards = useMemo<PatchCardView[]>(
-    () => computePatchCards(events, patchCacheById, approvalByPatchId),
-    [approvalByPatchId, events, patchCacheById],
+    () => computePatchCards(sessionScopedEvents, patchCacheById, approvalByPatchId),
+    [approvalByPatchId, sessionScopedEvents, patchCacheById],
   );
 
   // Visible chat messages
   const visibleChatMessages = useMemo(
-    () => getVisibleChatMessages(chatMessages, session?.id),
-    [chatMessages, session?.id],
+    () => getVisibleChatMessages(chatMessages, viewSessionId),
+    [chatMessages, viewSessionId],
   );
 
   const maxContextTokenBudget = useMemo(() => {
@@ -144,16 +156,16 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         return undefined;
       }
       return buildSessionContextPreview({
-        events,
-        traceEvents,
+        events: sessionScopedEvents,
+        traceEvents: sessionScopedTraceEvents,
         workspace,
-        session,
+        session: viewSession,
         activeTaskId,
         activeTask: task,
         maxContextTokens: maxContextTokenBudget,
       });
     },
-    [activeTab.kind, activeTaskId, events, maxContextTokenBudget, session, traceEvents, task, workspace],
+    [activeTab.kind, activeTaskId, maxContextTokenBudget, sessionScopedEvents, sessionScopedTraceEvents, task, viewSession, workspace],
   );
 
   // Settings providers
@@ -207,9 +219,13 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   );
 
   const sessionTaskCount = useMemo(() => {
-    if (!session) return undefined;
-    return taskHistory.filter((item) => item.sessionId === session.id).length;
-  }, [session, taskHistory]);
+    if (!viewSessionId) return undefined;
+    return taskHistory.filter((item) => item.sessionId === viewSessionId).length;
+  }, [taskHistory, viewSessionId]);
+  const sessionTaskIds = useMemo(
+    () => new Set(taskHistory.filter((item) => !viewSessionId || item.sessionId === viewSessionId).map((item) => item.id)),
+    [taskHistory, viewSessionId],
+  );
 
   const scheduledTasks = useMemo<ScheduledTask[]>(
     () => scheduledRecords.map(scheduledRecordToWorkspaceTask),
@@ -285,7 +301,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
 
   const sessionTraceItems = useMemo(
     () =>
-      [...traceEvents]
+      [...sessionScopedTraceEvents]
         .sort((left: any, right: any) => right.sequence - left.sequence)
         .map((trace: any) => ({
           id: trace.id,
@@ -304,7 +320,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
           taskId: trace.taskId,
           agentType: (trace.payload as Record<string, unknown> | null)?.agentType as string | undefined,
         })),
-    [traceEvents],
+    [sessionScopedTraceEvents],
   );
 
   const sessionToolCalls = useMemo(
@@ -343,8 +359,8 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   );
 
   const sessionCollaboration = useMemo(
-    () => buildSessionCollaboration(events, traceEvents),
-    [events, traceEvents],
+    () => buildSessionCollaboration(sessionScopedEvents, sessionScopedTraceEvents),
+    [sessionScopedEvents, sessionScopedTraceEvents],
   );
 
   const composerRuntimeChildTasks: ComposerRuntimeChildTask[] = useMemo(
@@ -365,19 +381,19 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
 
   const sessionBackgroundJobs = useMemo(
     () => {
-      const eventJobs = buildSessionBackgroundJobs(events, traceEvents);
-      const commandLogs = Object.values(commandLogCacheById);
+      const eventJobs = buildSessionBackgroundJobs(sessionScopedEvents, sessionScopedTraceEvents);
+      const commandLogs = Object.values(commandLogCacheById).filter((log) => !viewSessionId || sessionTaskIds.has(log.taskId));
       return mergeSessionBackgroundJobs(eventJobs, commandLogs);
     },
-    [commandLogCacheById, events, traceEvents],
+    [commandLogCacheById, sessionScopedEvents, sessionScopedTraceEvents, sessionTaskIds, viewSessionId],
   );
 
   // Labels
   const isNewSessionTab = activeTab.kind === "new-session";
-  const activeSessionWorkspaceRoot = activeTab.kind === "session" ? session?.workspaceRoot : undefined;
+  const activeSessionWorkspaceRoot = activeTab.kind === "session" ? viewSession?.workspaceRoot : undefined;
   const activeSessionWorkspaceName =
     activeTab.kind === "session"
-      ? session?.workspaceName ?? workspaceNameFromPath(activeSessionWorkspaceRoot)
+      ? viewSession?.workspaceName ?? workspaceNameFromPath(activeSessionWorkspaceRoot)
       : undefined;
   const launchWorkspaceName = workspaceNameFromPath(workspacePath);
   const workspaceName =

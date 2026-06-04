@@ -563,7 +563,7 @@ export function App() {
   }
 
   async function handleContinueFromMessage(message: SessionWorkspaceMessage) {
-    const sessionId = message.sessionId || session?.id;
+    const sessionId = message.sessionId || activeSessionId || session?.id;
     if (!sessionId || !message.id) return;
     try {
       const result = await runtimeClient.truncateSession({ sessionId, messageId: message.id });
@@ -575,7 +575,7 @@ export function App() {
   }
 
   async function handleBranchFromMessage(message: SessionWorkspaceMessage) {
-    const sessionId = message.sessionId || session?.id;
+    const sessionId = message.sessionId || activeSessionId || session?.id;
     if (!sessionId || !message.id) return;
     try {
       const source = sessions.find((item) => item.id === sessionId) ?? session;
@@ -614,7 +614,7 @@ export function App() {
   }
 
   async function handleDeleteMessage(message: SessionWorkspaceMessage) {
-    const sessionId = message.sessionId || session?.id;
+    const sessionId = message.sessionId || activeSessionId || session?.id;
     if (!sessionId || !message.id) return;
     try {
       const result = await runtimeClient.deleteMessage({ sessionId, messageId: message.id });
@@ -847,6 +847,13 @@ export function App() {
   // ── Message actions hook ────────────────────────────────────────────
   const activeTab = openTabs.find((tabItem) => tabItem.id === activeTabId) ?? openTabs[0] ?? getInitialTabs()[0];
   const activeSessionRecord = resolveSessionForTab(activeTab, sessions, session);
+  const activeSessionId = activeTab.kind === "session" ? activeSessionRecord?.id ?? activeTab.sessionId : null;
+  const activeSessionTask = activeSessionId
+    ? task?.sessionId === activeSessionId
+      ? task
+      : sortByUpdatedAtDesc(taskHistory.filter((item) => item.sessionId === activeSessionId))[0] ?? null
+    : null;
+  const activeSessionTaskId = activeSessionTask?.id ?? null;
   const runtimeReady = Boolean(hostStatus && config);
 
   const messageActionsHook = useMessageActions({
@@ -856,8 +863,8 @@ export function App() {
     queuedPromptSubmissions, setQueuedPromptSubmissions,
     chatMessages, setChatMessages,
     messageBusy, setMessageBusy,
-    task, setTask,
-    activeTaskId,
+    task: activeSessionTask, setTask,
+    activeTaskId: activeSessionTaskId,
     session, setSession,
     sessions, setSessions,
     openTabs, setOpenTabs, setActiveTabId,
@@ -873,7 +880,7 @@ export function App() {
     sessionTitle,
     activeTab, activeSessionRecord,
     runtimeReady,
-    visibleChatMessages: getVisibleChatMessages(chatMessages, session?.id),
+    visibleChatMessages: getVisibleChatMessages(chatMessages, activeSessionId),
     workspace,
     mcpServers, skills,
   });
@@ -979,46 +986,46 @@ export function App() {
 
   // ── Trace auto-refresh useEffect ────────────────────────────────────
   const traceAutoRefreshStatus =
-    task && task.id === activeTaskId && TRACE_AUTO_REFRESH_STATUSES.has(task.status)
-      ? task.status
+    activeSessionTask && activeSessionTask.id === activeSessionTaskId && TRACE_AUTO_REFRESH_STATUSES.has(activeSessionTask.status)
+      ? activeSessionTask.status
       : undefined;
 
   useEffect(() => {
-    if (!activeTaskId) {
+    if (!activeSessionTaskId) {
       setTraceError(null);
       setTraceBusy(false);
       return;
     }
     let cancelled = false;
-    void loadTraceForTask(activeTaskId, () => cancelled);
+    void loadTraceForTask(activeSessionTaskId, () => cancelled);
     return () => { cancelled = true; };
-  }, [activeTaskId, traceAutoRefreshStatus]);
+  }, [activeSessionTaskId, traceAutoRefreshStatus]);
 
-  const sessionTraceTaskKey = session?.id
-    ? sortByUpdatedAtDesc(taskHistory.filter((item) => item.sessionId === session.id))
+  const sessionTraceTaskKey = activeSessionId
+    ? sortByUpdatedAtDesc(taskHistory.filter((item) => item.sessionId === activeSessionId))
         .map((item) => `${item.id}:${item.updatedAt ?? 0}`)
         .join("|")
     : "";
 
   useEffect(() => {
-    if (!session?.id || !sessionTraceTaskKey) {
+    if (!activeSessionId || !sessionTraceTaskKey) {
       return;
     }
     let cancelled = false;
-    void loadSessionTraceRecovery(session.id, taskHistory, () => cancelled);
+    void loadSessionTraceRecovery(activeSessionId, taskHistory, () => cancelled);
     return () => { cancelled = true; };
-  }, [session?.id, sessionTraceTaskKey]);
+  }, [activeSessionId, sessionTraceTaskKey]);
 
   useEffect(() => {
-    if (!activeTaskId || !session?.id) {
+    if (!activeSessionTaskId || !activeSessionId) {
       return;
     }
-    if (task?.id === activeTaskId && !isTaskControllable(task.status)) {
+    if (activeSessionTask?.id === activeSessionTaskId && !isTaskControllable(activeSessionTask.status)) {
       return;
     }
     let cancelled = false;
-    const taskId = activeTaskId;
-    const sessionId = session.id;
+    const taskId = activeSessionTaskId;
+    const sessionId = activeSessionId;
 
     const refreshTerminalTask = async () => {
       try {
@@ -1055,14 +1062,14 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeTaskId, session?.id, task?.id, task?.status]);
+  }, [activeSessionTaskId, activeSessionId, activeSessionTask?.id, activeSessionTask?.status]);
 
   useEffect(() => {
-    if (!task || !session?.id || !["completed", "failed", "cancelled"].includes(task.status)) {
+    if (!activeSessionTask || !activeSessionId || !["completed", "failed", "cancelled"].includes(activeSessionTask.status)) {
       return;
     }
     let cancelled = false;
-    const sessionId = session.id;
+    const sessionId = activeSessionId;
 
     clearPendingAssistantTokens();
     void runtimeClient
@@ -1071,7 +1078,7 @@ export function App() {
         if (!cancelled) {
           setChatMessages((current) =>
             replaceSessionMessages(current, sessionId, result.messages, {
-              taskIds: [task.id],
+              taskIds: [activeSessionTask.id],
               includeUserMessages: true,
               excludeTaskIds: Array.from(childTaskIdsRef.current),
               preserveOtherTaskMessages: true,
@@ -1086,18 +1093,18 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [session?.id, task?.id, task?.status]);
+  }, [activeSessionId, activeSessionTask?.id, activeSessionTask?.status]);
 
   useEffect(() => {
     setTaskControlError(null);
-  }, [task?.id, task?.status]);
+  }, [activeSessionTask?.id, activeSessionTask?.status]);
 
   useEffect(() => {
     setWorktreeStatus(null);
     setWorktreeDiff(null);
     setWorktreeError(null);
     setWorktreeBusyAction(null);
-  }, [task?.routing?.activeWorktree?.id]);
+  }, [activeSessionTask?.routing?.activeWorktree?.id]);
 
   // ── Queued prompt auto-send useEffect ───────────────────────────────
   useEffect(() => {
@@ -1152,7 +1159,7 @@ export function App() {
   const views = useDerivedViews({
     config, hostStatus, providerSettings, providerTestResult,
     activeProviderProfileId, activeProviderProfile, activeTab, activeTabId,
-    session, sessions, task, activeTaskId, taskHistory,
+    session, sessions, task: activeSessionTask, activeTaskId: activeSessionTaskId, taskHistory,
     events, traceEvents, commandLogCacheById, patchCacheById,
     chatMessages, workspace, workspacePath,
     scheduledRecords, scheduledLogs, skills, mcpServers, agentProfiles,
@@ -1165,7 +1172,7 @@ export function App() {
   const composerVisible = activeTabKind === "new-session" || activeTabKind === "session";
   const queuedPromptCount = queuedPromptSubmissions.length;
   const fileWorkspaceChangedFiles = [
-    ...(task?.changedFiles ?? []).map((file) => ({
+    ...(activeSessionTask?.changedFiles ?? []).map((file) => ({
       path: file.path,
       status: file.status,
       additions: file.additions,
@@ -1245,8 +1252,8 @@ export function App() {
       contextPreview={views.sessionContextPreview}
       worktreeStatus={worktreeStatus ?? null}
       fileWorkspaceChangedFiles={fileWorkspaceChangedFiles}
-      activeTaskStatus={task?.status ?? null}
-      activeTaskCurrentStep={task?.currentStep ?? null}
+      activeTaskStatus={activeSessionTask?.status ?? null}
+      activeTaskCurrentStep={activeSessionTask?.currentStep ?? null}
       theme={generalSettings.theme}
       density={generalSettings.density}
       radius={generalSettings.radius}
@@ -1289,7 +1296,7 @@ export function App() {
         handleOpenWorkspace={handleOpenWorkspace}
         handleCreateSession={handleCreateSession}
         activeSessionRecord={activeSessionRecord}
-        task={task}
+        task={activeSessionTask}
         visibleChatMessages={views.visibleChatMessages}
         sessionTaskCount={views.sessionTaskCount}
         sessionCollaboration={views.sessionCollaboration}

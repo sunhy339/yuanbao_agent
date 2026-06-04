@@ -23,6 +23,7 @@ const runtimeMocks = vi.hoisted(() => ({
   listMcpServers: vi.fn(),
   listAgentProfiles: vi.fn(),
   listMessages: vi.fn(),
+  eventsAfter: vi.fn(),
   listTrace: vi.fn(),
   commandLogList: vi.fn(),
   subscribeEvents: vi.fn(),
@@ -126,6 +127,7 @@ function setupRuntimeMocks() {
       messages: messagesBySession[sessionId] ?? [],
     }),
   );
+  runtimeMocks.eventsAfter.mockResolvedValue({ events: [], truncated: false });
   runtimeMocks.listTrace.mockResolvedValue({ traceEvents: [] });
   runtimeMocks.commandLogList.mockResolvedValue({ commandLogs: [] });
   runtimeMocks.subscribeEvents.mockResolvedValue(vi.fn());
@@ -187,6 +189,93 @@ describe("App session message recovery", () => {
         sessionId: "sess_beta",
         limit: 500,
       });
+    });
+  });
+
+  it("replays persisted session trace events when opening a session", async () => {
+    const user = userEvent.setup();
+    runtimeMocks.eventsAfter.mockImplementation(async ({ sessionId }: { sessionId: string }) => {
+      if (sessionId !== "sess_beta") {
+        return { events: [], truncated: false };
+      }
+      return {
+        truncated: false,
+        events: [
+          {
+            id: "evt_beta_command_start",
+            sessionId: "sess_beta",
+            taskId: "task_beta",
+            type: "command.started",
+            source: "command",
+            payload: {
+              commandId: "cmd_beta_test",
+              toolUseId: "tool_beta_cmd",
+              toolName: "run_command",
+              command: "npm test -- --runInBand",
+              target: "npm test -- --runInBand",
+              inputSummary: "npm test -- --runInBand",
+            },
+            createdAt: 202,
+            sequence: 1,
+            visibility: "chat",
+          },
+          {
+            id: "evt_beta_command_output",
+            sessionId: "sess_beta",
+            taskId: "task_beta",
+            type: "command.output",
+            source: "command",
+            payload: {
+              commandId: "cmd_beta_test",
+              toolUseId: "tool_beta_cmd",
+              toolName: "run_command",
+              command: "npm test -- --runInBand",
+              stream: "stdout",
+              chunk: "all tests passed\n",
+              target: "npm test -- --runInBand",
+            },
+            createdAt: 203,
+            sequence: 2,
+            visibility: "chat",
+          },
+          {
+            id: "evt_beta_command_done",
+            sessionId: "sess_beta",
+            taskId: "task_beta",
+            type: "command.completed",
+            source: "command",
+            payload: {
+              commandId: "cmd_beta_test",
+              toolUseId: "tool_beta_cmd",
+              toolName: "run_command",
+              command: "npm test -- --runInBand",
+              target: "npm test -- --runInBand",
+              inputSummary: "npm test -- --runInBand",
+              status: "completed",
+              exitCode: 0,
+              durationMs: 120,
+            },
+            createdAt: 204,
+            sequence: 3,
+            visibility: "chat",
+          },
+        ],
+      };
+    });
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "打开会话 Beta Session" }));
+
+    expect(await screen.findByText("Beta persisted request")).toBeInTheDocument();
+    expect(screen.getByText("Beta persisted answer")).toBeInTheDocument();
+    expect((await screen.findAllByText(/npm test -- --runInBand/i)).length).toBeGreaterThan(0);
+    await user.click(screen.getAllByRole("button", { name: /npm test -- --runInBand/i })[0]);
+    expect((await screen.findAllByText(/all tests passed/i)).length).toBeGreaterThan(0);
+    expect(runtimeMocks.eventsAfter).toHaveBeenCalledWith({
+      sessionId: "sess_beta",
+      afterSeq: 0,
+      limit: 500,
     });
   });
 

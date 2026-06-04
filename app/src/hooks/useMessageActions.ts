@@ -188,6 +188,8 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     return reason instanceof Error ? reason.message : String(reason);
   }
 
+  const actionSessionId = activeSessionRecord?.id ?? session?.id ?? "";
+
   async function ensureSessionForSend(launch?: SessionLaunchOptions): Promise<SessionRecord> {
     const nextWorkspace = launch?.workDir?.trim() && openWorkspaceAtPath
       ? await openWorkspaceAtPath(launch.workDir.trim())
@@ -432,7 +434,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
       ...current,
       {
         id: systemMessageId,
-        sessionId: session?.id ?? "",
+        sessionId: actionSessionId,
         taskId: "system",
         role: "assistant" as const,
         content: markdown,
@@ -460,7 +462,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     setChatMessages((current) =>
       appendSpecialEventMessage(current, {
         kind: "slash_command",
-        sessionId: session?.id ?? "",
+        sessionId: actionSessionId,
         taskId: task?.id ?? "system",
         content: markdown,
         title: options.title ?? `${normalizedCommand} result`,
@@ -478,7 +480,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
 
   function handleStopPrompt() {
     clearPendingAssistantTokens();
-    setChatMessages((current) => stopStreamingMessages(current, session?.id));
+    setChatMessages((current) => stopStreamingMessages(current, actionSessionId));
     setMessageBusy(false);
     setSessionBusy(false);
     setError(null);

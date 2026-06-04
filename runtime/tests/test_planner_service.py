@@ -37,3 +37,31 @@ def test_planner_keeps_command_plan_specific_to_command_execution() -> None:
     assert [step["id"] for step in plan] == ["inspect-workspace", "run-command", "summarize-findings"]
     assert plan[1]["title"] == "Run approved command"
     assert "npm test" in plan[1]["detail"]
+
+
+def test_planner_skips_scaffold_for_free_form_status_question() -> None:
+    planner = Planner()
+
+    plan = planner.plan(
+        "检查一下当前的进展吧",
+        context={"workspace_name": "test_pro", "routing": {"scenario": "free_form", "strategy": "react_standard"}},
+    )
+
+    assert plan == []
+
+
+def test_planner_keeps_plan_for_free_form_code_change_goal() -> None:
+    planner = Planner()
+
+    plan = planner.plan(
+        "优化一下 snake game core",
+        context={"workspace_name": "test_pro", "routing": {"scenario": "free_form", "strategy": "react_standard"}},
+    )
+
+    assert [step["id"] for step in plan] == [
+        "inspect-workspace",
+        "search-relevant-files",
+        "apply-patch",
+        "run-command",
+        "summarize-findings",
+    ]

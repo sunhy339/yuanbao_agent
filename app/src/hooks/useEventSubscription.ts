@@ -176,6 +176,21 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     return Boolean(payload && typeof payload === "object" && (payload as { _chatCompat?: unknown })._chatCompat === true);
   }
 
+  const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
+
+  function isControlFlowToolPayload(payload: unknown): boolean {
+    if (!payload || typeof payload !== "object") return false;
+    const toolName = String((payload as { toolName?: unknown }).toolName ?? "").toLowerCase();
+    return CONTROL_FLOW_TOOL_NAMES.has(toolName);
+  }
+
+  function isApprovalRequiredToolResultPayload(payload: unknown): boolean {
+    if (!payload || typeof payload !== "object") return false;
+    const result = (payload as { result?: unknown }).result;
+    if (!result || typeof result !== "object") return false;
+    return String((result as { status?: unknown }).status ?? "").toLowerCase() === "approval_required";
+  }
+
   function appendOperationalAssistantProgress(event: AgentEventEnvelope, delta: string): boolean {
     const text = summarizeOperationalAssistantDelta(delta)?.trim();
     if (!text) {
@@ -665,7 +680,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (event.type === "tool.started") {
-          if (!isChatVisibleEvent(event) || isChatCompatPayload(event.payload)) {
+          if (!isChatVisibleEvent(event) || isChatCompatPayload(event.payload) || isControlFlowToolPayload(event.payload)) {
             return;
           }
           const payload = event.payload as ToolLifecyclePayload;
@@ -699,7 +714,12 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (event.type === "tool.completed" || event.type === "tool.failed" || event.type === "tool.blocked") {
-          if (!isChatVisibleEvent(event) || isChatCompatPayload(event.payload)) {
+          if (
+            !isChatVisibleEvent(event) ||
+            isChatCompatPayload(event.payload) ||
+            isControlFlowToolPayload(event.payload) ||
+            (event.type === "tool.completed" && isApprovalRequiredToolResultPayload(event.payload))
+          ) {
             return;
           }
           const payload = event.payload as ToolLifecyclePayload;

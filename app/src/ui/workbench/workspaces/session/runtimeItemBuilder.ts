@@ -175,8 +175,16 @@ function classifyToolVisibility(toolCall: SessionWorkspaceToolCall): RuntimeTime
   return "chat";
 }
 
+const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
+
 function shouldHideToolFromRuntimePanel(toolCall: SessionWorkspaceToolCall) {
-  return false;
+  const toolName = toolCall.toolName.toLowerCase();
+  if (CONTROL_FLOW_TOOL_NAMES.has(toolName)) {
+    return true;
+  }
+  const rawResult = parseRuntimeJsonRecord(toolCall.rawOutput);
+  const resultStatus = readRuntimeString(rawResult, ["status"]);
+  return resultStatus === "approval_required";
 }
 
 function classifyBackgroundJobVisibility(job: { command: string; status: string; summary?: string }) {

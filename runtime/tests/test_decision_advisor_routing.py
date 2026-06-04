@@ -209,6 +209,19 @@ class TestAdvisorRoutingAccepted:
         assert "read_file" in contract["requiredTools"]
         assert orchestrator._should_use_minimal_context(routing_dict) is False
 
+    def test_current_progress_query_gets_evidence_contract(self, tmp_path: Any) -> None:
+        router = MetaRouter(provider=None)
+
+        result = router.route("检查一下当前的进展吧")
+
+        orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock(), meta_router=router)
+        routing_dict = orchestrator._routing_dict_from_decision(result, context={"goal": "检查一下当前的进展吧"})
+        contract = routing_dict["profile"]["workspaceEvidenceRequired"]
+        assert contract["required"] is True
+        assert contract["source"] == "goal_semantic"
+        assert "read_file" in contract["requiredTools"]
+        assert orchestrator._should_use_minimal_context(routing_dict) is False
+
 
 # ---------------------------------------------------------------------------
 # Test: MetaRouter with DecisionAdvisor — rejected / fallback

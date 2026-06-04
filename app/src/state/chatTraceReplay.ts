@@ -134,6 +134,21 @@ function isChatCompatPayload(payload: unknown): boolean {
   return Boolean(payload && typeof payload === "object" && (payload as { _chatCompat?: unknown })._chatCompat === true);
 }
 
+const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
+
+function isControlFlowToolPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const toolName = String((payload as { toolName?: unknown }).toolName ?? "").toLowerCase();
+  return CONTROL_FLOW_TOOL_NAMES.has(toolName);
+}
+
+function isApprovalRequiredToolResultPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const result = (payload as { result?: unknown }).result;
+  if (!result || typeof result !== "object") return false;
+  return String((result as { status?: unknown }).status ?? "").toLowerCase() === "approval_required";
+}
+
 function isReplayChatVisibleEvent(
   event: AgentEventEnvelope,
   childTaskIds: ReadonlySet<string> = EMPTY_CHILD_TASK_IDS,
@@ -380,6 +395,7 @@ function replayTraceEvent(
 
   if (event.type === "tool.started") {
     if (isChatCompatPayload(event.payload)) return current;
+    if (isControlFlowToolPayload(event.payload)) return current;
     const payload = event.payload as ToolLifecyclePayload;
     if (!payload.toolCallId) return current;
     return appendOrUpdateAssistantToolStartMessage(current, {
@@ -407,6 +423,8 @@ function replayTraceEvent(
 
   if (event.type === "tool.completed" || event.type === "tool.failed" || event.type === "tool.blocked") {
     if (isChatCompatPayload(event.payload)) return current;
+    if (isControlFlowToolPayload(event.payload)) return current;
+    if (event.type === "tool.completed" && isApprovalRequiredToolResultPayload(event.payload)) return current;
     const payload = event.payload as ToolLifecyclePayload;
     if (!payload.toolCallId) return current;
     const isError = event.type !== "tool.completed";

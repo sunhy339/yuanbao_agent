@@ -161,6 +161,36 @@ describe("chat trace replay", () => {
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
+  it("does not replay control-flow tools as normal chat tool rows", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_plan_tool", "tool.started", {
+        toolCallId: "call_plan",
+        toolName: "enter_plan_mode",
+        arguments: { reason: "Need a plan" },
+      }, 1, "chat"),
+      trace("evt_plan_done", "tool.completed", {
+        toolCallId: "call_plan",
+        toolName: "enter_plan_mode",
+        resultSummary: "plan mode entered",
+      }, 2, "chat"),
+    ]);
+
+    expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
+  });
+
+  it("does not replay approval-required tool completion as a finished tool row", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_cmd_waiting", "tool.completed", {
+        toolCallId: "call_command",
+        toolName: "run_command",
+        result: { status: "approval_required" },
+        resultSummary: "approval required",
+      }, 1, "chat"),
+    ]);
+
+    expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
+  });
+
   it("hides child-worker trace events on session recovery unless they are explicitly chat-visible", () => {
     const replayed = replayTraceEventsToChatMessages(
       [],

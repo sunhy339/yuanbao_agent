@@ -206,6 +206,62 @@ describe("runtimeItemBuilder", () => {
     });
   });
 
+  it("hides control-flow tools from runtime panel tool rows", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_plan",
+          toolName: "enter_plan_mode",
+          status: "completed",
+          rawInput: JSON.stringify({ reason: "Need a plan" }),
+        },
+        {
+          id: "call_ask",
+          toolName: "ask_user_question",
+          status: "completed",
+          rawInput: JSON.stringify({ question: "Pick a format" }),
+        },
+      ],
+    });
+
+    expect(items).toEqual([]);
+  });
+
+  it("hides approval-required tool results until the approved command actually runs", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_command_pending",
+          toolName: "run_command",
+          status: "completed",
+          rawInput: JSON.stringify({ command: "git commit -m test" }),
+          rawOutput: JSON.stringify({ status: "approval_required" }),
+        },
+        {
+          id: "call_command_done",
+          toolName: "run_command",
+          status: "completed",
+          rawInput: JSON.stringify({ command: "git status --short" }),
+          rawOutput: JSON.stringify({ status: "completed" }),
+        },
+      ],
+    });
+
+    expect(items.map((item) => item.toolUseId)).toEqual(["call_command_done"]);
+  });
+
   it("preserves recovered command metadata on background job runtime items", () => {
     const items = buildRuntimeItems({
       session: null,

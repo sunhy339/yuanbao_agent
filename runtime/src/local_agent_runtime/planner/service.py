@@ -7,16 +7,19 @@ from typing import Any
 class Planner:
     """Produces UI-friendly steps and keeps step transitions deterministic."""
 
-    # Scenarios where the planner should NOT produce plan steps — simple Q&A
-    # doesn't benefit from a scaffolded plan.
-    _SKIP_PLAN_SCENARIOS: frozenset[str] = frozenset({"simple_query"})
+    # Scenarios where a scaffolded plan usually feels heavier than the natural
+    # provider/tool stream. Concrete edit, command, and orchestration routes
+    # still get plan steps below.
+    _SKIP_PLAN_SCENARIOS: frozenset[str] = frozenset({"simple_query", "free_form"})
 
     def plan(self, goal: str, context: dict[str, Any] | None = None) -> list[dict[str, str]]:
         # Skip plan generation for simple/free-form scenarios.
         if context:
             routing = context.get("routing")
             if isinstance(routing, dict) and routing.get("scenario") in self._SKIP_PLAN_SCENARIOS:
-                return []
+                strategy = str(routing.get("strategy") or "").strip()
+                if strategy not in {"plan", "plan_supervise", "plan_swarm"} and not self._goal_needs_visible_plan(goal):
+                    return []
 
         workspace_name = context.get("workspace_name", "workspace") if context else "workspace"
         route = self._route_goal(goal)
@@ -239,6 +242,12 @@ class Planner:
             "\u4f18\u5316",
         )
         return any(term in lowered for term in change_terms)
+
+    def _goal_needs_visible_plan(self, goal: str) -> bool:
+        route = self._route_goal(goal)
+        if route["kind"] != "search":
+            return True
+        return self._looks_like_code_change(goal)
 
     def _inspect_title(self, goal: str, localized: bool) -> str:
         if localized:

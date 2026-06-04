@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,15 @@ class PolicyGuard:
         dangerous_match = self._dangerous_command_match(command)
         if dangerous_match is not None:
             raise ValueError(f"Blocked dangerous command: {dangerous_match}")
+
+        git_add_noise = self._git_add_generated_or_local_paths(command)
+        if git_add_noise:
+            paths = ", ".join(git_add_noise[:8])
+            suffix = "" if len(git_add_noise) <= 8 else f", +{len(git_add_noise) - 8} more"
+            raise ValueError(
+                "Blocked git add of broad/generated/local-only paths: "
+                f"{paths}{suffix}. Stage only intentional source or documentation files."
+            )
 
         allow_patterns = self._effective_allow_patterns(run_command_config)
         if allow_patterns and not self._all_command_segments_match(command, allow_patterns):
@@ -153,6 +163,80 @@ class PolicyGuard:
         if segment:
             segments.append(segment)
         return segments or [command]
+
+    def _git_add_generated_or_local_paths(self, command: str) -> list[str]:
+        blocked: list[str] = []
+        for segment in self._safe_command_segments(command):
+            path_tokens = self._git_add_path_tokens(segment)
+            for token in path_tokens:
+                normalized = self._normalized_path_token(token)
+                if not normalized or normalized == "--":
+                    continue
+                if self._is_broad_git_add_path(normalized) or self._is_generated_or_local_path(normalized):
+                    blocked.append(normalized)
+        return blocked
+
+    def _git_add_path_tokens(self, segment: str) -> list[str]:
+        tokens = self._split_command_tokens(segment)
+        if not tokens:
+            return []
+        index = 1 if tokens[0] == "&" else 0
+        if index >= len(tokens) or not self._is_git_executable(tokens[index]):
+            return []
+        index += 1
+        while index < len(tokens):
+            token = self._strip_token_quotes(tokens[index])
+            lowered = token.casefold()
+            if lowered == "add":
+                return tokens[index + 1 :]
+            if lowered in {"-c", "--git-dir", "--work-tree", "-c"} and index + 1 < len(tokens):
+                index += 2
+                continue
+            if lowered.startswith("-"):
+                index += 1
+                continue
+            return []
+        return []
+
+    def _split_command_tokens(self, command: str) -> list[str]:
+        try:
+            return shlex.split(command, posix=False)
+        except ValueError:
+            return re.findall(r'''"[^"]*"|'[^']*'|\S+''', command)
+
+    def _is_git_executable(self, token: str) -> bool:
+        executable = self._strip_token_quotes(token).replace("\\", "/").casefold()
+        return executable == "git" or executable.endswith("/git") or executable.endswith("/git.exe")
+
+    def _normalized_path_token(self, token: str) -> str:
+        normalized = self._strip_token_quotes(token).replace("\\", "/").strip()
+        if normalized.startswith("./") and len(normalized) > 2:
+            normalized = normalized[2:]
+        return normalized
+
+    def _strip_token_quotes(self, token: str) -> str:
+        return str(token or "").strip().strip("\"'`")
+
+    def _is_broad_git_add_path(self, path: str) -> bool:
+        lowered = path.casefold()
+        return lowered in {".", "./", "*", ":/", "-a", "-u", "--all", "--update"} or lowered.startswith("-a")
+
+    def _is_generated_or_local_path(self, path: str) -> bool:
+        lowered = path.casefold()
+        if "%systemdrive%" in lowered:
+            return True
+        if "/__pycache__/" in f"/{lowered}/" or lowered.endswith(".pyc"):
+            return True
+        if "/.pytest_cache/" in f"/{lowered}/":
+            return True
+        if lowered in {"memory.md", "memory.local.md", "yuanbao.md"}:
+            return True
+        if lowered.endswith("/memory.md") or lowered.endswith("/memory.local.md") or lowered.endswith("/yuanbao.md"):
+            return True
+        if lowered == ".idea/workspace.xml" or lowered.endswith("/.idea/workspace.xml"):
+            return True
+        name = lowered.rsplit("/", 1)[-1]
+        return bool(re.match(r"tmp_.*\.(?:png|jpe?g|webp)$", name))
 
     def _first_blocked_pattern(self, command: str, config: dict[str, Any]) -> str | None:
         normalized_command = command.casefold()

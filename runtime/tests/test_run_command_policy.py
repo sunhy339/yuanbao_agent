@@ -218,6 +218,63 @@ def test_run_command_default_allowlist_keeps_python_c_with_quoted_semicolons_ava
         store.close()
 
 
+@pytest.mark.parametrize(
+    "command,blocked_path",
+    [
+        (
+            "git add snake_game/README.md snake_game/__pycache__/game.cpython-314.pyc && git commit -m ok",
+            "__pycache__",
+        ),
+        ("git add snake_game/README.md .idea/workspace.xml", ".idea/workspace.xml"),
+        ("git add MEMORY.md snake_game/game.py", "MEMORY.md"),
+        ("git add YUANBAO.md snake_game/game.py", "YUANBAO.md"),
+        ('git add "%SystemDrive%/" snake_game/game.py', "%SystemDrive%"),
+        ("git add .", "."),
+        ("git -C . add .", "."),
+        ("git add -A", "-A"),
+        ("git add app/tmp_tauri_after_visible_fix.png", "tmp_tauri_after_visible_fix.png"),
+    ],
+)
+def test_run_command_rejects_git_add_generated_or_local_paths_before_approval(
+    tmp_path: Path,
+    command: str,
+    blocked_path: str,
+) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="Blocked git add") as exc_info:
+            run_command(
+                {
+                    "workspaceRoot": str(ctx["workspace_root"]),
+                    "taskId": ctx["task_id"],
+                    "command": command,
+                }
+            )
+
+        approvals = store.list_trace_events({"taskId": ctx["task_id"]})["traceEvents"]
+        assert not [event for event in approvals if event["type"] == "approval.requested"]
+        assert blocked_path.casefold() in str(exc_info.value).casefold()
+    finally:
+        store.close()
+
+
+def test_run_command_allows_targeted_git_add_before_approval(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "git add snake_game/game.py snake_game/README.md && git commit -m ok",
+            }
+        )
+
+        assert result["status"] == "approval_required"
+        assert result["command"].startswith("git add snake_game/game.py")
+    finally:
+        store.close()
+
+
 def test_run_command_permission_engine_allows_low_risk_verification_without_approval(tmp_path: Path) -> None:
     store, run_command, ctx = _make_run_command(tmp_path, use_permission_engine=True)
     try:

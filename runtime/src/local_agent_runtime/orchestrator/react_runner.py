@@ -1582,6 +1582,14 @@ class ReactRunnerMixin:
                 "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
             }
         if not isinstance(raw, dict):
+            goal = str(task.get("goal") or context.get("goal") or context.get("userGoal") or "").strip()
+            goal_checker = getattr(self, "_goal_mentions_workspace_evidence", None)
+            if callable(goal_checker) and goal_checker(goal):
+                return {
+                    "required": True,
+                    "source": "react_goal_semantic",
+                    "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
+                }
             return {"required": False}
         required = raw.get("required")
         if required is None:
@@ -1664,9 +1672,11 @@ class ReactRunnerMixin:
             "[Workspace evidence required]\n"
             f"{root_line}"
             f"Goal: {goal}\n"
-            "Before giving the final answer, inspect the workspace with read-only tools. "
-            "Use search_files/code_search/list_dir/read_file/git_status/git_diff as appropriate, "
-            "then synthesize the answer from the observed files or command evidence. "
+            "Before giving the final answer, inspect the workspace with the smallest sufficient read-only evidence set. "
+            "For progress/status questions, start with git_status and only the most relevant README/TODO/task notes or files. "
+            "For document or source questions, search/read the likely source files instead of scanning the whole repository. "
+            "Do not run build, compile, or test commands unless the user explicitly asked for verification or a prior edit needs it. "
+            "Stop tool use once the evidence directly supports the answer, then synthesize from the observed files or command evidence. "
             "Do not ask the user for low-risk output preferences."
         )
 

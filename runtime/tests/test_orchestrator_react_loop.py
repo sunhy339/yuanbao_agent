@@ -242,6 +242,60 @@ def test_react_loop_requires_workspace_evidence_before_final_answer(tmp_path: An
     assert progress_events
 
 
+def test_react_loop_requires_workspace_evidence_for_current_progress_goal_without_profile(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {"final": "I already checked the current progress."},
+            {
+                "tool_calls": [
+                    {"id": "call_status", "name": "git_status", "arguments": {}},
+                ],
+            },
+            {"final": "Grounded current progress after git status."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "git_status": lambda _params: {
+                "status": "completed",
+                "branch": "main",
+                "changedFiles": ["snake_game/game.py"],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "检查一下当前的进展吧"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert task["resultSummary"] == "Grounded current progress after git status."
+    assert len(provider.calls) == 3
+    evidence_prompt_text = "\n".join(
+        str(message.get("content") or "")
+        for call in provider.calls
+        for message in call["context"]["messages"]
+    )
+    assert "smallest sufficient read-only evidence set" in evidence_prompt_text
+    assert "Do not run build, compile, or test commands unless" in evidence_prompt_text
+    assert [
+        event["payload"]["toolName"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    ] == ["git_status"]
+    progress_events = [
+        event
+        for event in runtime.events
+        if event["type"] == "assistant_progress"
+        and event["payload"].get("phase") == "workspace_evidence_required"
+    ]
+    assert progress_events
+
+
 def test_simple_query_uses_minimal_context_without_tools(tmp_path: Any) -> None:
     provider = ScriptedProvider([{"final": "你好！"}])
     runtime = _make_runtime(tmp_path, provider)

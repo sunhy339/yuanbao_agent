@@ -130,6 +130,18 @@ class EventStoreMixin:
                 and not bool(bridge.get("persistTraceMirror"))
             ):
                 return None
+            if (
+                isinstance(bridge, dict)
+                and bool(bridge.get("suppressRealtimeFlat"))
+                and "suppressChatReplay" not in bridge
+            ):
+                payload = {
+                    **payload,
+                    "_bridge": {
+                        **bridge,
+                        "suppressChatReplay": True,
+                    },
+                }
         event_visibility = getattr(event, "visibility", "chat")
         if normalized_type.startswith("session."):
             event_session_id = getattr(event, "session_id", None)

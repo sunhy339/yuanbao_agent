@@ -220,6 +220,35 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-kind")).toBe("system");
   });
 
+  it("renders live agent task groups as special transcript nodes", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_agent_group",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "agent_task_group",
+        ts: 10,
+        visibility: "chat",
+        payload: {
+          title: "派遣了 2 个代理",
+          summary: "2 个完成",
+          status: "completed",
+          agentTasks: [
+            { id: "ctask_1", title: "Analyze codebase", status: "completed" },
+            { id: "ctask_2", title: "Verify results", status: "completed" },
+          ],
+        },
+      });
+    });
+
+    const row = screen.getByText("2 个完成");
+    expect(row.getAttribute("data-kind")).toBe("agent_task_group");
+    expect(row.getAttribute("data-status")).toBe("completed");
+  });
+
   it("turns resolved permission_request events into completed approval cards", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());

@@ -39,6 +39,7 @@ const SPECIAL_EVENT_TYPES = new Set([
   "goal_event",
   "memory_event",
   "background_task",
+  "agent_task_group",
   "task_summary",
   "plan_update",
   "ask_user_question",
@@ -132,6 +133,19 @@ function safePayloadDisplayText(value: string): string {
 
 function isChatCompatPayload(payload: unknown): boolean {
   return Boolean(payload && typeof payload === "object" && (payload as { _chatCompat?: unknown })._chatCompat === true);
+}
+
+function bridgeMetadata(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== "object") return {};
+  const bridge = (payload as { _bridge?: unknown })._bridge;
+  return bridge && typeof bridge === "object" && !Array.isArray(bridge)
+    ? bridge as Record<string, unknown>
+    : {};
+}
+
+function suppressesChatReplay(payload: unknown): boolean {
+  const bridge = bridgeMetadata(payload);
+  return bridge.suppressChatReplay === true || bridge.suppressRealtimeFlat === true;
 }
 
 const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
@@ -242,6 +256,9 @@ function replayTraceEvent(
   event: AgentEventEnvelope,
   childTaskIds: ReadonlySet<string>,
 ): ChatMessageView[] {
+  if (suppressesChatReplay(event.payload)) {
+    return current;
+  }
   if (!isReplayChatVisibleEvent(event, childTaskIds)) {
     return current;
   }

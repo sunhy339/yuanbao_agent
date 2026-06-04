@@ -633,6 +633,29 @@ describe("CleanSessionWorkspace", () => {
     expect(dedupeCleanMessages([...messages]).map((message) => message.id)).toEqual(["background:live"]);
   });
 
+  it("dedupes live agent task groups against derived collaboration summaries", () => {
+    const agentTasks = [
+      { id: "ctask_4f7a483ff9e9", title: "Verify results", status: "completed" },
+      { id: "ctask_4ad725cbd806", title: "Implement changes", status: "completed" },
+    ];
+    const messages = [
+      {
+        id: "agent-group:live",
+        role: "assistant",
+        content: "2 个完成",
+        metadata: { kind: "agent_task_group", agentTasks },
+      },
+      {
+        id: "background:derived",
+        role: "assistant",
+        content: "2 个完成",
+        metadata: { kind: "background_task", agentTasks: [...agentTasks].reverse() },
+      },
+    ] as const;
+
+    expect(dedupeCleanMessages([...messages]).map((message) => message.id)).toEqual(["agent-group:live"]);
+  });
+
   it("keeps final summaries, actionable plans, and attention states visible", () => {
     const items: ConversationActivityItem[] = [
       {

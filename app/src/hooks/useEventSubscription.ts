@@ -1100,6 +1100,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             "goal_event",
             "memory_event",
             "background_task",
+            "agent_task_group",
             "task_summary",
             "plan_update",
             "ask_user_question",

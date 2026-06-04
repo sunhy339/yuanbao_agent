@@ -70,7 +70,7 @@ export function transcriptKindForMessage(message: SessionWorkspaceMessage): Clea
   if (metadataKind === "tool_result") return "tool_result";
   if (metadataKind === "computer_use_permission_request" || metadataKind === "computer_use_permission") return "computer_use_permission";
   if (metadataKind === "ask_user_question") return "ask_user_question";
-  if (metadataKind === "background_task") return "background_task";
+  if (metadataKind === "background_task" || metadataKind === "agent_task_group") return "background_task";
   if (metadataKind === "task_summary") return "task_summary";
   if (metadataKind === "plan_update") return "plan_update";
   if (metadataKind === "goal_event") return "goal_event";

@@ -306,6 +306,9 @@ describe("CleanConversation", () => {
 
     expect(screen.getByText("定位输出链路")).toBeInTheDocument();
     expect(screen.getByText("收敛审批展示")).toBeInTheDocument();
+    expect(screen.getByText(/依赖前序任务/)).toBeInTheDocument();
+    expect(screen.queryByText("sub-0")).not.toBeInTheDocument();
+    expect(screen.queryByText("sub-1")).not.toBeInTheDocument();
     expect(screen.queryByText(/"subtasks"/)).not.toBeInTheDocument();
   });
 

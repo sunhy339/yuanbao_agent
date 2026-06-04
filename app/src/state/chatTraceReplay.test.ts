@@ -161,6 +161,31 @@ describe("chat trace replay", () => {
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
+  it("does not replay bridge-suppressed chat mirrors from persisted traces", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_backend_thinking", "thinking", {
+        text: "Planning phase status",
+        _bridge: {
+          persistTraceMirror: true,
+          suppressRealtimeFlat: true,
+        },
+      }, 1, "chat"),
+      trace("evt_backend_progress", "assistant_progress", {
+        text: "Internal phase update",
+        _bridge: {
+          suppressChatReplay: true,
+        },
+      }, 2, "chat"),
+      trace("evt_visible_progress", "assistant_progress", {
+        text: "Visible progress update",
+      }, 3, "chat"),
+    ]);
+
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+
+    expect(visible.map((message) => message.content)).toEqual(["Visible progress update"]);
+  });
+
   it("does not replay control-flow tools as normal chat tool rows", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       trace("evt_plan_tool", "tool.started", {

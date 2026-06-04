@@ -221,6 +221,7 @@ function isEphemeralChatBlockMessage(message: ChatMessageView) {
     kind === "computer_use_permission_request" ||
     kind === "computer_use_permission" ||
     kind === "background_task" ||
+    kind === "agent_task_group" ||
     kind === "task_summary" ||
     kind === "plan_update" ||
     kind === "slash_command" ||

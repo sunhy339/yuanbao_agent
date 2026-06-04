@@ -765,6 +765,27 @@ function approvalRequestRecord(item: RuntimeTimelineItem) {
   return parseJson(item.rawDetail || "") || parseJson(item.code || "") || null;
 }
 
+function looksLikeInternalTaskReference(value?: string) {
+  const text = value?.trim() ?? "";
+  if (!text) return false;
+  return (
+    /^(?:c?task|child|subtask|worker|agent|prop|appr)[_-](?=[a-z0-9_-]{3,}$)[a-z0-9_-]+$/i.test(text) ||
+    /^sub[-_]\d+$/i.test(text)
+  );
+}
+
+function displayPlanTaskHandle(id: string, agentType: string, index: number) {
+  if (id && !looksLikeInternalTaskReference(id)) return id;
+  return readableAgentLabel(agentType) || `任务 ${index + 1}`;
+}
+
+function displayPlanDependencySummary(dependencies: string[]) {
+  if (!dependencies.length) return "";
+  const readable = dependencies.filter((dependency) => !looksLikeInternalTaskReference(dependency));
+  if (readable.length) return `依赖 ${readable.join(", ")}`;
+  return "依赖前序任务";
+}
+
 function planSubtasksFromRecord(record: Record<string, unknown> | null) {
   const raw = Array.isArray(record?.subtasks) ? record.subtasks : [];
   return raw
@@ -822,10 +843,10 @@ function PlanApprovalPreview({ item }: { item: RuntimeTimelineItem }) {
               <Circle size={10} />
               <div>
                 <strong>{task.title}</strong>
-                <small>{[task.agentType ? readableAgentLabel(task.agentType) : "", task.dependencies.length ? `依赖 ${task.dependencies.join(", ")}` : ""].filter(Boolean).join(" · ")}</small>
+                <small>{[task.agentType ? readableAgentLabel(task.agentType) : "", displayPlanDependencySummary(task.dependencies)].filter(Boolean).join(" · ")}</small>
                 {task.description ? <p>{compactText(task.description, 180)}</p> : null}
               </div>
-              <em>{task.id}</em>
+              <em>{displayPlanTaskHandle(task.id, task.agentType, index)}</em>
             </article>
           ))}
         </div>
@@ -1521,7 +1542,7 @@ function mergeAgentResultSummariesByTask(results: Record<string, unknown>[]) {
 }
 
 function looksLikeRawChildTaskId(value?: string) {
-  return /^(?:c?task|child|subtask)[_-][a-z0-9_-]{3,}$/i.test(value?.trim() ?? "");
+  return looksLikeInternalTaskReference(value);
 }
 
 function displayAgentTaskTitle(title: string, id: string, agentType: string, index: number) {
@@ -2712,6 +2733,7 @@ export function CleanActivityItem({
   if (
     [
       "api_retry",
+      "agent_task_group",
       "background_task",
       "compact_summary",
       "goal_event",
@@ -2726,7 +2748,7 @@ export function CleanActivityItem({
     message.kind === "failure" ||
     message.status === "failed"
   ) {
-    if (kind === "background_task" && readMetadataRecordList(message, ["agentTasks"]).length) {
+    if ((kind === "background_task" || kind === "agent_task_group") && readMetadataRecordList(message, ["agentTasks"]).length) {
       return wrap(<CleanAgentTaskGroupBlock message={message} />);
     }
     return wrap(<CleanSpecialEventBlock message={message} transcriptKind={transcriptKind} />);

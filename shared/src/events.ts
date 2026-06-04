@@ -58,6 +58,7 @@ export type AgentEventType =
   | "goal_event"
   | "memory_event"
   | "background_task"
+  | "agent_task_group"
   | "session_state_changed"
   | "task_started"
   | "task_summary"

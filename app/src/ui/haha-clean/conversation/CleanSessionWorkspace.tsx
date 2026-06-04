@@ -615,8 +615,12 @@ function isOperationalProgressText(value: string) {
   );
 }
 
+function isAgentTaskGroupKind(kind: string) {
+  return kind === "background_task" || kind === "agent_task_group";
+}
+
 function backgroundTaskFingerprint(message: SessionWorkspaceMessage) {
-  if (messageMetadataKind(message) !== "background_task") return "";
+  if (!isAgentTaskGroupKind(messageMetadataKind(message))) return "";
   const tasks = Array.isArray(message.metadata?.agentTasks) ? message.metadata.agentTasks : [];
   const ids = tasks
     .map((task) => {
@@ -637,7 +641,7 @@ function cleanMessageDedupeKey(message: SessionWorkspaceMessage) {
   if (isProviderTransientFailureText(text) && (message.status === "failed" || kind === "failure" || kind === "error")) {
     return `provider_failure:${message.taskId ?? ""}:transient`;
   }
-  if (kind === "background_task") {
+  if (isAgentTaskGroupKind(kind)) {
     return backgroundTaskFingerprint(message);
   }
   if (kind === "assistant_thinking" || kind === "assistant_progress") {

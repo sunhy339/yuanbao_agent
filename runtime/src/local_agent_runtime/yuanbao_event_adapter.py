@@ -155,7 +155,7 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
             "type": "message_complete",
             "usage": normalize_yuanbao_usage(payload.get("usage") or _raw_usage(payload)),
         }
-    elif event.type in {"message.failed", "task.failed"}:
+    elif event.type == "message.failed":
         message = _error_message(event, payload)
     elif event.type == "session.updated":
         title = payload.get("title")

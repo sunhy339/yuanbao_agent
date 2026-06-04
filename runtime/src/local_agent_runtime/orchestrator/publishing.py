@@ -53,6 +53,96 @@ _RAW_TOOL_LIFECYCLE_EVENT_TYPES = {
     "command.cancelled",
 }
 
+_ROOT_CHAT_EVENT_TYPES = {
+    "api_retry",
+    "ask_user_question",
+    "background_task",
+    "compact_boundary",
+    "compact_summary",
+    "computer_use_permission",
+    "computer_use_permission_request",
+    "message.created",
+    "message.completed",
+    "message.failed",
+    "session_title_updated",
+    "system_notification",
+    "task_summary",
+}
+
+_ROOT_CHAT_DERIVATION_EVENT_TYPES = {
+    "approval.requested",
+    "approval.resolved",
+    "assistant.token",
+    "command.cancelled",
+    "command.completed",
+    "command.failed",
+    "command.output",
+    "command.started",
+    "message.delta",
+    "task.cancelled",
+    "task.completed",
+    "task.failed",
+    "task.started",
+    "task.updated",
+    "tool.blocked",
+    "tool.completed",
+    "tool.failed",
+    "tool.output",
+    "tool.progress",
+    "tool.started",
+}
+
+_ROOT_PANEL_EVENT_TYPES = {
+    "goal_event",
+    "memory_event",
+    "task.created",
+    "task.orphaned",
+    "task.queued",
+    "task.runtime_work_waiting",
+}
+
+_ROOT_PANEL_EVENT_PREFIXES = (
+    "collab.",
+    "task.child.",
+    "task.planning.",
+    "task.provider_",
+    "task.reflection.",
+    "task.runtime_",
+    "task.supplement.",
+    "task.worktree.",
+)
+
+_ROOT_TRACE_EVENT_PREFIXES = (
+    "agent.decision.",
+    "mcp.",
+    "provider.",
+    "routing.",
+    "task.routing.",
+    "tool.call.",
+    "tool_recovery.",
+)
+
+_ROOT_TRACE_EVENT_TYPES = {
+    "context.trimmed",
+    "mcp.error",
+    "provider.error",
+    "runtime.error",
+}
+
+_RAW_PANEL_MIRROR_EVENT_TYPES = {
+    "approval.requested",
+    "approval.resolved",
+    "task.cancelled",
+    "task.completed",
+    "task.created",
+    "task.failed",
+    "task.orphaned",
+    "task.queued",
+    "task.runtime_work_waiting",
+    "task.started",
+    "task.updated",
+}
+
 _LARGE_VISIBLE_PAYLOAD_KEYS = {
     "base64",
     "body",
@@ -279,6 +369,8 @@ class PublishingMixin:
     def _raw_runtime_event_visibility(event_type: str, effective_visibility: str, explicit_visibility: str | None) -> str:
         if explicit_visibility is None and event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES:
             return "trace"
+        if explicit_visibility is None and event_type in _RAW_PANEL_MIRROR_EVENT_TYPES:
+            return "panel"
         return effective_visibility
 
     def _goal_event_payload_for_task_event(self, event_type: str, task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1699,9 +1791,9 @@ class PublishingMixin:
     def _infer_event_visibility(event_type: str, task: dict[str, Any]) -> str:
         """Determine event visibility based on event type and task role.
 
-        - "chat": root-level user-facing output (messages, task status changes)
-        - "panel": child/worker progress visible in task panel
-        - "trace": fine-grained token/tool details for debugging
+        - "chat": root-level user-facing stream frames and message lifecycle
+        - "panel": task, approval, and collaboration records for structured UI panels
+        - "trace": diagnostics and provider/runtime internals
         """
         task_role = task.get("role", "root")
         if event_type == "assistant_progress":
@@ -1713,19 +1805,22 @@ class PublishingMixin:
         # Root streaming deltas are user-facing chat output; child deltas stay in trace.
         if event_type in {"assistant.token", "message.delta"}:
             return "chat" if task_role == "root" else "trace"
-        # Trace-level: tool call details
-        if event_type in {"tool.call.started", "tool.call.completed", "tool.call.failed"}:
-            return "trace"
-        # Panel-level: child task lifecycle events
-        if event_type.startswith("collab."):
-            return "panel"
         # Panel-level: child task events detected via role
         if task_role != "root":
             if event_type.startswith(("task.", "message.")):
                 return "panel"
             return "trace"
-        # Chat-level: everything else for root tasks
-        return "chat"
+        if event_type in _ROOT_CHAT_DERIVATION_EVENT_TYPES:
+            return "chat"
+        if event_type in _ROOT_CHAT_EVENT_TYPES:
+            return "chat"
+        if event_type in _ROOT_PANEL_EVENT_TYPES or event_type.startswith(_ROOT_PANEL_EVENT_PREFIXES):
+            return "panel"
+        if event_type in _ROOT_TRACE_EVENT_TYPES or event_type.startswith(_ROOT_TRACE_EVENT_PREFIXES):
+            return "trace"
+        if event_type.startswith("task."):
+            return "panel"
+        return "trace"
 
     def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any], *, visibility: str | None = None) -> None:
         if event_type in _CHAT_COMPAT_EVENT_TYPES:

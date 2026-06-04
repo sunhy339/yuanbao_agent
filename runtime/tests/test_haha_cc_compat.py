@@ -192,7 +192,7 @@ def test_message_complete_usage_normalizes_nested_input_token_details() -> None:
     }
 
 
-def test_failed_events_map_to_haha_cc_error_message() -> None:
+def test_failed_events_map_to_haha_cc_error_and_task_update_messages() -> None:
     assert to_haha_cc_server_message(
         _event(
             "message.failed",
@@ -219,10 +219,10 @@ def test_failed_events_map_to_haha_cc_error_message() -> None:
             },
         )
     ) == {
-        "type": "error",
-        "message": "Task failed after approval was rejected.",
-        "code": "APPROVAL_REJECTED",
-        "retryable": False,
+        "type": "task_update",
+        "taskId": "task_1",
+        "status": "failed",
+        "progress": "Task failed after approval was rejected.",
     }
 
 

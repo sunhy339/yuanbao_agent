@@ -596,6 +596,11 @@ class TestEventCompatAssistantToken:
         assert status_events[1].payload["verb"] == "read_file"
         assert status_events[2].payload["verb"] == "write_file"
         assert all(event.payload["_chatCompat"] is True for event in status_events)
+        assert next(event for event in collected if event.type == "task.started").visibility == "panel"
+        assert next(event for event in collected if event.type == "task.completed").visibility == "panel"
+        assert next(event for event in collected if event.type == "tool.started").visibility == "trace"
+        assert next(event for event in collected if event.type == "approval.requested").visibility == "panel"
+        assert next(event for event in collected if event.type == "message.completed").visibility == "chat"
 
     def test_task_failed_and_cancelled_emit_idle_status(self, tmp_path: Any) -> None:
         """Terminal failure and cancellation clear chat status while preserving error events."""
@@ -619,11 +624,20 @@ class TestEventCompatAssistantToken:
 
         failed_statuses = [event for event in failed if event.type == "status" and event.payload["state"] == "idle"]
         assert len(failed_statuses) == 1
-        assert any(
-            event.type in {"message.failed", "task.failed"}
-            and runtime.event_bus.as_payload(event).get("yuanbao", {}).get("type") == "error"
+        failed_flat = {
+            event.type: runtime.event_bus.as_payload(event).get("yuanbao")
             for event in failed
-        )
+            if event.type in {"message.failed", "task.failed"}
+        }
+        assert failed_flat["message.failed"]["type"] == "error"
+        assert failed_flat["task.failed"] == {
+            "type": "task_update",
+            "taskId": "t_failed",
+            "status": "failed",
+            "progress": "failed",
+        }
+        assert next(event for event in failed if event.type == "message.failed").visibility == "chat"
+        assert next(event for event in failed if event.type == "task.failed").visibility == "panel"
 
         cancelled: list[RuntimeEvent] = []
         runtime.event_bus.subscribe(cancelled.append)
@@ -641,6 +655,38 @@ class TestEventCompatAssistantToken:
         ]
         assert len(cancelled_statuses) == 1
         assert cancelled_statuses[0].payload["state"] == "idle"
+        cancelled_raw = next(event for event in cancelled if event.task_id == "t_cancelled" and event.type == "task.cancelled")
+        assert cancelled_raw.visibility == "panel"
+
+    def test_internal_root_events_do_not_default_to_chat(self, tmp_path: Any) -> None:
+        """Root internal lifecycle events stay in panel/trace instead of leaking into chat."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "goal": "g", "activeAssistantMessageId": "msg_1"}
+        cases = [
+            ("agent.decision.completion", {"decision": "complete"}, "trace"),
+            ("task.routing.decided", {"strategy": "react_standard"}, "trace"),
+            ("memory_event", {"summary": "remembered"}, "panel"),
+            ("task.planning.decomposed", {"subtaskCount": 2}, "panel"),
+            ("runtime.error", {"summary": "diagnostic only"}, "trace"),
+        ]
+        for event_type, payload, _visibility in cases:
+            runtime.orchestrator._publish(
+                session_id="s1",
+                task=task,
+                event_type=event_type,
+                payload=payload,
+            )
+
+        raw_events = {
+            event.type: event
+            for event in collected
+            if event.type in {event_type for event_type, _payload, _visibility in cases}
+        }
+        for event_type, _payload, visibility in cases:
+            assert raw_events[event_type].visibility == visibility
 
     def test_approval_resolved_emits_chat_idle_status(self, tmp_path: Any) -> None:
         """Approval resolution clears chat thinking state for pending permission blocks."""

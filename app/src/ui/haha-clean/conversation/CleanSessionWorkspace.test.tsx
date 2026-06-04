@@ -500,6 +500,41 @@ describe("CleanSessionWorkspace", () => {
     expect(filtered.map((item) => item.id)).toEqual(["message:assistant"]);
   });
 
+  it("collapses transient provider failure echoes to one user-facing failure", () => {
+    const messages = [
+      {
+        id: "memory-open-issue",
+        role: "assistant",
+        content: "failed: 你好 result: Provider returned error: Concurrency limit exceeded for account, please retry later",
+        metadata: { kind: "memory_event", status: "completed", title: "开放问题记忆" },
+      },
+      {
+        id: "goal-failed",
+        role: "assistant",
+        content: "Provider returned error: Concurrency limit exceeded for account, please retry later",
+        metadata: { kind: "goal_event", status: "failed", title: "目标未完成" },
+      },
+      {
+        id: "task-failed",
+        role: "assistant",
+        content: "Task Failed {\"acceptanceCriteria\":[\"Resolve the user's request\"]} Provider returned error: Concurrency limit exceeded for account",
+        kind: "task.failed",
+        status: "failed",
+      },
+      {
+        id: "assistant-error",
+        role: "assistant",
+        content: "Provider returned error: Concurrency limit exceeded for account, please retry later",
+        kind: "failure",
+        status: "failed",
+      },
+    ] as const;
+
+    const filtered = dedupeCleanMessages(filterCleanLowSignalMessages([...messages]));
+
+    expect(filtered.map((message) => message.id)).toEqual(["assistant-error"]);
+  });
+
   it("filters low-signal progress before building the visible timeline", () => {
     const messages = [
       {

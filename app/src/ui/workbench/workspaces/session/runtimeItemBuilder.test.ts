@@ -264,4 +264,34 @@ describe("runtimeItemBuilder", () => {
     expect(items[0]?.rawDetail).toContain("3 passed");
     expect(items[0]?.meta).toEqual(expect.arrayContaining(["app", "powershell", "退出码 0"]));
   });
+
+  it("keeps task.failed lifecycle traces out of the clean runtime stream", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      traces: [
+        {
+          id: "task_failed",
+          type: "task.failed",
+          status: "failed",
+          title: "Task Failed",
+          summary: "Provider returned error: Concurrency limit exceeded for account, please retry later",
+        },
+        {
+          id: "provider_error",
+          type: "provider.error",
+          status: "error",
+          title: "Provider Error",
+          summary: "Provider returned error: Concurrency limit exceeded for account, please retry later",
+        },
+      ],
+    });
+
+    expect(items.map((item) => item.sourceId)).toEqual(["provider_error"]);
+    expect(items[0]?.title).toBe("Provider Error");
+  });
 });

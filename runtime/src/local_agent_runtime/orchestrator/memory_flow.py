@@ -8,6 +8,24 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryFlowMixin:
+    _TRANSIENT_PROVIDER_FAILURE_RE = re.compile(
+        r"("
+        r"concurrency limit exceeded|"
+        r"rate limit(?:ed| exceeded)?|"
+        r"rate_limit_exceeded|"
+        r"\b429\b|"
+        r"too many requests|"
+        r"temporarily unavailable|"
+        r"service unavailable|"
+        r"overloaded|"
+        r"please retry later|"
+        r"并发额度|"
+        r"限流|"
+        r"稍后重试|"
+        r"暂时满"
+        r")",
+        re.IGNORECASE,
+    )
     _CONVENTION_PATTERNS: tuple[str, ...] = (
         "by default",
         "prefer",
@@ -151,6 +169,12 @@ class MemoryFlowMixin:
         if not hasattr(self._store, "update_session_summary"):
             return
         if task.get("status") not in {"completed", "failed", "cancelled"}:
+            return
+        if task.get("status") == "failed" and self._is_transient_provider_failure(task):
+            logger.debug(
+                "Skipping memory write for transient provider failure task %s",
+                task.get("id"),
+            )
             return
 
         current_session = self._store.require_session(session_id)
@@ -354,6 +378,9 @@ class MemoryFlowMixin:
         from ..memory.types import MemoryCategory
 
         results: list[dict[str, Any]] = []
+        if task.get("status") == "failed" and self._is_transient_provider_failure(task):
+            return results
+
         goal = str(task.get("goal") or "").strip()
         summary = str(task.get("summary") or task.get("resultSummary") or "").strip()
         verification = task.get("verification") if isinstance(task.get("verification"), list) else []
@@ -431,6 +458,39 @@ class MemoryFlowMixin:
             seen.add(key)
             deduped.append(item)
         return deduped
+
+    def _is_transient_provider_failure(self, task: dict[str, Any]) -> bool:
+        failure_text = self._task_failure_text(task)
+        if not failure_text:
+            return False
+        lowered = failure_text.lower()
+        if "provider returned error" in lowered and self._TRANSIENT_PROVIDER_FAILURE_RE.search(failure_text):
+            return True
+        return bool(self._TRANSIENT_PROVIDER_FAILURE_RE.search(failure_text))
+
+    def _task_failure_text(self, task: dict[str, Any]) -> str:
+        values: list[str] = []
+        for key in (
+            "goal",
+            "summary",
+            "resultSummary",
+            "error",
+            "errorMessage",
+            "failureKind",
+            "statusReason",
+            "statusMessage",
+        ):
+            value = task.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value)
+        for item in task.get("verification") or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("summary", "error", "stderr", "status"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    values.append(value)
+        return "\n".join(values)
 
     def _task_memory_entry(self, task: dict[str, Any]) -> str:
         status = task.get("status") or "completed"

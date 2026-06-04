@@ -440,6 +440,8 @@ const LOW_SIGNAL_SPECIAL_EVENT_KINDS = new Set([
   "assistant_progress",
   "goal_event",
   "memory_event",
+  "task.failed",
+  "task_failed",
   "task_summary",
   "plan_update",
   "status",
@@ -481,9 +483,11 @@ const TERMINAL_TEXT_RE =
   /\b(completed|complete|done|finished|succeeded|success|failed|failure|error|cancelled|canceled|rejected)\b|已完成|完成|成功|失败|出错|取消|拒绝|阻塞|等待审批|需要确认/i;
 const FAILURE_TEXT_RE =
   /\b(failed|failure|error|cancelled|canceled|rejected|blocked)\b|失败|错误|出错|取消|拒绝|阻塞/i;
+const PROVIDER_TRANSIENT_FAILURE_RE =
+  /\b(concurrency limit exceeded|rate limit(?:ed| exceeded)?|rate_limit_exceeded|429|too many requests|temporarily unavailable|service unavailable|overloaded|please retry later)\b|并发额度|限流|稍后重试|暂时满/i;
 
 function messageMetadataKind(message: SessionWorkspaceMessage) {
-  const kind = message.metadata?.kind;
+  const kind = message.metadata?.kind ?? message.kind;
   return typeof kind === "string" ? kind : "";
 }
 
@@ -507,6 +511,10 @@ function messageSummaryText(message: SessionWorkspaceMessage) {
     metadataText(message, "detail"),
     metadataText(message, "reason"),
   ].filter(Boolean).join("\n");
+}
+
+function isProviderTransientFailureText(value: string) {
+  return PROVIDER_TRANSIENT_FAILURE_RE.test(value);
 }
 
 function isLowSignalSpecialText(value: string) {
@@ -545,6 +553,15 @@ function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
   if (kind === "assistant_thinking") {
     return isLowSignalStreamingPlaceholder(message);
   }
+
+  if (isProviderTransientFailureText(text) && ["goal_event", "memory_event", "task.failed", "task_failed"].includes(kind)) {
+    return true;
+  }
+
+  if (["goal_event", "memory_event", "task.failed", "task_failed"].includes(kind)) {
+    return true;
+  }
+
   if (needsAttention) {
     return false;
   }
@@ -558,10 +575,6 @@ function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
 
   if (kind === "assistant_progress") {
     return isLowSignalSpecialText(text);
-  }
-
-  if (kind === "goal_event" || kind === "memory_event") {
-    return true;
   }
 
   if (kind === "task_summary") {
@@ -621,6 +634,9 @@ function backgroundTaskFingerprint(message: SessionWorkspaceMessage) {
 function cleanMessageDedupeKey(message: SessionWorkspaceMessage) {
   const kind = messageMetadataKind(message);
   const text = normalizeDedupeText(messageSummaryText(message));
+  if (isProviderTransientFailureText(text) && (message.status === "failed" || kind === "failure" || kind === "error")) {
+    return `provider_failure:${message.taskId ?? ""}:transient`;
+  }
   if (kind === "background_task") {
     return backgroundTaskFingerprint(message);
   }

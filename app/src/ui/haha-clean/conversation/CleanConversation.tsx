@@ -34,7 +34,7 @@ import {
   parseUnifiedDiff,
   parsePatchFileSummaries,
 } from "../../workbench/workspaces/session/utils";
-import { stripAssistantRuntimeProgress } from "../../../state/chatMessages";
+import { sanitizeAssistantStatusContent, stripAssistantRuntimeProgress } from "../../../state/chatMessages";
 import { attachmentsFromMetadata, CleanAttachmentGallery, imageAttachmentsFromText, uniqueAttachments } from "../shared/CleanAttachmentGallery";
 import { CleanMarkdown } from "../shared/CleanMarkdown";
 import {
@@ -173,7 +173,8 @@ function looksLikeInternalPayloadText(value: string) {
 
 function cleanInlineDisplayText(value: string) {
   const text = value.trim();
-  return text && !looksLikeInternalPayloadText(text) ? text : "";
+  if (!text || looksLikeInternalPayloadText(text)) return "";
+  return sanitizeAssistantStatusContent(text, text);
 }
 
 function toolQuestionText(message: SessionWorkspaceMessage) {

@@ -523,9 +523,24 @@ export const visibleTraceTypes = new Set([
   "provider.error",
   "mcp.error",
   "context.trimmed",
-  "task.failed",
   "task.cancelled",
 ]);
+
+const TRANSIENT_PROVIDER_FAILURE_RE =
+  /\b(concurrency limit exceeded|rate limit(?:ed| exceeded)?|rate_limit_exceeded|429|too many requests|temporarily unavailable|service unavailable|overloaded|please retry later)\b|并发额度|限流|稍后重试|暂时满/i;
+
+function isTransientProviderFailureTrace(trace: SessionWorkspaceTrace) {
+  const haystack = [
+    trace.type,
+    trace.source,
+    trace.title,
+    trace.summary,
+    trace.detail,
+    trace.stdout,
+    trace.stderr,
+  ].filter(Boolean).join("\n");
+  return TRANSIENT_PROVIDER_FAILURE_RE.test(haystack);
+}
 
 export function isRawJsonLike(value?: string) {
   const trimmed = value?.trim();
@@ -536,8 +551,14 @@ export function isUserVisibleTrace(trace: SessionWorkspaceTrace) {
   const type = trace.type.toLowerCase();
   const status = trace.status?.toLowerCase();
   const haystack = `${trace.type} ${trace.source ?? ""} ${trace.title ?? ""} ${trace.summary ?? ""}`.toLowerCase();
+  if (type === "task.failed") {
+    return false;
+  }
   if (hiddenTraceTypes.has(type) || hiddenTracePrefixes.some((prefix) => type.startsWith(prefix))) {
     return false;
+  }
+  if (isTransientProviderFailureTrace(trace)) {
+    return type === "provider.error" || type === "runtime.error";
   }
   if (
     haystack.includes("provider.failure.recovery_decision") ||

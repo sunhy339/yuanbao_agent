@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..planner.approval_preview import attach_plan_preview
+
 
 def _text(value: Any, *, limit: int, default: str = "") -> str:
     text = str(value or "").strip()
@@ -30,6 +32,51 @@ def _normalize_steps(value: Any) -> list[str]:
     return steps
 
 
+def _normalize_subtasks(plan: dict[str, Any], steps: list[str]) -> list[dict[str, Any]]:
+    raw_subtasks = plan.get("subtasks")
+    subtasks: list[dict[str, Any]] = []
+    if isinstance(raw_subtasks, list):
+        for index, item in enumerate(raw_subtasks[:20]):
+            if isinstance(item, dict):
+                title = _text(
+                    item.get("title")
+                    or item.get("subtaskTitle")
+                    or item.get("summary")
+                    or item.get("description"),
+                    limit=240,
+                )
+                if not title:
+                    continue
+                description = _text(item.get("description") or item.get("summary"), limit=500)
+                agent_type = _text(item.get("agentType") or item.get("agent_type"), limit=80)
+                subtask = {
+                    "id": _text(item.get("id") or item.get("subtaskId") or f"sub-{index}", limit=80),
+                    "title": title,
+                }
+                if description:
+                    subtask["description"] = description
+                if agent_type:
+                    subtask["agentType"] = agent_type
+                if isinstance(item.get("dependencies"), list):
+                    subtask["dependencies"] = [str(dep)[:80] for dep in item["dependencies"][:10]]
+                subtasks.append(subtask)
+            else:
+                title = _text(item, limit=240)
+                if title:
+                    subtasks.append({"id": f"sub-{index}", "title": title})
+    if subtasks:
+        return subtasks
+    return [{"id": f"sub-{index}", "title": step} for index, step in enumerate(steps[:20])]
+
+
+def _normalize_execution_order(params: dict[str, Any], plan: dict[str, Any], subtasks: list[dict[str, Any]]) -> list[str]:
+    raw_order = params.get("executionOrder") or params.get("execution_order") or plan.get("executionOrder")
+    if isinstance(raw_order, list):
+        order = [_text(item, limit=80) for item in raw_order[:20]]
+        return [item for item in order if item]
+    return [_text(item.get("id"), limit=80) for item in subtasks if _text(item.get("id"), limit=80)]
+
+
 def _normalize_plan(params: dict[str, Any]) -> dict[str, Any]:
     raw_plan = params.get("plan")
     if isinstance(raw_plan, str):
@@ -46,6 +93,7 @@ def _normalize_plan(params: dict[str, Any]) -> dict[str, Any]:
         default="Proposed execution plan.",
     )
     steps = _normalize_steps(raw_plan) or _normalize_steps(params.get("steps"))
+    subtasks = _normalize_subtasks(raw_plan, steps)
     risks = [
         _text(item, limit=300)
         for item in (params.get("risks") if isinstance(params.get("risks"), list) else raw_plan.get("risks") or [])
@@ -54,6 +102,7 @@ def _normalize_plan(params: dict[str, Any]) -> dict[str, Any]:
     return {
         "summary": summary,
         "steps": steps,
+        **({"subtasks": subtasks} if subtasks else {}),
         **({"risks": risks} if risks else {}),
         **({"raw": raw_plan} if raw_plan else {}),
     }
@@ -88,6 +137,11 @@ def build_exit_plan_mode_tool(policy_guard: Any, store: Any, *_: Any, **__: Any)
         task_id = _text(params.get("taskId") or params.get("task_id"), limit=120)
         if not task_id:
             raise ValueError("taskId is required")
+        task_goal = ""
+        try:
+            task_goal = _text(store.get_task({"taskId": task_id})["task"].get("goal"), limit=1000)
+        except Exception:
+            task_goal = ""
         plan = _normalize_plan(params)
         approval_id = _text(params.get("approvalId") or params.get("approval_id"), limit=120)
         approval = _approval_by_id(store, approval_id)
@@ -118,14 +172,21 @@ def build_exit_plan_mode_tool(policy_guard: Any, store: Any, *_: Any, **__: Any)
                 "plan": plan,
             }
 
+        subtasks = plan.get("subtasks") or []
         request = {
-            "goal": _text(params.get("goal"), limit=1000),
+            "goal": _text(params.get("goal") or task_goal, limit=1000),
             "summary": plan["summary"],
             "plan": plan,
             "steps": plan.get("steps") or [],
+            "subtasks": subtasks,
+            "subtaskCount": len(subtasks),
+            "mode": _text(params.get("mode") or params.get("orchestrationMode") or params.get("orchestration_mode"), limit=80, default="plan"),
+            "orchestrationMode": _text(params.get("orchestrationMode") or params.get("orchestration_mode") or params.get("mode"), limit=80, default="plan"),
+            "executionOrder": _normalize_execution_order(params, plan.get("raw") or {}, subtasks),
             "stepCount": len(plan.get("steps") or []),
             "source": "exit_plan_mode",
         }
+        request = attach_plan_preview(request)
         approval = store.create_approval(task_id=task_id, kind="plan", request=request)
         return {
             "status": "approval_required",

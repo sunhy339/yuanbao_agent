@@ -444,6 +444,60 @@ describe("computeApprovalCards completion evidence", () => {
     ]);
   });
 
+  it("uses approval request preview sections as structured display data", () => {
+    const [card] = computeApprovalCards([
+      {
+        eventId: "evt_requested",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "approval.requested",
+        ts: 1778734170000,
+        payload: {
+          approvalId: "approval_plan",
+          taskId: "task_1",
+          kind: "plan",
+          request: {
+            goal: "优化多 agent 流程",
+            orchestrationMode: "swarm",
+            subtaskCount: 2,
+            previewRows: [
+              { label: "目标", value: "优化多 agent 流程" },
+              { label: "模式", value: "swarm" },
+              { label: "子任务", value: "2" },
+            ],
+            previewSections: [
+              {
+                kind: "items",
+                title: "已拆分 2 个子任务",
+                items: [
+                  { id: "sub-0", title: "检查编排流程", meta: ["planner"] },
+                  { id: "sub-1", title: "验证输出协议", description: "确认 replay 和 live 一致" },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(card.requestSummary).toBe("已拆分 2 个 swarm 子任务 | 优化多 agent 流程");
+    expect(card.previewRows).toEqual([
+      { label: "目标", value: "优化多 agent 流程" },
+      { label: "模式", value: "swarm" },
+      { label: "子任务", value: "2" },
+    ]);
+    expect(card.previewSections).toEqual([
+      {
+        kind: "items",
+        title: "已拆分 2 个子任务",
+        items: [
+          { id: "sub-0", title: "检查编排流程", meta: ["planner"] },
+          { id: "sub-1", title: "验证输出协议", description: "确认 replay 和 live 一致" },
+        ],
+      },
+    ]);
+  });
+
   it("summarizes verification review evidence", () => {
     const [card] = computeApprovalCards([
       approvalRequested({

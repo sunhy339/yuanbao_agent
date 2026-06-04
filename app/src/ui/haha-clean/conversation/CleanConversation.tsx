@@ -794,7 +794,16 @@ function planSubtasksFromRecord(record: Record<string, unknown> | null) {
 
 function PlanApprovalPreview({ item }: { item: RuntimeTimelineItem }) {
   const record = approvalRequestRecord(item);
-  const subtasks = planSubtasksFromRecord(record);
+  const previewSectionItems = item.previewSections?.find((section) => section.kind === "items")?.items ?? [];
+  const subtasks = previewSectionItems.length
+    ? previewSectionItems.map((entry, index) => ({
+        id: entry.id || `sub-${index}`,
+        title: entry.title,
+        description: entry.description || "",
+        agentType: entry.meta?.[0] ?? "",
+        dependencies: [],
+      }))
+    : planSubtasksFromRecord(record);
   const mode = readRecordString(record, ["orchestrationMode", "mode"]) || "plan";
   const goal = readRecordString(record, ["goal"]);
   const count = readRecordNumber(record, ["subtaskCount", "taskCount"]) ?? subtasks.length;

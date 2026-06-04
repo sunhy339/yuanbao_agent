@@ -276,6 +276,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         parametersPreview: approval.requestSummary,
         fullInput: approval.requestJson,
         previewRows: approval.previewRows,
+        previewSections: approval.previewSections,
         command: approval.command,
         cwd: approval.cwd,
         completionEvidence: approval.completionEvidence,

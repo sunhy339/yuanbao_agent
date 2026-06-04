@@ -1600,7 +1600,7 @@ def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> N
     assert captured["plan"] is decomposed_plan
 
 
-def test_swarm_execution_emits_replayable_planning_thinking(tmp_path: Any) -> None:
+def test_swarm_execution_emits_single_visible_planning_progress(tmp_path: Any) -> None:
     provider = ScriptedProvider([])
     runtime = _make_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
@@ -1646,7 +1646,15 @@ def test_swarm_execution_emits_replayable_planning_thinking(tmp_path: Any) -> No
         "synthesis_started",
         "planning_completed",
     ]
-    assert all(event["visibility"] == "chat" for event in thinking_events)
+    assert all(event["visibility"] == "trace" for event in thinking_events)
+    assert [event["payload"]["phase"] for event in progress_events] == [
+        "planning_started",
+        "planning_decomposed",
+        "subtasks_started",
+        "synthesis_started",
+        "planning_completed",
+    ]
+    assert all(event["visibility"] == "chat" for event in progress_events)
     assert all(event["payload"]["mode"] == "swarm" for event in progress_events)
 
     persisted = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
@@ -1658,10 +1666,8 @@ def test_swarm_execution_emits_replayable_planning_thinking(tmp_path: Any) -> No
         "synthesis_started",
         "planning_completed",
     ]
-    assert persisted_thinking[0]["hahaCc"] == {
-        "type": "thinking",
-        "text": "正在用 swarm 模式拆分并安排多 agent 协作。",
-    }
+    assert persisted_thinking[0]["payload"]["_bridge"]["suppressRealtimeFlat"] is True
+    assert "hahaCc" not in persisted_thinking[0]
 
 
 def test_supervisor_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
@@ -5904,7 +5910,26 @@ def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any)
     assert "write_file" not in second_policy["allowedToolNames"]
     approval_event = next(event for event in runtime.events if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan")
     approval_id = approval_event["payload"]["approvalId"]
-    assert approval_event["payload"]["request"]["stepCount"] == 3
+    approval_request = approval_event["payload"]["request"]
+    assert approval_request["stepCount"] == 3
+    assert approval_request["subtaskCount"] == 3
+    assert approval_request["previewRows"] == [
+        {"label": "目标", "value": "plan then update readme"},
+        {"label": "模式", "value": "plan"},
+        {"label": "子任务", "value": "3"},
+        {"label": "执行顺序", "value": "sub-0 -> sub-1 -> sub-2"},
+    ]
+    assert approval_request["previewSections"] == [
+        {
+            "kind": "items",
+            "title": "已拆分 3 个子任务",
+            "items": [
+                {"id": "sub-0", "title": "Inspect README"},
+                {"id": "sub-1", "title": "Patch README"},
+                {"id": "sub-2", "title": "Run focused verification"},
+            ],
+        }
+    ]
 
     _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
     final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")

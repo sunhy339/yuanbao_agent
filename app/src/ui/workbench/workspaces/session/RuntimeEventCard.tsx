@@ -492,6 +492,7 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
 
   if (item.kind === "approval" && item.sourceId) {
     const actionSummary = item.meta?.[0] && item.meta[0] !== item.title ? item.meta[0] : undefined;
+    const isPlanApproval = item.toolName === "plan" || item.meta?.includes("plan");
     return (
       <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
         <ApprovalCard
@@ -502,9 +503,11 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
             status: item.status ?? "pending",
             summary: item.summary,
             risk: item.riskLevel ?? "low",
-            command: item.code,
+            command: isPlanApproval ? undefined : item.code,
             cwd: item.meta?.find((entry) => /^[A-Z]:|^\//.test(entry)),
             requestedAt: item.time,
+            previewRows: item.previewRows,
+            previewSections: item.previewSections,
             completionEvidence: item.completionEvidence,
           }}
           busy={isBusy}

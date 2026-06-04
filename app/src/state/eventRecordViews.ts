@@ -24,6 +24,7 @@ export interface ApprovalCardView {
   requestJson: string;
   requestSummary: string;
   previewRows?: Array<{ label: string; value: string }>;
+  previewSections?: PreviewSectionView[];
   completionEvidence?: ApprovalCompletionEvidenceView;
   status: "pending" | "approved" | "rejected";
   requestedAt: number;
@@ -31,6 +32,19 @@ export interface ApprovalCardView {
   resolvedAt?: number;
   requestedEventId?: string;
   resolvedEventId?: string;
+}
+
+export interface PreviewSectionItemView {
+  id: string;
+  title: string;
+  description?: string;
+  meta?: string[];
+}
+
+export interface PreviewSectionView {
+  kind: "items";
+  title: string;
+  items: PreviewSectionItemView[];
 }
 
 export interface ApprovalCompletionEvidenceView {

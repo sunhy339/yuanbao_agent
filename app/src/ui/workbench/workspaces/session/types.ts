@@ -199,6 +199,7 @@ export interface SessionWorkspaceApproval {
   parametersPreview?: string;
   fullInput?: string;
   previewRows?: Array<{ label: string; value: string }>;
+  previewSections?: PreviewSectionView[];
   command?: string;
   cwd?: string;
   completionEvidence?: {
@@ -260,6 +261,19 @@ export interface SessionWorkspaceApproval {
       summary?: string;
     };
   };
+}
+
+export interface PreviewSectionItemView {
+  id: string;
+  title: string;
+  description?: string;
+  meta?: string[];
+}
+
+export interface PreviewSectionView {
+  kind: "items";
+  title: string;
+  items: PreviewSectionItemView[];
 }
 
 export interface SessionWorkspacePatchFile {
@@ -496,6 +510,7 @@ export interface RuntimeTimelineItem {
   rawDetail?: string;
   completionEvidence?: SessionWorkspaceApproval["completionEvidence"];
   previewRows?: Array<{ label: string; value: string }>;
+  previewSections?: PreviewSectionView[];
   supportsAlwaysAllow?: boolean;
   time?: number;
   durationMs?: number;

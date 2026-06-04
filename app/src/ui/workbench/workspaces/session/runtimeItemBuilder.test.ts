@@ -187,6 +187,52 @@ describe("runtimeItemBuilder", () => {
     ]);
   });
 
+  it("keeps plan approval display structured instead of exposing the request json as code", () => {
+    const previewSections = [
+      {
+        kind: "items" as const,
+        title: "已拆分 2 个子任务",
+        items: [
+          { id: "sub-0", title: "检查编排流程", meta: ["planner"] },
+          { id: "sub-1", title: "验证输出协议" },
+        ],
+      },
+    ];
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-plan",
+          title: "计划审批",
+          status: "pending",
+          kind: "plan",
+          parametersPreview: "已拆分 2 个 swarm 子任务",
+          fullInput: JSON.stringify({ goal: "优化多 agent 流程", previewSections }),
+          previewRows: [
+            { label: "模式", value: "swarm" },
+            { label: "子任务", value: "2" },
+          ],
+          previewSections,
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items[0]?.toolName).toBe("plan");
+    expect(items[0]?.code).toBeUndefined();
+    expect(items[0]?.rawDetail).toContain("previewSections");
+    expect(items[0]?.previewRows).toEqual([
+      { label: "模式", value: "swarm" },
+      { label: "子任务", value: "2" },
+    ]);
+    expect(items[0]?.previewSections).toEqual(previewSections);
+  });
+
   it("preserves backend tool batch order metadata on runtime items", () => {
     const items = buildRuntimeItems({
       session: null,

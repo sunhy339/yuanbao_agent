@@ -13,6 +13,8 @@ import type {
   ApprovalCompletionEvidenceView,
   ApprovalCardView,
   PatchCardView,
+  PreviewSectionItemView,
+  PreviewSectionView,
   ToolTimelineItem,
 } from "./eventRecordViews";
 import type { PatchRecord } from "@shared";
@@ -248,6 +250,7 @@ function buildApprovalCardView(
             ? summarizePlanApprovalRequest(request)
           : `${command} | cwd ${cwd}`;
   const previewRows = readApprovalPreviewRows(payload.preview, request, kind);
+  const previewSections = readPreviewSections(request["previewSections"]) ?? (isPlanApproval ? readPlanPreviewSections(request) : undefined);
   const mergedCompletionEvidence = mergeCompletionReviewConclusion(
     mergeCompletionReviewConclusion(completionEvidence ?? current?.completionEvidence, current?.completionEvidence?.reviewConclusion),
     payload.completionReviewConclusion,
@@ -271,6 +274,7 @@ function buildApprovalCardView(
     requestJson: Object.keys(request).length ? stringifyRequestJson(request) : current?.requestJson ?? "{}",
     requestSummary,
     previewRows: previewRows.length ? previewRows : current?.previewRows ?? [],
+    previewSections: previewSections?.length ? previewSections : current?.previewSections,
     completionEvidence: mergedCompletionEvidence,
     status,
     requestedAt: timing.requestedAt,
@@ -332,11 +336,95 @@ function summarizePlanApprovalRequest(request: Record<string, unknown>): string 
   ]);
 }
 
+function readPlanPreviewSections(request: Record<string, unknown>): PreviewSectionView[] {
+  const subtasks = request["subtasks"];
+  if (!Array.isArray(subtasks)) {
+    return [];
+  }
+  const items: PreviewSectionItemView[] = subtasks
+    .map<PreviewSectionItemView | null>((item, index) => {
+      if (typeof item === "string") {
+        const title = item.trim();
+        return title ? { id: `sub-${index}`, title } : null;
+      }
+      const record = readRecord(item);
+      if (!record) {
+        return null;
+      }
+      const title = readString(record["title"]) || readString(record["subtaskTitle"]) || readString(record["summary"]) || readString(record["description"]);
+      if (!title) {
+        return null;
+      }
+      const dependencies = Array.isArray(record["dependencies"])
+        ? record["dependencies"].map(readString).filter((value): value is string => Boolean(value))
+        : undefined;
+      const description = readString(record["description"]) || readString(record["summary"]);
+      const meta = [readString(record["agentType"]) || readString(record["agent_type"]), dependencies?.length ? `依赖 ${dependencies.join(", ")}` : undefined]
+        .filter((value): value is string => Boolean(value));
+      return {
+        id: readString(record["id"]) || readString(record["subtaskId"]) || `sub-${index}`,
+        title,
+        ...(description ? { description } : {}),
+        ...(meta.length ? { meta } : {}),
+      };
+    })
+    .filter((item): item is PreviewSectionItemView => Boolean(item))
+    .slice(0, 20);
+  if (!items.length) {
+    return [];
+  }
+  return [{ kind: "items", title: `已拆分 ${items.length} 个子任务`, items }];
+}
+
+function readPreviewSections(value: unknown): PreviewSectionView[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const sections = value
+    .map((section) => {
+      const record = readRecord(section);
+      if (!record || record["kind"] !== "items" || !Array.isArray(record["items"])) {
+        return null;
+      }
+      const title = readString(record["title"]) || "详情";
+      const items: PreviewSectionItemView[] = record["items"]
+        .map<PreviewSectionItemView | null>((item, index) => {
+          const itemRecord = readRecord(item);
+          if (!itemRecord) {
+            return null;
+          }
+          const itemTitle = readString(itemRecord["title"]);
+          if (!itemTitle) {
+            return null;
+          }
+          const description = readString(itemRecord["description"]);
+          const meta = Array.isArray(itemRecord["meta"])
+            ? itemRecord["meta"].map(readString).filter((entry): entry is string => Boolean(entry))
+            : [];
+          return {
+            id: readString(itemRecord["id"]) || `item-${index}`,
+            title: itemTitle,
+            ...(description ? { description } : {}),
+            ...(meta.length ? { meta } : {}),
+          };
+        })
+        .filter((item): item is PreviewSectionItemView => Boolean(item));
+      return items.length ? { kind: "items" as const, title, items: items.slice(0, 20) } : null;
+    })
+    .filter((section): section is PreviewSectionView => Boolean(section));
+  return sections.length ? sections.slice(0, 4) : undefined;
+}
+
 function readApprovalPreviewRows(
   rawPreview: unknown,
   request: Record<string, unknown>,
   kind: string,
 ): Array<{ label: string; value: string }> {
+  const requestPreview = readPreviewRows(request["previewRows"]);
+  if (requestPreview?.length) {
+    return requestPreview;
+  }
+
   const fromPayload = Array.isArray(rawPreview)
     ? rawPreview
         .map((item) => readRecord(item))

@@ -26,6 +26,11 @@ from ..models import RuntimeEvent
 from ..yuanbao_event_adapter import to_yuanbao_server_message
 
 
+def _suppresses_flat_bridge(payload: dict[str, Any]) -> bool:
+    bridge = payload.get("_bridge")
+    return isinstance(bridge, dict) and bridge.get("suppressRealtimeFlat") is True
+
+
 class _LockedCursor:
     def __init__(
         self,
@@ -492,7 +497,7 @@ class SQLiteStore(
             "sequence": row["sequence"],
             "visibility": row.get("visibility", "chat"),
         }
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and not _suppresses_flat_bridge(payload):
             yuanbao = to_yuanbao_server_message(
                 RuntimeEvent(
                     event_id=str(row["id"]),

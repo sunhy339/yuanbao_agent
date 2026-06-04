@@ -1161,6 +1161,28 @@ def test_plan_approval_strict_mode(runtime_harness: Any, tmp_path: Path, monkeyp
     request_payload = approval_events[0]["payload"]["request"]
     assert "subtaskCount" in request_payload
     assert request_payload["subtaskCount"] == 2
+    assert request_payload["previewRows"][0]["label"] == "目标"
+    assert request_payload["previewRows"][0]["value"] == request_payload["goal"]
+    assert request_payload["previewRows"][1:] == [
+        {"label": "模式", "value": "plan"},
+        {"label": "子任务", "value": "2"},
+        {"label": "执行顺序", "value": "sub-0 -> sub-1"},
+    ]
+    assert request_payload["previewSections"] == [
+        {
+            "kind": "items",
+            "title": "已拆分 2 个子任务",
+            "items": [
+                {"id": "sub-0", "title": "Analyze", "description": "Analyze code", "meta": ["worker"]},
+                {
+                    "id": "sub-1",
+                    "title": "Refactor",
+                    "description": "Refactor code",
+                    "meta": ["worker", "依赖 sub-0"],
+                },
+            ],
+        }
+    ]
 
     # Reject the plan
     runtime_harness.call(

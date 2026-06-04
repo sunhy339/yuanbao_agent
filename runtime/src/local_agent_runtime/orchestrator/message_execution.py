@@ -27,6 +27,7 @@ from ..tools import build_builtin_tools
 from ..tools.run_command import _powershell_execution_command
 from ..tools.registry import ToolRegistry
 from ..orchestration import OrchestrationMode
+from ..planner.approval_preview import attach_plan_preview
 from ..planner.types import child_tool_allowlist_for_agent, plan_result_to_dict
 from ..store.sqlite_store import SQLiteStore
 
@@ -53,13 +54,16 @@ class MessageExecutionMixin:
         }
         if isinstance(payload, dict):
             event_payload.update({key: value for key, value in payload.items() if value is not None})
-        event_payload["_bridge"] = {"persistTraceMirror": True}
+        event_payload["_bridge"] = {
+            "persistTraceMirror": True,
+            "suppressRealtimeFlat": True,
+        }
         self._publish(
             session_id=session_id,
             task=task,
             event_type="thinking",
             payload=event_payload,
-            visibility="chat",
+            visibility="trace",
         )
         self._publish_assistant_progress(
             session_id=session_id,
@@ -152,7 +156,7 @@ class MessageExecutionMixin:
         }
         if orchestration_mode:
             request["orchestrationMode"] = orchestration_mode
-        return request
+        return attach_plan_preview(request)
 
     def _publish_root_child_progress(
         self,

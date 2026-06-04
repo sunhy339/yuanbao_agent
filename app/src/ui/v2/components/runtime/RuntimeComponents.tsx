@@ -272,6 +272,12 @@ export interface ApprovalRecordView {
   command?: string;
   cwd?: string;
   requestedAt?: string | number;
+  previewRows?: Array<{ label: string; value: string }>;
+  previewSections?: Array<{
+    kind: "items";
+    title: string;
+    items: Array<{ id: string; title: string; description?: string; meta?: string[] }>;
+  }>;
   completionEvidence?: {
     gateStatus?: string;
     evidenceLevel?: string;
@@ -336,6 +342,17 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
       </header>
       {approval.summary ? <p className="yb-approval-summary">{approval.summary}</p> : null}
       {approval.completionEvidence ? <CompletionEvidencePanel evidence={approval.completionEvidence} /> : null}
+      {approval.previewSections?.length ? <PreviewSections sections={approval.previewSections} /> : null}
+      {approval.previewRows?.length ? (
+        <dl className="yb-approval-preview" aria-label="审批预览">
+          {approval.previewRows.slice(0, 6).map((row) => (
+            <div key={`${row.label}:${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       <dl>
         {approval.command ? (
           <div>
@@ -368,6 +385,33 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
         {onViewDetails ? <Button size="sm" variant="ghost" onClick={() => onViewDetails(approval.id)}>详情</Button> : null}
       </footer>
     </article>
+  );
+}
+
+function PreviewSections({ sections }: { sections: NonNullable<ApprovalRecordView["previewSections"]> }) {
+  return (
+    <>
+      {sections.map((section, sectionIndex) => (
+        <section className="yb-preview-section" aria-label={section.title} key={`${section.kind}:${section.title}:${sectionIndex}`}>
+          <header>
+            <span>{section.title}</span>
+          </header>
+          <div>
+            {section.items.slice(0, 8).map((item) => (
+              <article key={item.id}>
+                <span aria-hidden="true" />
+                <div>
+                  <strong>{item.title}</strong>
+                  {item.meta?.length ? <small>{item.meta.join(" · ")}</small> : null}
+                  {item.description ? <p>{item.description}</p> : null}
+                </div>
+                <code>{item.id}</code>
+              </article>
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
   );
 }
 

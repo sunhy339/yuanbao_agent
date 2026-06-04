@@ -702,8 +702,9 @@ export function buildRuntimeItems({
       ? compactList(approvalChangedPaths)
       : null;
     const approvalDiffLines = approval.diff ? parseUnifiedDiff(approval.diff) : undefined;
+    const isPlanApproval = approval.kind === "plan";
     const approvalCode = compactMeta([
-      approval.command || approval.parametersPreview,
+      isPlanApproval ? null : approval.command || approval.parametersPreview,
       approvalPathSummary ? `files: ${approvalPathSummary}` : null,
     ]).join("\n");
     items.push({
@@ -738,6 +739,7 @@ export function buildRuntimeItems({
       diffLines: approvalDiffLines,
       completionEvidence: approval.completionEvidence,
       previewRows: approval.previewRows,
+      previewSections: approval.previewSections,
       supportsAlwaysAllow: ["apply_patch", "write_file", "delete_file", "run_command", "network_access", "computer_use", "subagent_dispatch", "worktree_merge"].includes(approval.kind ?? ""),
       time: approval.requestedAt,
       visibility: "chat",

@@ -387,7 +387,7 @@ def _run_patch_approval_smoke(runtime: SimpleNamespace, workspace_root: Path) ->
     assert final_task["status"] == "completed"
     assert final_task["resultSummary"].startswith("Patch applied after approval.")
     assert "Changed: Update todo.txt." in final_task["resultSummary"]
-    assert "Validated with git status, and git diff." in final_task["resultSummary"]
+    assert "Validated with git status" not in final_task["resultSummary"]
     assert final_task["changedFiles"][0]["path"] == "todo.txt"
     assert final_task["changedFiles"][0]["status"] == "modified"
     assert target_file.read_text(encoding="utf-8") == "status: new\n"

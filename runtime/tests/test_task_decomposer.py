@@ -196,19 +196,19 @@ class TestTaskDecomposerDecompose:
         result = decomposer.decompose(goal="do stuff")
         assert len(result.subtasks) == 1  # fallback
 
-    def test_provider_failure_falls_back_to_execution_plan(self) -> None:
+    def test_provider_failure_falls_back_to_single_original_request_task(self) -> None:
         decomposer = TaskDecomposer(FailingProvider())
 
         goal = "build modules, write pytest tests, and verify py_compile"
         result = decomposer.decompose(goal=goal)
 
-        assert [subtask.agent_type for subtask in result.subtasks] == ["planner", "worker", "worker"]
-        assert result.execution_order == ["sub-0", "sub-1", "sub-2"]
-        assert result.dag == {"sub-0": [], "sub-1": ["sub-0"], "sub-2": ["sub-1"]}
-        assert "LLM decomposition was unavailable" in result.subtasks[0].description
-        assert goal in result.subtasks[1].description
-        assert goal in result.subtasks[2].description
-        assert "Use the inspection notes only as workspace context" in result.subtasks[1].description
+        assert [subtask.agent_type for subtask in result.subtasks] == ["worker"]
+        assert result.execution_order == ["sub-0"]
+        assert result.dag == {"sub-0": []}
+        assert result.subtasks[0].title == goal[:80]
+        assert goal in result.subtasks[0].description
+        assert "automatic task decomposition was unavailable" in result.subtasks[0].description
+        assert "verification only when they are actually needed" in result.subtasks[0].description
 
     def test_provider_failure_keeps_simple_read_task_single_step(self) -> None:
         decomposer = TaskDecomposer(FailingProvider())
@@ -216,7 +216,7 @@ class TestTaskDecomposerDecompose:
         result = decomposer.decompose(goal="explain the current status")
 
         assert len(result.subtasks) == 1
-        assert result.subtasks[0].description == "explain the current status"
+        assert "explain the current status" in result.subtasks[0].description
 
     def test_subtasks_missing_id_get_generated(self) -> None:
         raw = json.dumps([

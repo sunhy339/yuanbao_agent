@@ -216,10 +216,10 @@ class MessageRoutingMixin:
                 continuation["rationale"] = rationale.strip()[:500]
             return continuation
         return {
-            "allowToolsAfterTaskResults": strategy in {"plan_execute", "plan_supervise", "plan_swarm"},
+            "allowToolsAfterTaskResults": False,
             "allowMoreSubtasksAfterTaskResults": False,
             "maxTaskToolCalls": 1,
-            "source": "strategy_fallback",
+            "source": "strategy_default_synthesis",
         }
 
     @staticmethod

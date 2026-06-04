@@ -173,6 +173,28 @@ class TestAdvisorRoutingAccepted:
         assert routing_dict["toolContinuation"]["source"] == "decision_advisor"
         assert routing_dict["toolContinuation"]["allowToolsAfterTaskResults"] is True
 
+    def test_plan_strategy_defaults_to_synthesis_after_child_results(self, tmp_path: Any) -> None:
+        result = RoutingDecision(
+            scenario=Scenario.SWARM_TASK,
+            strategy=ExecutionStrategy.PLAN_SWARM,
+            confidence=0.9,
+            max_steps=100,
+            enable_reflection=True,
+            enable_planning=True,
+            reasoning="explicit multi-agent request",
+            metadata={},
+        )
+        orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock())
+
+        routing_dict = orchestrator._routing_dict_from_decision(result)
+
+        assert routing_dict["toolContinuation"] == {
+            "allowToolsAfterTaskResults": False,
+            "allowMoreSubtasksAfterTaskResults": False,
+            "maxTaskToolCalls": 1,
+            "source": "strategy_default_synthesis",
+        }
+
     def test_advisor_returns_workspace_evidence_contract(self, tmp_path: Any) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(

@@ -1556,10 +1556,36 @@ class ReactRunnerMixin:
         contract = self._react_workspace_evidence_contract(task=task, context=context)
         if contract.get("required") is not True:
             return False
+        if self._react_has_workspace_change_evidence(tool_results=tool_results):
+            return False
         return not self._react_has_read_only_workspace_evidence(
             tool_results=tool_results,
             required_tools=self._workspace_evidence_required_tools_from_contract(contract),
         )
+
+    def _react_has_workspace_change_evidence(self, *, tool_results: list[dict[str, Any]]) -> bool:
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name not in {"apply_patch", "write_file"}:
+                continue
+            result = item.get("result") if isinstance(item.get("result"), dict) else {}
+            status = str(result.get("status") or "").strip().lower()
+            if status in {"failed", "error", "timeout", "blocked", "validation_failed"}:
+                continue
+            if name == "write_file":
+                return True
+            changed_paths = result.get("changedPaths")
+            if isinstance(changed_paths, list) and any(str(path or "").strip() for path in changed_paths):
+                return True
+            patch = result.get("patch") if isinstance(result.get("patch"), dict) else {}
+            if patch.get("id") or patch.get("filesChanged") or result.get("filesChanged"):
+                return True
+            diff_text = result.get("diffText")
+            if isinstance(diff_text, str) and diff_text.strip():
+                return True
+        return False
 
     def _react_workspace_evidence_contract(
         self,

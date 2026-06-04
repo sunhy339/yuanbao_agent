@@ -39,7 +39,7 @@ def test_root_synthesis_after_task_result_exposes_no_tools() -> None:
     assert decision.role_snapshot["runtimeRole"] == "root"
 
 
-def test_plan_strategy_continues_after_task_result_but_withholds_task() -> None:
+def test_plan_strategy_synthesizes_after_task_result_by_default() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
@@ -48,13 +48,9 @@ def test_plan_strategy_continues_after_task_result_but_withholds_task() -> None:
         registered_tools=_tools("task", "read_file", "write_file", "run_command"),
     )
 
-    assert decision.phase == "post_task_continuation"
-    assert set(decision.allowed_tool_names) == {"read_file", "write_file", "run_command"}
-    assert decision.denied_tool_names == ["task"]
-    assert "withheld after a child result" in decision.reasons["task"]
-    task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
-    assert task_detail["continuationDecision"] == "denied"
-    assert task_detail["toolContinuationPolicy"]["source"] == "strategy_fallback"
+    assert decision.phase == "synthesis"
+    assert decision.allowed_tool_names == []
+    assert set(decision.denied_tool_names) == {"task", "read_file", "write_file", "run_command"}
 
 
 def test_cleanup_noise_profile_limits_root_tools() -> None:

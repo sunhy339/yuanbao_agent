@@ -126,6 +126,7 @@ DEFAULT_CONFIG = {
         "allowNetwork": False,
         "postTaskValidation": {
             "command": None,
+            "gitSnapshot": False,
         },
     },
     "autonomy": {

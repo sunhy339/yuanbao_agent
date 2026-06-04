@@ -204,82 +204,22 @@ class TaskDecomposer:
         return [Subtask(id="sub-0", title=fallback_goal[:80], description=fallback_goal)]
 
     def _fallback_subtasks_for_provider_failure(self, goal: str) -> list[Subtask]:
-        """Keep orchestration moving when LLM decomposition times out or fails."""
-        if not self._goal_needs_execution_plan(goal):
-            return [Subtask(id="sub-0", title=goal[:80], description=goal)]
-
-        parent_goal = goal.strip()
-        return [
-            Subtask(
-                id="sub-0",
-                title="Inspect requirements and workspace",
-                description=(
-                    "LLM decomposition was unavailable. Inspect the workspace, preserve the parent "
-                    "requirements, identify required files, tools, tests, and verification commands, "
-                    "and report concrete implementation constraints. Do not edit files."
-                ),
-                dependencies=[],
-                agent_type="planner",
-            ),
-            Subtask(
-                id="sub-1",
-                title="Implement requested changes",
-                description=(
-                    "Implement the parent task directly from this original goal:\n"
-                    f"{parent_goal}\n\n"
-                    "Use the inspection notes only as workspace context. Create or update the requested "
-                    "files, preserve explicit artifact names, and avoid unrelated refactors."
-                ),
-                dependencies=["sub-0"],
-                agent_type="worker",
-            ),
-            Subtask(
-                id="sub-2",
-                title="Verify and summarize result",
-                description=(
-                    "Verify the implementation against this original goal:\n"
-                    f"{parent_goal}\n\n"
-                    "Run the parent task's requested verification commands, including tests or compile "
-                    "checks when applicable. Record changed files, commands, test results, and any "
-                    "remaining blockers before final synthesis."
-                ),
-                dependencies=["sub-1"],
-                agent_type="worker",
-            ),
-        ]
-
-    def _goal_needs_execution_plan(self, goal: str) -> bool:
-        normalized = goal.casefold()
-        return any(
-            token in normalized
-            for token in (
-                "build",
-                "implement",
-                "create",
-                "write",
-                "update",
-                "fix",
-                "refactor",
-                "test",
-                "verify",
-                "pytest",
-                "py_compile",
-                "compileall",
-                "module",
-                "file",
-                "sqlite",
-                "mcp",
-                "skill",
-                "实现",
-                "创建",
-                "写",
-                "更新",
-                "修复",
-                "测试",
-                "验证",
-                "文件",
-            )
+        """Keep orchestration moving without inventing a generic pipeline."""
+        title = self._fallback_title_from_goal(goal)
+        description = (
+            "Continue from the original user request because automatic task decomposition "
+            "was unavailable. Preserve the exact request and choose investigation, edits, "
+            "and verification only when they are actually needed for that request.\n\n"
+            f"Original request:\n{goal.strip()}"
         )
+        return [Subtask(id="sub-0", title=title, description=description, agent_type="worker")]
+
+    @staticmethod
+    def _fallback_title_from_goal(goal: str) -> str:
+        title = " ".join(str(goal or "").strip().split())
+        if not title:
+            return "Continue original request"
+        return title[:80]
 
     def _enforce_goal_contract(self, subtasks: list[Subtask], *, goal: str) -> list[Subtask]:
         explicit_paths = self._extract_explicit_artifact_paths(goal)

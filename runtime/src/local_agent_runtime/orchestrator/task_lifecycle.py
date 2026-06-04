@@ -822,6 +822,8 @@ class TaskLifecycleMixin:
             return None
         if workspace_evidence.get("status") == "satisfied":
             return None
+        if self._completion_has_workspace_change_evidence(completion_evidence):
+            return None
         required_tools = [
             str(item).strip()
             for item in (workspace_evidence.get("requiredTools") or [])
@@ -1030,7 +1032,9 @@ class TaskLifecycleMixin:
             self._completion_evidence_count(counts, key)
             for key in ("changedFiles", "patches")
         )
-        return workspace_evidence_count > 0 or self._completion_has_workspace_tool_evidence(completion_evidence)
+        if workspace_evidence_count <= 0 and not self._completion_has_workspace_tool_evidence(completion_evidence):
+            return False
+        return self._completion_has_code_or_test_changes(completion_evidence)
 
     def _completion_evidence_count(self, counts: dict[str, Any], key: str) -> int:
         value = counts.get(key)
@@ -1056,6 +1060,14 @@ class TaskLifecycleMixin:
                 if isinstance(changed_paths, list) and changed_paths:
                     return True
         return False
+
+    def _completion_has_workspace_change_evidence(self, completion_evidence: dict[str, Any]) -> bool:
+        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
+        if self._completion_evidence_count(counts, "changedFiles") > 0:
+            return True
+        if self._completion_evidence_count(counts, "patches") > 0:
+            return True
+        return self._completion_has_workspace_tool_evidence(completion_evidence)
 
     def _completion_has_code_or_test_changes(self, completion_evidence: dict[str, Any]) -> bool:
         changed_files = completion_evidence.get("changedFiles")
@@ -7211,39 +7223,42 @@ class TaskLifecycleMixin:
 
         checks: list[dict[str, Any]] = []
         ran: list[str] = []
-
-        if self._workspace_has_git_root(context.get("workspace_root")):
-            for tool_name, start_token in (
-                ("git_status", "Running post-task git status validation..."),
-                ("git_diff", "Running post-task git diff validation..."),
-            ):
-                check = self._run_validation_tool(
-                    session_id=session_id,
-                    task=task,
-                    tool_name=tool_name,
-                    arguments={"workspaceRoot": context.get("workspace_root")},
-                    start_token=start_token,
-                )
-                checks.append(check)
-                if check["status"] == "completed":
-                    ran.append(tool_name)
-        else:
-            checks.extend(
-                [
-                    {
-                        "name": "git_status",
-                        "status": "skipped",
-                        "reason": "Workspace is not a Git repository.",
-                    },
-                    {
-                        "name": "git_diff",
-                        "status": "skipped",
-                        "reason": "Workspace is not a Git repository.",
-                    },
-                ]
-            )
-
         validation_command = self._resolve_validation_command(context=context, patches=patches, task=task)
+        git_snapshot_enabled = self._post_task_validation_git_snapshot_enabled(context)
+
+        if git_snapshot_enabled:
+            if self._workspace_has_git_root(context.get("workspace_root")):
+                for tool_name, start_token in (
+                    ("git_status", "Running post-task git status validation..."),
+                    ("git_diff", "Running post-task git diff validation..."),
+                ):
+                    check = self._run_validation_tool(
+                        session_id=session_id,
+                        task=task,
+                        tool_name=tool_name,
+                        arguments={"workspaceRoot": context.get("workspace_root")},
+                        start_token=start_token,
+                    )
+                    checks.append(check)
+                    if check["status"] == "completed":
+                        ran.append(tool_name)
+            else:
+                checks.extend(
+                    [
+                        {
+                            "name": "git_status",
+                            "status": "skipped",
+                            "reason": "Workspace is not a Git repository.",
+                        },
+                        {
+                            "name": "git_diff",
+                            "status": "skipped",
+                            "reason": "Workspace is not a Git repository.",
+                        },
+                    ]
+                )
+
+        command_check: dict[str, Any] | None = None
         if validation_command:
             command_check = self._run_validation_tool(
                 session_id=session_id,
@@ -7259,22 +7274,28 @@ class TaskLifecycleMixin:
             )
             if command_check["status"] == "completed":
                 ran.append("run_command")
-        else:
+        elif git_snapshot_enabled:
             command_check = {
                 "name": "run_command",
                 "status": "skipped",
                 "reason": "No validation command was configured.",
             }
-        checks.append(command_check)
+        if command_check is not None:
+            checks.append(command_check)
 
         summary = self._format_validation_summary(patches=patches, checks=checks, validation_command=validation_command)
         payload = {
             "patches": patches,
             "checks": checks,
             "ran": ran,
-            "command": command_check if command_check["name"] == "run_command" else None,
+            "command": command_check if command_check and command_check["name"] == "run_command" else None,
             "summary": summary,
         }
+        if not checks:
+            payload["verification"] = task.get("verification") or []
+            payload["changeSummaryOnly"] = True
+            return payload
+
         self._record_task_verification(session_id=session_id, task=task, validation=payload)
         payload["verification"] = task.get("verification") or []
         self._publish(
@@ -7284,6 +7305,16 @@ class TaskLifecycleMixin:
             payload=payload,
         )
         return payload
+
+    def _post_task_validation_git_snapshot_enabled(self, context: dict[str, Any]) -> bool:
+        validation = context.get("post_task_validation")
+        if not isinstance(validation, dict):
+            return False
+        for key in ("gitSnapshot", "git_snapshot", "includeGitSnapshot", "include_git_snapshot"):
+            value = validation.get(key)
+            if isinstance(value, bool):
+                return value
+        return False
 
     def _workspace_has_git_root(self, workspace_root: Any) -> bool:
         if not isinstance(workspace_root, str) or not workspace_root.strip():

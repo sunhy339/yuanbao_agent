@@ -293,8 +293,16 @@ class ContextBuilder(HistoryMixin):
         if not isinstance(validation, dict):
             validation = {}
         command = validation.get("command")
+        git_snapshot = validation.get("gitSnapshot")
+        if not isinstance(git_snapshot, bool):
+            git_snapshot = validation.get("git_snapshot")
+        if not isinstance(git_snapshot, bool):
+            git_snapshot = validation.get("includeGitSnapshot")
+        if not isinstance(git_snapshot, bool):
+            git_snapshot = validation.get("include_git_snapshot")
         return {
             "command": command.strip() if isinstance(command, str) and command.strip() else None,
+            "gitSnapshot": git_snapshot if isinstance(git_snapshot, bool) else False,
         }
 
     def _resolve_tool_schemas(self) -> list[dict[str, Any]]:

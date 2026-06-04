@@ -470,13 +470,6 @@ class ToolPolicyResolver:
                         "allowToolsAfterTaskResults": value,
                         "source": f"routing.{key}",
                     }
-            strategy = routing.get("strategy")
-            if isinstance(strategy, str) and strategy in self.TASK_TOOL_STRATEGIES:
-                return {
-                    "allowToolsAfterTaskResults": True,
-                    "source": "strategy_fallback",
-                    "rationale": "legacy planning strategy fallback",
-                }
         return {"allowToolsAfterTaskResults": False, "source": "default"}
 
     def _allow_more_subtasks_after_task_results(self, context: dict[str, Any]) -> bool:

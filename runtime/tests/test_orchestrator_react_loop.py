@@ -7583,7 +7583,8 @@ def test_react_loop_returns_invalid_patch_to_provider_and_accepts_repair(tmp_pat
     final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
     assert final_task["status"] == "completed"
     assert final_task["resultSummary"].startswith("Patch repaired and applied.")
-    assert "Validated with git status" in final_task["resultSummary"]
+    assert "Changed: Update README.md." in final_task["resultSummary"]
+    assert "Validated with git status" not in final_task["resultSummary"]
     assert (workspace_root / "README.md").read_text(encoding="utf-8") == "new line\n"
     patch_progress = [
         event["payload"]
@@ -7801,9 +7802,9 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     )
 
     assert task["status"] == "completed"
-    assert tool_invocations == ["apply_patch", "git_status", "git_diff", "run_command"]
+    assert tool_invocations == ["apply_patch", "run_command"]
     assert "Updated todo.txt" in task["resultSummary"]
-    assert "Validated with git status, git diff, and pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation." in task["resultSummary"]
+    assert "Validated with pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation." in task["resultSummary"]
     assert task["changedFiles"] == [
         {
             "path": "todo.txt",
@@ -7829,7 +7830,7 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     trace_types = [event["type"] for event in trace]
     assert "task.validation.completed" in trace_types
     validation_event = next(event for event in trace if event["type"] == "task.validation.completed")
-    assert validation_event["payload"]["ran"] == ["git_status", "git_diff", "run_command"]
+    assert validation_event["payload"]["ran"] == ["run_command"]
     assert validation_event["payload"]["command"]["command"] == "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
     assert validation_event["payload"]["patches"][0]["summary"] == "Updated todo.txt"
     assert validation_event["payload"]["verification"][-1]["status"] == "passed"
@@ -7841,7 +7842,7 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     assert any(event["payload"].get("verification") for event in task_updates)
 
 
-def test_patch_completion_skips_run_command_without_validate_command(tmp_path: Any) -> None:
+def test_patch_completion_does_not_auto_git_snapshot_without_validation_policy(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [
             {
@@ -7916,16 +7917,96 @@ def test_patch_completion_skips_run_command_without_validate_command(tmp_path: A
     )
 
     assert task["status"] == "completed"
+    assert tool_invocations == ["apply_patch"]
+    assert "Changed: Updated todo.txt again." in task["resultSummary"]
+    assert "Validated with git status" not in task["resultSummary"]
+
+    trace = _rpc(runtime, "trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
+    assert not [event for event in trace if event["type"] == "task.validation.completed"]
+
+
+# ── Supplement TaskInbox tests ────────────────────────────────────────────
+
+
+def test_patch_completion_runs_git_snapshot_when_policy_enables_it(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "files": [{"path": "todo.txt", "content": "status: newer\n"}],
+                        },
+                    }
+                ]
+            },
+            {"final": "Patch applied with requested snapshot."},
+        ]
+    )
+
+    tool_invocations: list[str] = []
+
+    def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("apply_patch")
+        return {
+            "status": "completed",
+            "ok": True,
+            "summary": "Updated todo.txt with snapshot",
+            "filesChanged": 1,
+            "changedPaths": ["todo.txt"],
+            "patch": {
+                "id": "patch_validation_snapshot",
+                "summary": "Updated todo.txt with snapshot",
+                "status": "applied",
+                "filesChanged": 1,
+            },
+        }
+
+    def git_status(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("git_status")
+        return {
+            "branch": "main",
+            "ahead": 0,
+            "behind": 0,
+            "changes": [{"status": "M", "path": "todo.txt"}],
+        }
+
+    def git_diff(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("git_diff")
+        return {
+            "files": [{"status": "M", "path": "todo.txt"}],
+            "diff": "diff --git a/todo.txt b/todo.txt\n",
+        }
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "apply_patch": apply_patch,
+            "git_status": git_status,
+            "git_diff": git_diff,
+        },
+    )
+    (tmp_path / ".git").mkdir()
+    session = _open_session(runtime, tmp_path)
+    runtime.store.update_config({"config": {"policy": {"postTaskValidation": {"gitSnapshot": True}}}})
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "patch todo.txt with snapshot"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
     assert tool_invocations == ["apply_patch", "git_status", "git_diff"]
+    assert "Validated with git status, and git diff." in task["resultSummary"]
 
     trace = _rpc(runtime, "trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
     validation_event = next(event for event in trace if event["type"] == "task.validation.completed")
     assert validation_event["payload"]["ran"] == ["git_status", "git_diff"]
     assert validation_event["payload"]["command"]["status"] == "skipped"
     assert validation_event["payload"]["command"]["reason"] == "No validation command was configured."
-
-
-# ── Supplement TaskInbox tests ────────────────────────────────────────────
 
 
 def test_patch_completion_uses_python_module_pytest_for_changed_tests(tmp_path: Any) -> None:

@@ -281,9 +281,10 @@ class PreflightCompactProvider:
 class PreflightSplitProvider:
     """Provider that asks preflight to split before the main provider call."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, main_final: str | None = None) -> None:
         self.main_calls: list[dict[str, Any]] = []
         self.advisor_calls: list[dict[str, Any]] = []
+        self.main_final = main_final or "Main provider should not be used after executable preflight split."
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         if "runtime decision advisor" in prompt:
@@ -334,7 +335,7 @@ class PreflightSplitProvider:
                 "rationale": "Generic advisor fallback for this test.",
             })}
         self.main_calls.append({"prompt": prompt, "context": context})
-        return {"final": "Main provider should not be used after executable preflight split."}
+        return {"final": self.main_final}
 
 
 class PreflightSwitchProvider:
@@ -1556,7 +1557,7 @@ class TestAdvisorGuidedProviderPreflight:
         runtime.store.update_config({
             "config": {
                 "advisor": {"alwaysProviderPreflight": True},
-                "provider": {"model": "fake-chat", "maxContextTokens": 256000},
+                "provider": {"model": "fake-chat", "maxContextTokens": 120},
                 "policy": {"approvalMode": "none"},
             }
         })
@@ -1616,7 +1617,13 @@ class TestAdvisorGuidedProviderPreflight:
             _rpc(
                 runtime,
                 "message.send",
-                {"sessionId": session["id"], "content": "inspect implement verify provider preflight split planning"},
+                {
+                    "sessionId": session["id"],
+                    "content": (
+                        "inspect implement verify provider preflight split planning "
+                        + ("large-context-token " * 120)
+                    ),
+                },
             ),
             "task",
         )
@@ -1663,6 +1670,54 @@ class TestAdvisorGuidedProviderPreflight:
         assert "task.provider_preflight.split.started" in event_types
         assert "task.planning.decomposed" in event_types
         assert "task.planning.completed" in event_types
+
+    def test_provider_preflight_split_advice_is_not_executed_without_runtime_need(
+        self,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        provider = PreflightSplitProvider(
+            main_final="Preflight split advice was ignored because no runtime split was needed."
+        )
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        runtime.store.update_config({
+            "config": {
+                "advisor": {"alwaysProviderPreflight": True},
+                "provider": {"model": "fake-chat", "maxContextTokens": 256000},
+                "policy": {"approvalMode": "none"},
+            }
+        })
+        dispatched: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            runtime.orchestrator._subagent_service,
+            "dispatch",
+            lambda params: dispatched.append(dict(params)) or {"status": "completed", "summary": "unexpected dispatch"},
+        )
+
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "hello"},
+            ),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert len(provider.main_calls) == 1
+        assert dispatched == []
+
+        trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
+        assert preflight_trace["payload"]["runtimeAction"] == "proceed"
+        assert preflight_trace["payload"]["runtimeApplied"] is False
+        assert preflight_trace["payload"]["facts"]["riskLevel"] == "low"
+        assert "task.provider_preflight.split.started" not in [event["type"] for event in runtime.events]
 
 
 class UsageAwareProvider:

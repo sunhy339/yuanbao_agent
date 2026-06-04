@@ -397,6 +397,51 @@ class ProviderAdapter:
     def choose_tool_sequence(self, goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
         search_config = context.get("search_config", {})
         route = self._route_goal(goal)
+
+        if route["kind"] == "run_command":
+            return [{
+                "name": "run_command",
+                "arguments": {
+                    "workspaceRoot": context["workspace_root"],
+                    "cwd": ".",
+                    "command": route["value"],
+                },
+                "plan_step_id": "run-command",
+                "start_token": f"Preparing to run command: {route['value']}",
+            }]
+
+        if route["kind"] == "apply_patch":
+            return [{
+                "name": "apply_patch",
+                "arguments": {
+                    "workspaceRoot": context["workspace_root"],
+                    "patchText": route["value"],
+                    "dry_run": False,
+                },
+                "plan_step_id": "apply-patch",
+                "start_token": "Preparing to apply the explicit patch...",
+            }]
+
+        if route["kind"] == "git_status":
+            return [{
+                "name": "git_status",
+                "arguments": {
+                    "workspaceRoot": context["workspace_root"],
+                },
+                "plan_step_id": "git-status",
+                "start_token": "Checking git status...",
+            }]
+
+        if route["kind"] == "git_diff":
+            return [{
+                "name": "git_diff",
+                "arguments": {
+                    "workspaceRoot": context["workspace_root"],
+                },
+                "plan_step_id": "git-diff",
+                "start_token": "Inspecting git diff...",
+            }]
+
         sequence: list[dict[str, Any]] = [
             {
                 "name": "list_dir",
@@ -411,63 +456,6 @@ class ProviderAdapter:
                 "start_token": f"Inspecting the top-level structure of {context.get('workspace_name', 'the project')}...",
             }
         ]
-
-        if route["kind"] == "run_command":
-            sequence.append(
-                {
-                    "name": "run_command",
-                    "arguments": {
-                        "workspaceRoot": context["workspace_root"],
-                        "cwd": ".",
-                        "command": route["value"],
-                    },
-                    "plan_step_id": "run-command",
-                    "start_token": f"Preparing to run command: {route['value']}",
-                }
-            )
-            return sequence
-
-        if route["kind"] == "apply_patch":
-            sequence.append(
-                {
-                    "name": "apply_patch",
-                    "arguments": {
-                        "workspaceRoot": context["workspace_root"],
-                        "patchText": route["value"],
-                        "dry_run": False,
-                    },
-                    "plan_step_id": "apply-patch",
-                    "start_token": "Preparing to apply the explicit patch...",
-                }
-            )
-            return sequence
-
-        if route["kind"] == "git_status":
-            sequence.append(
-                {
-                    "name": "git_status",
-                    "arguments": {
-                        "workspaceRoot": context["workspace_root"],
-                    },
-                    "plan_step_id": "git-status",
-                    "start_token": "Checking git status...",
-                }
-            )
-            return sequence
-
-        if route["kind"] == "git_diff":
-            sequence.append(
-                {
-                    "name": "git_diff",
-                    "arguments": {
-                        "workspaceRoot": context["workspace_root"],
-                    },
-                    "plan_step_id": "git-diff",
-                    "start_token": "Inspecting git diff...",
-                }
-            )
-            return sequence
-
         search_query = context.get("search_query", "")
         if search_query:
             sequence.append(
@@ -509,10 +497,12 @@ class ProviderAdapter:
         git_status_hint = self._describe_git_status(git_status_result)
         git_diff_hint = self._describe_git_diff(git_diff_result)
 
-        parts = [
-            f"Completed an initial pass over workspace {context.get('workspace_name', 'the project')}.",
-            directory_hint,
-        ]
+        parts = []
+        if directory_hint:
+            parts.extend([
+                f"Completed an initial pass over workspace {context.get('workspace_name', 'the project')}.",
+                directory_hint,
+            ])
         if search_hint:
             parts.append(search_hint)
         if read_hint:
@@ -529,8 +519,10 @@ class ProviderAdapter:
         elif git_diff_hint:
             parts.append(git_diff_hint)
             parts.append("Next step: inspect the diff for correctness or missing edits.")
-        else:
+        elif directory_hint:
             parts.append(f"Next step: inspect the most relevant implementation file for goal '{goal}'.")
+        else:
+            parts.append("Completed the requested tool action.")
         return " ".join(part for part in parts if part)
 
     def pick_follow_up_tool(

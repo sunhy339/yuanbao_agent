@@ -1420,7 +1420,7 @@ export function appendOrUpdatePermissionRequestMessage(
   },
 ): ChatMessageView[] {
   const messageId = `permission_request:${payload.requestId}`;
-  const input = formatChatBlockValue(payload.input);
+  const input = formatPermissionInputForChat(payload.toolName, payload.input);
   const content = [payload.description?.trim(), input].filter(Boolean).join("\n\n");
   const existingIndex = current.findIndex((message) => message.id === messageId);
   const nextMessage: ChatMessageView = {
@@ -1483,7 +1483,7 @@ export function resolvePermissionRequestMessage(
     if (!payload.createIfMissing || !payload.sessionId || !hasDetails) {
       return current;
     }
-    const input = formatChatBlockValue(payload.input);
+    const input = formatPermissionInputForChat(payload.toolName, payload.input);
     return [
       ...current,
       {
@@ -2127,6 +2127,47 @@ function formatChatBlockValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isPlanPermissionInput(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.goal === "string" &&
+    (Array.isArray(record.subtasks) ||
+      Array.isArray(record.executionOrder) ||
+      Array.isArray(record.execution_order) ||
+      Array.isArray(record.previewSections))
+  );
+}
+
+function summarizePlanPermissionInput(value: Record<string, unknown>): string {
+  const goal = typeof value.goal === "string" ? value.goal.trim() : "";
+  const mode = typeof value.orchestrationMode === "string"
+    ? value.orchestrationMode.trim()
+    : typeof value.mode === "string"
+      ? value.mode.trim()
+      : "plan";
+  const subtaskCount = typeof value.subtaskCount === "number"
+    ? value.subtaskCount
+    : Array.isArray(value.subtasks)
+      ? value.subtasks.length
+      : undefined;
+  const parts = [
+    subtaskCount !== undefined ? `Plan ready: ${subtaskCount} subtask${subtaskCount === 1 ? "" : "s"}` : "Plan ready",
+    mode ? `mode ${mode}` : "",
+    goal ? `goal ${goal}` : "",
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
+function formatPermissionInputForChat(toolName: string | null | undefined, value: unknown): string {
+  if (String(toolName ?? "").toLowerCase() === "plan" && isPlanPermissionInput(value)) {
+    return summarizePlanPermissionInput(value);
+  }
+  return formatChatBlockValue(value);
 }
 
 function formatToolResultSummary(value: unknown, isError?: boolean): string {

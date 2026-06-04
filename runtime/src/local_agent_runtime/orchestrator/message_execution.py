@@ -831,9 +831,12 @@ class MessageExecutionMixin:
                 goal, execution["subtasks"],
             )
 
-            # 4. Auto-supplement if coverage is insufficient
+            # 4. Optional coverage supplement. This stays opt-in so a planning
+            # result does not silently spawn extra backend-chosen workers after
+            # the model/user-selected workflow has already run.
             threshold = routing.get("coverage_threshold", 0.7)
-            if coverage < threshold:
+            auto_supplement_coverage = self._planning_auto_supplement_coverage_enabled(context=context, routing=routing)
+            if auto_supplement_coverage and coverage < threshold:
                 gaps = self._coverage_evaluator.find_gaps(goal, execution["subtasks"])
                 if gaps:
                     from ..planner.types import (
@@ -1133,6 +1136,32 @@ class MessageExecutionMixin:
                     error_code="PLANNING_EXECUTION_FAILED",
                 ),
             }
+
+    def _planning_auto_supplement_coverage_enabled(
+        self,
+        *,
+        context: dict[str, Any] | None,
+        routing: dict[str, Any] | None,
+    ) -> bool:
+        routing = routing if isinstance(routing, dict) else {}
+        raw = routing.get("autoSupplementCoverage")
+        if raw is None:
+            raw = routing.get("auto_supplement_coverage")
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            normalized = raw.strip().casefold()
+            if normalized in {"1", "true", "yes", "on", "enabled"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "disabled"}:
+                return False
+        config = context.get("config") if isinstance(context, dict) else None
+        planning_config = config.get("planning") if isinstance(config, dict) else None
+        if isinstance(planning_config, dict):
+            configured = planning_config.get("autoSupplementCoverage")
+            if isinstance(configured, bool):
+                return configured
+        return False
 
     def _recover_planning_failures_with_completion_evidence(
         self,

@@ -707,6 +707,7 @@ export function buildRuntimeItems({
       isPlanApproval ? null : approval.command || approval.parametersPreview,
       approvalPathSummary ? `files: ${approvalPathSummary}` : null,
     ]).join("\n");
+    const structuredPlanPreview = isPlanApproval && Boolean(approval.previewRows?.length || approval.previewSections?.length);
     items.push({
       id: `approval:${approval.id}`,
       kind: "approval",
@@ -735,7 +736,7 @@ export function buildRuntimeItems({
       ]),
       riskLevel: approval.risk,
       code: approvalCode || undefined,
-      rawDetail: approval.diff || approval.fullInput,
+      rawDetail: approval.diff || (structuredPlanPreview ? undefined : approval.fullInput),
       diffLines: approvalDiffLines,
       completionEvidence: approval.completionEvidence,
       previewRows: approval.previewRows,

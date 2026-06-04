@@ -25,17 +25,6 @@ _WRITE_WORKTREE_SCENARIOS = {
     "supervised_task",
     "swarm_task",
 }
-_WORKSPACE_EVIDENCE_REQUIRED_SCENARIOS = {
-    "code_search",
-    "code_edit",
-    "code_review",
-    "debug",
-    "test_write",
-    "doc_write",
-    "multi_step_task",
-    "supervised_task",
-    "swarm_task",
-}
 _WORKSPACE_EVIDENCE_GOAL_RE = re.compile(
     r"("
     r"当前(?:项目|仓库|工程|代码|进度|任务|清单)|"
@@ -146,14 +135,6 @@ class MessageRoutingMixin:
             return self._default_workspace_evidence_contract(str(routing.scenario.value), source="routing_metadata")
         if raw is False:
             return {"required": False, "source": "routing_metadata"}
-        scenario = str(routing.scenario.value)
-        if scenario in _WORKSPACE_EVIDENCE_REQUIRED_SCENARIOS:
-            return self._default_workspace_evidence_contract(scenario, source="routing_rule")
-        goal = ""
-        if isinstance(context, dict):
-            goal = str(context.get("goal") or context.get("userGoal") or context.get("content") or "")
-        if self._goal_mentions_workspace_evidence(goal):
-            return self._default_workspace_evidence_contract(scenario, source="goal_semantic")
         return {}
 
     @staticmethod

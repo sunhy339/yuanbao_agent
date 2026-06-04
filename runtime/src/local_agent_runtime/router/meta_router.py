@@ -219,6 +219,10 @@ class MetaRouter:
             best_scenario = Scenario.FREE_FORM
             best_conf = 0.3
         else:
+            if best_scenario == Scenario.MULTI_STEP_TASK and not self._has_planning_or_delegation_signal(goal):
+                best_scenario = Scenario.CODE_EDIT
+                best_conf = max(best_conf, 0.82)
+                matched_keyword = f"react-standard-for-broad-work:{matched_keyword}"
             override = self._planning_task_override(goal, best_scenario, matched_keyword)
             if override is None:
                 override = self._development_task_override(goal, best_scenario, matched_keyword)
@@ -322,15 +326,30 @@ class MetaRouter:
         rule_result: RoutingDecision,
         llm_result: RoutingDecision,
     ) -> RoutingDecision:
-        """Keep the advisor from over-planning simple artifact generation."""
+        """Keep the advisor from turning ordinary work into fixed orchestration."""
+        planning_strategy = llm_result.strategy in {
+            ExecutionStrategy.PLAN_THEN_EXECUTE,
+            ExecutionStrategy.PLAN_SUPERVISE,
+            ExecutionStrategy.PLAN_SWARM,
+        }
+        planning_scenario = llm_result.scenario in {
+            Scenario.MULTI_STEP_TASK,
+            Scenario.SUPERVISED_TASK,
+            Scenario.SWARM_TASK,
+        }
         if (
-            rule_result.scenario == Scenario.CODE_EDIT
-            and llm_result.scenario == Scenario.MULTI_STEP_TASK
-            and self._looks_like_development_goal(goal)
+            (planning_strategy or planning_scenario)
             and not self._has_planning_or_delegation_signal(goal)
         ):
+            fallback_scenario = rule_result.scenario
+            if fallback_scenario in {
+                Scenario.MULTI_STEP_TASK,
+                Scenario.SUPERVISED_TASK,
+                Scenario.SWARM_TASK,
+            }:
+                fallback_scenario = Scenario.CODE_EDIT
             guarded = self._build_decision(
-                scenario=Scenario.CODE_EDIT,
+                scenario=fallback_scenario,
                 confidence=max(rule_result.confidence, 0.86),
                 reasoning=(
                     "rule-fallback-after-advisor-overplanned: "
@@ -388,12 +407,6 @@ class MetaRouter:
             "subagent",
             "swarm",
             "supervise",
-            "migrate",
-            "migration",
-            "across modules",
-            "entire codebase",
-            "agent",
-            "agents",
             "\u89c4\u5212",
             "\u4efb\u52a1\u89c4\u5212",
             "\u62c6\u5206",

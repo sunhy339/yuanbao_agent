@@ -72,7 +72,7 @@ def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Pat
     )
     assert task_from_store["status"] == "completed"
     assert task_from_store["id"] == task["id"]
-    assert task_from_store["plan"][-1]["status"] == "completed"
+    assert task_from_store["plan"] == []
 
 
 def test_message_list_returns_persisted_conversation(runtime_harness: Any, tmp_path: Path) -> None:
@@ -694,16 +694,22 @@ def test_run_command_approval_closure(runtime_harness: Any, monkeypatch: Any, tm
         "session",
     )
 
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert command[0] == "powershell.exe"
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout="command ok\n",
-            stderr="",
-        )
+    def fake_run_shell_command(
+        shell_name: str,
+        command: str,
+        cwd: Path,
+        timeout_ms: int,
+        *,
+        stdout_callback: Any | None = None,
+        stderr_callback: Any | None = None,
+    ) -> tuple[str, str, int, str, int]:
+        assert shell_name == "powershell"
+        assert "approval-flow" in command
+        if stdout_callback is not None:
+            stdout_callback("command ok\n")
+        return "command ok\n", "", 0, "completed", 1
 
-    monkeypatch.setattr("local_agent_runtime.tools._shared.subprocess.run", fake_run)
+    monkeypatch.setattr("local_agent_runtime.tools._shared.run_shell_command", fake_run_shell_command)
 
     send_response = runtime_harness.call(
         "message.send",
@@ -878,10 +884,9 @@ def test_explicit_apply_patch_routes_to_patch_tool(runtime_harness: Any, tmp_pat
     )
     assert final_task["status"] == "completed"
     started_tools = [event["payload"]["toolName"] for event in runtime_harness.events if event["type"] == "tool.started"]
-    assert started_tools[0] == "list_dir"
     assert started_tools.count("apply_patch") == 2
-    assert final_task["plan"][1]["id"] == "apply-patch"
-    assert final_task["plan"][1]["status"] == "completed"
+    assert "list_dir" not in started_tools
+    assert final_task["plan"] == []
 
 
 def test_apply_patch_files_can_create_new_file_after_approval(runtime_harness: Any, tmp_path: Path) -> None:
@@ -964,10 +969,10 @@ def test_explicit_apply_patch_rejects_invalid_patch_before_approval(runtime_harn
 
 
 @pytest.mark.parametrize(
-    ("content", "tool_name", "plan_step_id"),
+    ("content", "tool_name"),
     [
-        ("show git status", "git_status", "git-status"),
-        ("show git diff", "git_diff", "git-diff"),
+        ("show git status", "git_status"),
+        ("show git diff", "git_diff"),
     ],
 )
 def test_explicit_git_routes_use_read_only_tools(
@@ -975,7 +980,6 @@ def test_explicit_git_routes_use_read_only_tools(
     tmp_path: Path,
     content: str,
     tool_name: str,
-    plan_step_id: str,
 ) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -1002,11 +1006,9 @@ def test_explicit_git_routes_use_read_only_tools(
 
     assert task["status"] == "completed"
     assert [event["payload"]["toolName"] for event in runtime_harness.events if event["type"] == "tool.started"] == [
-        "list_dir",
         tool_name,
     ]
-    assert task["plan"][1]["id"] == plan_step_id
-    assert task["plan"][1]["status"] == "completed"
+    assert task["plan"] == []
 
 
 def test_git_status_returns_quickly_for_non_git_workspace(runtime_harness: Any, tmp_path: Path) -> None:
@@ -1056,16 +1058,22 @@ def test_failed_tool_surfaces_clear_task_summary(runtime_harness: Any, monkeypat
         "session",
     )
 
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert command[0] == "powershell.exe"
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=1,
-            stdout="",
-            stderr="boom\n",
-        )
+    def fake_run_shell_command(
+        shell_name: str,
+        command: str,
+        cwd: Path,
+        timeout_ms: int,
+        *,
+        stdout_callback: Any | None = None,
+        stderr_callback: Any | None = None,
+    ) -> tuple[str, str, int, str, int]:
+        assert shell_name == "powershell"
+        assert "failure-case" in command
+        if stderr_callback is not None:
+            stderr_callback("boom\n")
+        return "", "boom\n", 1, "failed", 1
 
-    monkeypatch.setattr("local_agent_runtime.tools._shared.subprocess.run", fake_run)
+    monkeypatch.setattr("local_agent_runtime.tools._shared.run_shell_command", fake_run_shell_command)
 
     send_response = runtime_harness.call(
         "message.send",
@@ -1139,10 +1147,10 @@ def test_plan_approval_strict_mode(runtime_harness: Any, tmp_path: Path, monkeyp
         "session",
     )
 
-    # "重构" triggers MULTI_STEP_TASK → enable_planning=True → _execute_with_planning
+    # Explicit planning intent triggers MULTI_STEP_TASK -> enable_planning=True -> _execute_with_planning.
     send_response = runtime_harness.call(
         "message.send",
-        {"sessionId": session["id"], "content": "重构 app.py 的代码结构"},
+        {"sessionId": session["id"], "content": "plan and break down refactor app.py code structure"},
     )
     task = _call_result(send_response, "task")
 
@@ -1258,7 +1266,7 @@ def test_plan_approval_approved_resumes_dag(runtime_harness: Any, tmp_path: Path
 
     send_response = runtime_harness.call(
         "message.send",
-        {"sessionId": session["id"], "content": "重构 app.py 的代码结构"},
+        {"sessionId": session["id"], "content": "plan and break down refactor app.py code structure"},
     )
     task = _call_result(send_response, "task")
     assert task["status"] == "waiting_approval"

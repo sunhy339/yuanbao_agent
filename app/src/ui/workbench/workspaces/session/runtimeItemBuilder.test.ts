@@ -225,7 +225,7 @@ describe("runtimeItemBuilder", () => {
 
     expect(items[0]?.toolName).toBe("plan");
     expect(items[0]?.code).toBeUndefined();
-    expect(items[0]?.rawDetail).toContain("previewSections");
+    expect(items[0]?.rawDetail).toBeUndefined();
     expect(items[0]?.previewRows).toEqual([
       { label: "模式", value: "swarm" },
       { label: "子任务", value: "2" },

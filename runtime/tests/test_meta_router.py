@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from local_agent_runtime.router import MetaRouter, Scenario
 from local_agent_runtime.router.types import ExecutionStrategy
 
@@ -147,6 +149,13 @@ class TestRuleBasedRouting:
         assert decision.enable_planning is True
         assert decision.skill_id is None
 
+    def test_chinese_explicit_multi_agent_signal_routes_to_swarm(self) -> None:
+        decision = self.router.route("\u8d77\u591a\u4e2a agent \u4f18\u5316\u8fd9\u4e2a\u9879\u76ee")
+
+        assert decision.scenario == Scenario.SWARM_TASK
+        assert decision.strategy == ExecutionStrategy.PLAN_SWARM
+        assert decision.enable_planning is True
+
     def test_code_search_scenario_from_chinese(self) -> None:
         decision = self.router.route("搜索一下这个函数在哪")
         assert decision.scenario == Scenario.CODE_SEARCH
@@ -157,9 +166,10 @@ class TestRuleBasedRouting:
         assert decision.scenario == Scenario.SIMPLE_QUERY
         assert decision.confidence >= 0.70
 
-    def test_multi_step_from_refactor(self) -> None:
+    def test_broad_refactor_stays_react_without_explicit_planning(self) -> None:
         decision = self.router.route("帮我重构整个模块")
-        assert decision.scenario == Scenario.MULTI_STEP_TASK
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.strategy == ExecutionStrategy.REACT_STANDARD
         assert decision.confidence >= 0.80
 
     # -- English keywords --
@@ -247,8 +257,14 @@ class TestRoutingDecision:
         assert decision.strategy == ExecutionStrategy.SKILL_BASED
         assert decision.skill_id == "code_reviewer"
 
-    def test_multi_step_uses_plan_execute(self) -> None:
+    def test_broad_work_uses_react_standard_without_explicit_planning(self) -> None:
         decision = self.router.route("refactor all modules")
+        assert decision.strategy == ExecutionStrategy.REACT_STANDARD
+        assert decision.enable_planning is False
+
+    def test_explicit_plan_request_uses_plan_execute(self) -> None:
+        decision = self.router.route("plan and break down a refactor across all modules")
+        assert decision.scenario == Scenario.MULTI_STEP_TASK
         assert decision.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
         assert decision.enable_planning is True
 
@@ -265,7 +281,7 @@ class TestRoutingDecision:
         doc_decision = self.router.route("Please update the project documentation")
         code_decision = self.router.route("implement a new settings panel")
         debug_decision = self.router.route("debug this crash")
-        multi_step_decision = self.router.route("refactor all modules")
+        multi_step_decision = self.router.route("plan and break down a refactor across all modules")
 
         assert doc_decision.max_steps >= 35
         assert code_decision.max_steps >= 35
@@ -319,6 +335,53 @@ class TestLLMRouting:
         router = MetaRouter(provider=provider)
         decision = router.route("something ambiguous xyz")
         assert decision.scenario == Scenario.FREE_FORM
+
+    def test_advisor_overplanning_broad_refactor_is_guarded_to_react(self) -> None:
+        class OverplanningAdvisor:
+            def advise(self, kind: str, _input_context: dict) -> SimpleNamespace:
+                assert kind == "routing_strategy"
+                return SimpleNamespace(
+                    accepted=True,
+                    payload={"scenario": "multi_step_task", "strategy": "plan_execute"},
+                    rationale="The task is broad.",
+                    source="llm",
+                    fallback_reason=None,
+                    proposal_id="proposal_route",
+                    confidence=0.9,
+                    validation_reasons=[],
+                )
+
+        router = MetaRouter(decision_advisor=OverplanningAdvisor())
+
+        decision = router.route("refactor all modules")
+
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.strategy == ExecutionStrategy.REACT_STANDARD
+        assert decision.enable_planning is False
+        assert decision.metadata["advisor_candidate"]["strategy"] == "plan_execute"
+
+    def test_advisor_explicit_plan_request_can_use_plan_execute(self) -> None:
+        class PlanningAdvisor:
+            def advise(self, kind: str, _input_context: dict) -> SimpleNamespace:
+                assert kind == "routing_strategy"
+                return SimpleNamespace(
+                    accepted=True,
+                    payload={"scenario": "multi_step_task", "strategy": "plan_execute"},
+                    rationale="The user asked to plan and break down the work.",
+                    source="llm",
+                    fallback_reason=None,
+                    proposal_id="proposal_route",
+                    confidence=0.9,
+                    validation_reasons=[],
+                )
+
+        router = MetaRouter(decision_advisor=PlanningAdvisor())
+
+        decision = router.route("plan and break down a refactor across all modules")
+
+        assert decision.scenario == Scenario.MULTI_STEP_TASK
+        assert decision.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
+        assert decision.enable_planning is True
 
 
 # ---------------------------------------------------------------------------

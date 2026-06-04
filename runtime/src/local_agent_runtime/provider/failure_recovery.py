@@ -59,7 +59,19 @@ def classify_provider_failure(error: BaseException | str) -> ProviderFailureReco
             reason="provider rejected authentication or authorization",
             message=message,
         )
-    if http_status == 429 or _has_any(lowered, ("rate limit", "too many requests", "throttle", "throttled")):
+    if http_status == 429 or _has_any(
+        lowered,
+        (
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "throttle",
+            "throttled",
+            "concurrency limit",
+            "concurrent request",
+            "too many concurrent",
+        ),
+    ):
         return _decision(
             "rate_limit",
             http_status,

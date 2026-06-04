@@ -1870,12 +1870,17 @@ class TestCompletionHardGate:
                 "completionEvidence": waiting["structuredResult"]["completionEvidence"],
             },
         )
+        continuations: list[dict[str, Any]] = []
+        rt.orchestrator._start_background_message = (  # type: ignore[method-assign]
+            lambda **kwargs: continuations.append(kwargs)
+        )
         result = rt.orchestrator.submit_approval({
             "approvalId": completion_review["id"],
             "decision": "approved",
         })
 
         assert result["task"]["status"] == "running"
+        assert continuations == []
         refreshed = store.get_task({"taskId": task["id"]})["task"]
         assert refreshed["status"] == "running"
         refreshed_gate = refreshed["structuredResult"]["completionGate"]
@@ -1932,9 +1937,18 @@ class TestCompletionHardGate:
         assert gate["status"] == "advisor_needs_review"
         approval_id = gate["approvalId"]
 
+        continuations: list[dict[str, Any]] = []
+        rt.orchestrator._start_background_message = (  # type: ignore[method-assign]
+            lambda **kwargs: continuations.append(kwargs)
+        )
         result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
 
         assert result["task"]["status"] == "running"
+        assert len(continuations) == 1
+        continuation = continuations[0]
+        assert continuation["task"]["id"] == task["id"]
+        assert "Continue the existing task after completion review" in continuation["goal"]
+        assert continuation["context"]["completionReviewContinuation"]["approvalId"] == approval_id
         refreshed = store.get_task({"taskId": task["id"]})["task"]
         assert refreshed["status"] == "running"
         refreshed_gate = refreshed["structuredResult"]["completionGate"]
@@ -1945,6 +1959,7 @@ class TestCompletionHardGate:
 
         assert repeated["ignored"] is True
         assert repeated["task"]["status"] == "running"
+        assert len(continuations) == 1
         assert store.get_task({"taskId": task["id"]})["task"]["status"] == "running"
 
     def test_invalid_advisor_tool_approval_does_not_execute_empty_write_file(self, tmp_path: Any) -> None:

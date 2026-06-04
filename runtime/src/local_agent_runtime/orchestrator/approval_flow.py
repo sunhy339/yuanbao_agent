@@ -695,7 +695,203 @@ class ApprovalFlowMixin:
                 },
             },
         )
+        self._schedule_completion_review_continuation(
+            task=runtime_task,
+            request=request,
+            conclusion=conclusion,
+            summary=summary,
+            gate_status=gate_status,
+        )
         return runtime_task
+
+    def _schedule_completion_review_continuation(
+        self,
+        *,
+        task: dict[str, Any],
+        request: dict[str, Any],
+        conclusion: dict[str, Any],
+        summary: str,
+        gate_status: str,
+    ) -> bool:
+        if self._completion_review_waits_for_external_runtime_work(request):
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="task.continuation.deferred",
+                payload={
+                    "status": task.get("status"),
+                    "reason": "waiting_for_pending_runtime_work",
+                    "gateStatus": gate_status,
+                },
+            )
+            return False
+
+        continuation_goal = self._completion_review_continuation_goal(
+            task=task,
+            request=request,
+            conclusion=conclusion,
+            summary=summary,
+            gate_status=gate_status,
+        )
+        routing = self._completion_review_continuation_routing(
+            task=task,
+            request=request,
+            conclusion=conclusion,
+            gate_status=gate_status,
+        )
+        try:
+            context = self._context_builder.build(
+                session_id=task["sessionId"],
+                goal=continuation_goal,
+                skill_id=routing.get("skill_id") if isinstance(routing.get("skill_id"), str) else None,
+                lightweight=True,
+            )
+            context["routing"] = routing
+            context["completionReviewContinuation"] = {
+                "approvalId": conclusion.get("approvalId"),
+                "gateStatus": gate_status,
+                "decision": conclusion.get("decision"),
+                "summary": summary,
+            }
+            updated = self._store.update_task(
+                task_id=task["id"],
+                status=task.get("status") or "running",
+                plan=task.get("plan") or [],
+                current_step=task.get("currentStep"),
+                routing=routing,
+            )
+            runtime_task = {**task, **updated, "routing": routing, "plan": task.get("plan") or []}
+            self._publish(
+                session_id=runtime_task["sessionId"],
+                task=runtime_task,
+                event_type="task.continuation.started",
+                payload={
+                    "status": runtime_task.get("status"),
+                    "reason": "completion_review_requires_more_work",
+                    "gateStatus": gate_status,
+                    "approvalId": conclusion.get("approvalId"),
+                },
+            )
+            publish_progress = getattr(self, "_publish_assistant_progress", None)
+            if callable(publish_progress):
+                publish_progress(
+                    session_id=runtime_task["sessionId"],
+                    task=runtime_task,
+                    text="继续补齐 completion review 要求的证据和后续动作。",
+                    phase="completion_review_continuation",
+                    payload={
+                        "gateStatus": gate_status,
+                        "approvalId": conclusion.get("approvalId"),
+                    },
+                )
+            self._start_background_message(
+                session_id=runtime_task["sessionId"],
+                task=runtime_task,
+                goal=continuation_goal,
+                context=context,
+                routing=routing,
+                skill_id=routing.get("skill_id") if isinstance(routing.get("skill_id"), str) else None,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to schedule completion review continuation for task=%s: %s", task.get("id"), exc)
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="task.continuation.failed",
+                payload={
+                    "status": task.get("status"),
+                    "reason": str(exc),
+                    "gateStatus": gate_status,
+                },
+            )
+            return False
+
+    def _completion_review_waits_for_external_runtime_work(self, request: dict[str, Any]) -> bool:
+        evidence = self._completion_review_request_evidence(request)
+        pending_approvals = self._completion_pending_approval_items(evidence)
+        unresolved_children = self._completion_unresolved_child_tasks(evidence)
+        return bool(pending_approvals or unresolved_children)
+
+    @staticmethod
+    def _completion_review_request_evidence(request: dict[str, Any]) -> dict[str, Any]:
+        evidence = request.get("completionEvidence")
+        if isinstance(evidence, dict):
+            return evidence
+        structured = request.get("structuredResult") if isinstance(request.get("structuredResult"), dict) else {}
+        evidence = structured.get("completionEvidence") if isinstance(structured.get("completionEvidence"), dict) else {}
+        return evidence if isinstance(evidence, dict) else {}
+
+    def _completion_review_continuation_routing(
+        self,
+        *,
+        task: dict[str, Any],
+        request: dict[str, Any],
+        conclusion: dict[str, Any],
+        gate_status: str,
+    ) -> dict[str, Any]:
+        routing = deepcopy(task.get("routing") or {})
+        routing["strategy"] = "react_standard"
+        routing["enable_planning"] = False
+        routing["continuation"] = {
+            "kind": "completion_review",
+            "approvalId": conclusion.get("approvalId"),
+            "gateStatus": gate_status,
+            "decision": conclusion.get("decision"),
+        }
+        workflow = dict(routing.get("mainWorkflow") or {})
+        workflow["continuation"] = routing["continuation"]
+        workflow.setdefault("convergence", {})
+        routing["mainWorkflow"] = workflow
+        structured = request.get("structuredResult") if isinstance(request.get("structuredResult"), dict) else {}
+        evidence = self._completion_review_request_evidence(request)
+        if evidence:
+            routing["completionEvidenceSnapshot"] = {
+                "status": evidence.get("status"),
+                "evidenceLevel": evidence.get("evidenceLevel"),
+                "counts": evidence.get("counts") if isinstance(evidence.get("counts"), dict) else {},
+            }
+        if structured:
+            routing["completionGateSnapshot"] = structured.get("completionGate") if isinstance(structured.get("completionGate"), dict) else {}
+        return routing
+
+    @staticmethod
+    def _completion_review_continuation_goal(
+        *,
+        task: dict[str, Any],
+        request: dict[str, Any],
+        conclusion: dict[str, Any],
+        summary: str,
+        gate_status: str,
+    ) -> str:
+        reason = str(request.get("reason") or "").strip()
+        advisor_requested = request.get("advisorRequestedEvidence")
+        if not isinstance(advisor_requested, list):
+            evidence = request.get("completionEvidence") if isinstance(request.get("completionEvidence"), dict) else {}
+            advisor_requested = evidence.get("advisorRequestedEvidence") if isinstance(evidence.get("advisorRequestedEvidence"), list) else []
+        requested_lines: list[str] = []
+        for item in advisor_requested[:5]:
+            if not isinstance(item, dict):
+                continue
+            item_summary = str(item.get("summary") or item.get("kind") or "").strip()
+            status = str(item.get("status") or "").strip()
+            if item_summary:
+                requested_lines.append(f"- {item_summary}" + (f" ({status})" if status else ""))
+        requested_text = "\n".join(requested_lines) if requested_lines else "- Continue with the smallest sufficient runtime evidence or next action."
+        original_goal = str(task.get("goal") or "").strip()
+        approved = str(conclusion.get("decision") or "approved")
+        return (
+            "Continue the existing task after completion review.\n"
+            f"Original user goal: {original_goal}\n"
+            f"Review decision: {approved}\n"
+            f"Completion gate: {gate_status}\n"
+            f"Reason: {reason or 'The completion gate still requires more work.'}\n"
+            f"Previous summary:\n{summary.strip()}\n\n"
+            "Required follow-up:\n"
+            f"{requested_text}\n\n"
+            "Do not treat this as a new user request. Do not repeat the final answer. "
+            "Use only the minimal necessary tools, then update the same task with the missing evidence or finish the work."
+        )
 
     def _completion_review_conclusion_payload(
         self,

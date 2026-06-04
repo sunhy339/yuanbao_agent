@@ -334,7 +334,11 @@ class ProviderTurnMixin:
                 proposed = str(payload.get("action") or "").strip()
         if proposed == "compact_context":
             return "compact_context"
-        split_allowed = not facts.get("childWorker") and not facts.get("alreadyProviderPreflightSplit")
+        split_allowed = (
+            not facts.get("childWorker")
+            and not facts.get("alreadyProviderPreflightSplit")
+            and self._provider_preflight_split_is_necessary(facts=facts)
+        )
         if proposed == "propose_split" and split_allowed and self._provider_preflight_split_plan_payload(advice=advice) is not None:
             return "execute_split"
         if proposed == "switch_provider" and self._provider_preflight_switch_target(facts=facts, advice=advice) is not None:
@@ -345,6 +349,14 @@ class ProviderTurnMixin:
 
     def _provider_preflight_split_plan_payload(self, *, advice: Any | None) -> dict[str, Any] | None:
         return build_provider_preflight_split_plan_payload(advice=advice)
+
+    @staticmethod
+    def _provider_preflight_split_is_necessary(*, facts: dict[str, Any]) -> bool:
+        return bool(
+            facts.get("nearContextLimit")
+            or facts.get("overContextLimit")
+            or facts.get("hasPriorProviderFailure")
+        )
 
     def _provider_preflight_switch_target(self, *, facts: dict[str, Any], advice: Any | None) -> str | None:
         if facts.get("childWorker") or facts.get("alreadyProviderPreflightSplit"):

@@ -55,6 +55,23 @@ def test_mock_provider_still_uses_deterministic_fallback() -> None:
     assert response["prompt"] == "inspect workspace"
 
 
+@pytest.mark.parametrize(
+    ("goal", "tool_name"),
+    [
+        ("run command: npm test", "run_command"),
+        ("apply patch: *** Begin Patch", "apply_patch"),
+        ("show git status", "git_status"),
+        ("show git diff", "git_diff"),
+    ],
+)
+def test_deterministic_fallback_does_not_probe_workspace_for_explicit_tools(goal: str, tool_name: str) -> None:
+    adapter = ProviderAdapter(config={"provider": {"mode": "mock", "model": "mock-model"}})
+
+    sequence = adapter.choose_tool_sequence(goal, _context())
+
+    assert [item["name"] for item in sequence] == [tool_name]
+
+
 def test_openai_compatible_request_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "LOCAL_AGENT_PROVIDER_MODEL",

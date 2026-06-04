@@ -1611,14 +1611,6 @@ class ReactRunnerMixin:
                 "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
             }
         if not isinstance(raw, dict):
-            goal = str(task.get("goal") or context.get("goal") or context.get("userGoal") or "").strip()
-            goal_checker = getattr(self, "_goal_mentions_workspace_evidence", None)
-            if callable(goal_checker) and goal_checker(goal):
-                return {
-                    "required": True,
-                    "source": "react_goal_semantic",
-                    "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
-                }
             return {"required": False}
         required = raw.get("required")
         if required is None:

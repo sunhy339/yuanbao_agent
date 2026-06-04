@@ -18,6 +18,7 @@ from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.policy.permission_engine import PermissionEngine
 from local_agent_runtime.router.meta_router import MetaRouter
+from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
@@ -209,6 +210,22 @@ def test_react_loop_requires_workspace_evidence_before_final_answer(tmp_path: An
         },
     )
     session = _open_session(runtime, tmp_path)
+    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
+        scenario=Scenario.DOC_WRITE,
+        strategy=ExecutionStrategy.REACT_STANDARD,
+        confidence=0.9,
+        max_steps=20,
+        enable_reflection=False,
+        enable_planning=False,
+        reasoning="explicit test workspace-evidence contract",
+        metadata={
+            "workspaceEvidenceRequired": {
+                "required": True,
+                "requiredTools": ["search_files"],
+                "source": "test",
+            }
+        },
+    )
 
     task = _call_result(
         _rpc(
@@ -242,16 +259,10 @@ def test_react_loop_requires_workspace_evidence_before_final_answer(tmp_path: An
     assert progress_events
 
 
-def test_react_loop_requires_workspace_evidence_for_current_progress_goal_without_profile(tmp_path: Any) -> None:
+def test_react_loop_does_not_require_workspace_evidence_without_profile(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [
             {"final": "I already checked the current progress."},
-            {
-                "tool_calls": [
-                    {"id": "call_status", "name": "git_status", "arguments": {}},
-                ],
-            },
-            {"final": "Grounded current progress after git status."},
         ]
     )
     runtime = _make_runtime(
@@ -273,27 +284,27 @@ def test_react_loop_requires_workspace_evidence_for_current_progress_goal_withou
     )
 
     assert task["status"] == "completed"
-    assert task["resultSummary"] == "Grounded current progress after git status."
-    assert len(provider.calls) == 3
+    assert task["resultSummary"] == "I already checked the current progress."
+    assert len(provider.calls) == 1
     evidence_prompt_text = "\n".join(
         str(message.get("content") or "")
         for call in provider.calls
         for message in call["context"]["messages"]
     )
-    assert "smallest sufficient read-only evidence set" in evidence_prompt_text
-    assert "Do not run build, compile, or test commands unless" in evidence_prompt_text
+    assert "smallest sufficient read-only evidence set" not in evidence_prompt_text
+    assert "Do not run build, compile, or test commands unless" not in evidence_prompt_text
     assert [
         event["payload"]["toolName"]
         for event in runtime.events
         if event["type"] == "tool.started"
-    ] == ["git_status"]
+    ] == []
     progress_events = [
         event
         for event in runtime.events
         if event["type"] == "assistant_progress"
         and event["payload"].get("phase") == "workspace_evidence_required"
     ]
-    assert progress_events
+    assert not progress_events
 
 
 def test_simple_query_uses_minimal_context_without_tools(tmp_path: Any) -> None:
@@ -1504,7 +1515,7 @@ def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: A
     assert task_preview_deltas[0]["toolCategory"] == "subtask"
 
 
-def test_react_loop_keeps_apply_patch_active_until_it_runs(tmp_path: Any) -> None:
+def test_react_loop_does_not_force_plan_steps_after_search(tmp_path: Any) -> None:
     provider = ScriptedProvider([
         {
             "message": "Search first.",
@@ -1534,21 +1545,19 @@ def test_react_loop_keeps_apply_patch_active_until_it_runs(tmp_path: Any) -> Non
     )
 
     assert task["status"] == "completed"
-    task_updates = [
+    assert task["plan"] == []
+    started_tools = [
+        event["payload"]["toolName"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    ]
+    assert started_tools == ["search_files"]
+    task_plan_updates = [
         event
         for event in runtime.events
         if event["type"] == "task.updated" and isinstance(event.get("payload", {}).get("plan"), list)
     ]
-    plan_after_search = next(
-        event["payload"]["plan"]
-        for event in task_updates
-        if any(step["id"] == "search-relevant-files" and step["status"] == "completed" for step in event["payload"]["plan"])
-    )
-    plan_by_id = {step["id"]: step for step in plan_after_search}
-    assert plan_by_id["search-relevant-files"]["status"] == "completed"
-    assert plan_by_id["apply-patch"]["status"] == "active"
-    assert plan_by_id["run-command"]["status"] == "pending"
-    assert plan_by_id["summarize-findings"]["status"] == "pending"
+    assert all(event["payload"]["plan"] == [] for event in task_plan_updates)
 
 
 def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
@@ -1741,7 +1750,7 @@ def test_react_loop_injects_task_focus_into_provider_context(tmp_path: Any) -> N
     assert "Out of scope:" in user_context
     assert task["acceptanceCriteria"]
     assert task["outOfScope"]
-    assert task["currentStep"] == "Understand task context"
+    assert task.get("currentStep") is None
 
 
 def test_next_turn_context_keeps_recent_conversation_before_current_request(tmp_path: Any) -> None:
@@ -1825,15 +1834,9 @@ def test_message_send_attaches_supplement_to_open_task_without_replanning(tmp_pa
     assert not provider.calls
 
 
-def test_planner_uses_generic_step_titles_for_specific_game_requests() -> None:
+def test_planner_skips_fixed_step_titles_for_specific_game_requests() -> None:
     plan = Planner().plan("Add backgrounds and AI snake battle")
-    titles = [step["title"] for step in plan]
-    assert titles[:3] == [
-        "Understand task context",
-        "Find relevant files",
-        "Implement requested change",
-    ]
-    assert not any("snake" in title.casefold() for title in titles)
+    assert plan == []
 
 
 def test_message_send_explicit_supplement_overrides_background_new_task(tmp_path: Any) -> None:

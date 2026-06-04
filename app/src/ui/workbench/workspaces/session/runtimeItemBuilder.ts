@@ -693,6 +693,9 @@ export function buildRuntimeItems({
   });
 
   approvals.forEach((approval) => {
+    if (approval.kind === "completion_review") {
+      return;
+    }
     const normalizedStatus = approval.status.toLowerCase();
     const approvalChangedPaths = approval.changedPaths?.filter(Boolean) ?? [];
     const approvalPathSummary = approvalChangedPaths.length

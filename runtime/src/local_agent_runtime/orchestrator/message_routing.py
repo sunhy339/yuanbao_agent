@@ -54,6 +54,17 @@ _INLINE_FILE_REFERENCE_PATTERN = re.compile(r"(^|\s)@([^\s@]+)")
 _INLINE_FILE_REFERENCE_TRAILING = "),.;:!?，。；：！？）"
 _INLINE_FILE_REFERENCE_TERMINATORS = ("，", "。", "；", "！", "？")
 
+_CLEANUP_GOAL_RE = re.compile(
+    r"(delete|remove|cleanup|clean up|删|删除|删掉|移除|清理|不需要|不要)",
+    re.IGNORECASE,
+)
+_GENERATED_LOCAL_PATH_RE = re.compile(
+    r"(%SystemDrive%|systemdrive|__pycache__|\.pyc\b|\.pytest_cache|\.idea[/\\]workspace\.xml|"
+    r"MEMORY(?:\.local)?\.md|YUANBAO\.md|tmp_.*\.(?:png|jpe?g|webp)|"
+    r"generated|cache|local-only|未跟踪|占位|缓存|生成|本地)",
+    re.IGNORECASE,
+)
+
 
 class MessageRoutingMixin:
     """Mixin providing message routing and background dispatch."""
@@ -62,8 +73,17 @@ class MessageRoutingMixin:
         strategy = routing.strategy.value
         tool_continuation = self._routing_tool_continuation_from_decision(routing, strategy)
         profile = self._routing_profile_from_decision(routing)
+        goal_text = ""
+        if isinstance(context, dict):
+            goal_text = str(context.get("goal") or context.get("userGoal") or context.get("content") or "")
+        if self._goal_mentions_generated_local_cleanup(goal_text):
+            profile = dict(profile or {})
+            profile.setdefault("toolPolicy", "cleanup_noise")
+            profile.setdefault("workspaceEvidenceRequired", {"required": False, "source": "cleanup_noise"})
         workspace_evidence = self._routing_workspace_evidence_from_decision(routing, context=context)
-        if workspace_evidence:
+        if workspace_evidence and not (
+            isinstance(profile, dict) and "workspaceEvidenceRequired" in profile
+        ):
             profile = dict(profile or {})
             profile["workspaceEvidenceRequired"] = workspace_evidence
         return {
@@ -175,6 +195,11 @@ class MessageRoutingMixin:
     @staticmethod
     def _goal_mentions_workspace_evidence(goal: str) -> bool:
         return bool(_WORKSPACE_EVIDENCE_GOAL_RE.search(str(goal or "")))
+
+    @staticmethod
+    def _goal_mentions_generated_local_cleanup(goal: str) -> bool:
+        text = str(goal or "")
+        return bool(_CLEANUP_GOAL_RE.search(text) and _GENERATED_LOCAL_PATH_RE.search(text))
 
     def _routing_tool_continuation_from_decision(self, routing: Any, strategy: str) -> dict[str, Any]:
         metadata = getattr(routing, "metadata", None)

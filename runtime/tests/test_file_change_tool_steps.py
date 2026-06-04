@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.apply_patch import build_apply_patch_tool
@@ -70,3 +72,51 @@ def test_apply_patch_result_includes_runtime_steps(tmp_path: Path) -> None:
     assert _step_labels(result) == ["parse", "validate", "approval", "apply"]
     assert result["steps"][0]["summary"] == "1 file(s)"
     assert result["steps"][-1]["summary"] == "1 changed path(s)"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "%SystemDrive%/",
+        "MEMORY.md",
+        "MEMORY.local.md",
+        "YUANBAO.md",
+        ".idea/workspace.xml",
+        "snake_game/__pycache__/game.cpython-314.pyc",
+        "tmp_current_desktop.png",
+    ],
+)
+def test_write_file_rejects_generated_or_local_only_paths(tmp_path: Path, path: str) -> None:
+    store, workspace_root, task_id = _runtime_context(tmp_path)
+    tool = build_write_file_tool(PolicyGuard(approval_mode="none"), store)["handler"]
+
+    with pytest.raises(ValueError, match="generated/local-only"):
+        tool({
+            "workspaceRoot": str(workspace_root),
+            "taskId": task_id,
+            "path": path,
+            "content": "bad\n",
+        })
+
+
+def test_apply_patch_rejects_generated_or_local_only_paths(tmp_path: Path) -> None:
+    store, workspace_root, task_id = _runtime_context(tmp_path)
+    tool = build_apply_patch_tool(PolicyGuard(approval_mode="none"), store)["handler"]
+    patch_text = "\n".join(
+        [
+            "diff --git a/%SystemDrive% b/%SystemDrive%",
+            "--- /dev/null",
+            "+++ b/%SystemDrive%",
+            "@@ -0,0 +1 @@",
+            "+bad",
+        ]
+    )
+
+    result = tool({
+        "workspaceRoot": str(workspace_root),
+        "taskId": task_id,
+        "patchText": patch_text,
+    })
+
+    assert result["status"] == "validation_failed"
+    assert "generated/local-only" in result["error"]

@@ -27,6 +27,9 @@ def normalize_patch_path(
 
     relative = Path(normalized)
     policy_guard.ensure_within_workspace(str(workspace_root), relative.as_posix())
+    ensure_write_path_allowed = getattr(policy_guard, "ensure_write_path_allowed", None)
+    if callable(ensure_write_path_allowed):
+        ensure_write_path_allowed(relative.as_posix(), operation="apply_patch")
     absolute = (workspace_root / relative).resolve()
     return relative.as_posix(), absolute
 

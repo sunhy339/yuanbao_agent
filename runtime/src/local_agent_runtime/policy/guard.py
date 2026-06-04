@@ -30,6 +30,38 @@ class PolicyGuard:
         root_text = ", ".join(str(root) for root in roots)
         raise ValueError(f"cwd is outside allowed roots: {candidate} (allowed: {root_text})")
 
+    def generated_or_local_path_reason(self, candidate_path: str) -> str | None:
+        normalized = self._normalized_path_token(candidate_path).casefold()
+        if not normalized:
+            return None
+        padded = f"/{normalized}/"
+        if "%systemdrive%" in normalized:
+            return "environment placeholder path"
+        if "/__pycache__/" in padded or normalized.endswith(".pyc"):
+            return "generated Python cache"
+        if "/.pytest_cache/" in padded:
+            return "generated pytest cache"
+        if normalized in {"memory.md", "memory.local.md", "yuanbao.md"}:
+            return "local memory/config file"
+        if normalized.endswith("/memory.md") or normalized.endswith("/memory.local.md") or normalized.endswith("/yuanbao.md"):
+            return "local memory/config file"
+        if normalized == ".idea/workspace.xml" or normalized.endswith("/.idea/workspace.xml"):
+            return "local IDE workspace state"
+        name = normalized.rsplit("/", 1)[-1]
+        if re.match(r"tmp_.*\.(?:png|jpe?g|webp)$", name):
+            return "temporary screenshot/artifact"
+        return None
+
+    def ensure_write_path_allowed(self, candidate_path: str, *, operation: str = "write") -> None:
+        reason = self.generated_or_local_path_reason(candidate_path)
+        if reason is None:
+            return
+        normalized = self._normalized_path_token(candidate_path)
+        raise ValueError(
+            f"Blocked {operation} of generated/local-only path: {normalized} ({reason}). "
+            "Use shell cleanup for generated artifacts and do not modify local memory or IDE state files."
+        )
+
     def validate_command(self, command: str, run_command_config: dict[str, Any]) -> None:
         deny_match = self._first_command_match(command, run_command_config, "deniedCommands", "denylist")
         if deny_match is not None:
@@ -222,21 +254,7 @@ class PolicyGuard:
         return lowered in {".", "./", "*", ":/", "-a", "-u", "--all", "--update"} or lowered.startswith("-a")
 
     def _is_generated_or_local_path(self, path: str) -> bool:
-        lowered = path.casefold()
-        if "%systemdrive%" in lowered:
-            return True
-        if "/__pycache__/" in f"/{lowered}/" or lowered.endswith(".pyc"):
-            return True
-        if "/.pytest_cache/" in f"/{lowered}/":
-            return True
-        if lowered in {"memory.md", "memory.local.md", "yuanbao.md"}:
-            return True
-        if lowered.endswith("/memory.md") or lowered.endswith("/memory.local.md") or lowered.endswith("/yuanbao.md"):
-            return True
-        if lowered == ".idea/workspace.xml" or lowered.endswith("/.idea/workspace.xml"):
-            return True
-        name = lowered.rsplit("/", 1)[-1]
-        return bool(re.match(r"tmp_.*\.(?:png|jpe?g|webp)$", name))
+        return self.generated_or_local_path_reason(path) is not None
 
     def _first_blocked_pattern(self, command: str, config: dict[str, Any]) -> str | None:
         normalized_command = command.casefold()

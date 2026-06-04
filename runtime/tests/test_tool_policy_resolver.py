@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from local_agent_runtime.policy.tool_policy_resolver import ToolPolicyResolver
+from local_agent_runtime.orchestrator.message_routing import MessageRoutingMixin
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import BUILTIN_TOOL_SCHEMAS
 
@@ -54,6 +55,39 @@ def test_plan_strategy_continues_after_task_result_but_withholds_task() -> None:
     task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
     assert task_detail["continuationDecision"] == "denied"
     assert task_detail["toolContinuationPolicy"]["source"] == "strategy_fallback"
+
+
+def test_cleanup_noise_profile_limits_root_tools() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "react_standard",
+                "profile": {"toolPolicy": "cleanup_noise"},
+            },
+        },
+        tool_results=[],
+        registered_tools=_tools(
+            "git_status",
+            "list_dir",
+            "read_file",
+            "search_files",
+            "write_file",
+            "apply_patch",
+            "run_command",
+            "ask_user_question",
+        ),
+    )
+
+    assert set(decision.allowed_tool_names) == {"git_status", "list_dir", "run_command"}
+    assert set(decision.denied_tool_names) == {"read_file", "search_files", "write_file", "apply_patch", "ask_user_question"}
+
+
+def test_cleanup_goal_detector_matches_systemdrive_cleanup_request() -> None:
+    assert MessageRoutingMixin._goal_mentions_generated_local_cleanup(
+        "优化一下，systemdrive看看需要不需要，不需要删掉"
+    )
 
 
 def test_plan_strategy_explicit_disable_synthesizes_after_task_result() -> None:

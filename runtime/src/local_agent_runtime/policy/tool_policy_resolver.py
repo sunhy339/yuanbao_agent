@@ -37,6 +37,7 @@ WRITE_TOOLS = frozenset({"write_file", "apply_patch", "run_command"})
 SUBAGENT_TOOLS = frozenset({"agent", "task"})
 MEMORY_AND_SCRATCHPAD_TOOLS = frozenset({"memory.recall", "memory.remember", "scratchpad.read", "scratchpad.write"})
 CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question", "enter_plan_mode", "exit_plan_mode"})
+MINIMAL_CLEANUP_TOOLS = frozenset({"git_status", "list_dir", "run_command"})
 VERIFICATION_COMMAND_MARKERS = (
     "pytest",
     "unittest",
@@ -366,6 +367,14 @@ class ToolPolicyResolver:
         if phase == "plan_mode":
             return set(PLAN_MODE_TOOL_NAMES), reasons
 
+        profile_tool_policy = self._profile_tool_policy(context)
+        if profile_tool_policy == "cleanup_noise" and runtime_role in {"root", "worker"}:
+            names = set(MINIMAL_CLEANUP_TOOLS)
+            if phase in {"synthesis", "approval_waiting"}:
+                names.clear()
+            reasons["*"] = "cleanup_noise profile limits tools to minimal inspection and cleanup"
+            return names, reasons
+
         child_allowlist = self._child_allowlist(context)
         if runtime_role in {"root", "worker"} and child_allowlist is None and context.get("_child_worker") is not True:
             return {"*"}, reasons
@@ -391,6 +400,20 @@ class ToolPolicyResolver:
             reasons["*"] = "child worker tools are limited by child allowlist"
 
         return names, reasons
+
+    def _profile_tool_policy(self, context: dict[str, Any]) -> str:
+        routing = context.get("routing")
+        if not isinstance(routing, dict):
+            return ""
+        candidates: list[Any] = [routing.get("toolPolicy"), routing.get("tool_policy")]
+        profile = routing.get("profile")
+        if isinstance(profile, dict):
+            candidates.extend([profile.get("toolPolicy"), profile.get("tool_policy")])
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
 
     def _last_task_result_ready(self, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> bool:
         if self._allow_tools_after_task_results(context) or not tool_results:

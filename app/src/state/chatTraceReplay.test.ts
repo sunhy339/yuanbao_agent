@@ -191,6 +191,44 @@ describe("chat trace replay", () => {
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
+  it("does not replay late chat events after task cancellation", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_cancel", "task.cancelled", { status: "cancelled" }, 1, "chat"),
+      trace("evt_late_progress", "assistant_progress", { summary: "late internal work" }, 2, "chat"),
+      trace("evt_late_tool", "tool.completed", {
+        toolCallId: "tool_late",
+        toolName: "run_command",
+        resultSummary: "late result",
+      }, 3, "chat"),
+      trace("evt_late_review", "approval.resolved", {
+        approvalId: "approval_review",
+        kind: "completion_review",
+        decision: "approved",
+        request: { summary: "internal review" },
+      }, 4, "chat"),
+    ]);
+
+    expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
+  });
+
+  it("does not replay completion review approvals as chat permission cards", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_review_permission", "permission_request", {
+        requestId: "approval_review",
+        toolName: "completion_review",
+        input: { summary: "internal review" },
+      }, 1, "chat"),
+      trace("evt_review_resolved", "approval.resolved", {
+        approvalId: "approval_review",
+        kind: "completion_review",
+        decision: "approved",
+        request: { summary: "internal review" },
+      }, 2, "chat"),
+    ]);
+
+    expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
+  });
+
   it("hides child-worker trace events on session recovery unless they are explicitly chat-visible", () => {
     const replayed = replayTraceEventsToChatMessages(
       [],

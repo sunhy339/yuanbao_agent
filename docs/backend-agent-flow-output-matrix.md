@@ -61,3 +61,49 @@ Failure finalization rule:
 3. Thinking placement still needs a turn-phase contract: thinking before provider/tool choice, tool block during execution, thinking/progress after tool result, final text after the last tool block.
 4. Completion review is still too visible and JSON-heavy. Approval details should use structured preview rows and hide advisor diagnostics in trace by default.
 5. User/internal responses need a stronger ownership model so approval answers and `ask_user_question` answers cannot be submitted twice or become new goals.
+
+## 2026-06-04 State-Machine Alignment Notes
+
+The current backend must be treated as four coupled state machines, not as one
+generic event log:
+
+| Machine | Input | Internal states | User-visible output | Hard rule |
+| --- | --- | --- | --- | --- |
+| Turn loop | user message, supplement, resume | route -> provider turn -> optional tools -> synthesize/finalize | `thinking/status`, `content_start/delta`, `tool_*`, `message_complete` | Do not expose router/advisor/provider diagnostics as chat blocks. |
+| Tool loop | provider `tool_calls` | `tool.started` -> progress/output -> completed/failed | haha-cc-like `content_start(tool_use)`, `content_delta(toolInput/toolOutput)`, `tool_result` | A visible tool_use must have exactly one visible tool_result or a cancelled/error result. |
+| Approval loop | tool/policy/internal gate | requested -> waiting_approval/paused -> resolved -> resume/ignore | `permission_request` only for real user decisions | `completion_review` is internal; never create chat permission cards for it. |
+| Task lifecycle | send/resume/cancel/error | queued/running/paused/waiting_approval/completed/failed/cancelled | `task_update`, compact panel state | Terminal states are absorbing: no later review/resume/tool events may re-enter chat. |
+
+haha-cc's important backend rhythm, as seen in `docs/cc-haha-main*/src/query.ts`,
+is:
+
+1. Stream assistant blocks from the model.
+2. If a `tool_use` block appears, record the assistant block and execute tools.
+3. Yield tool results back as user/tool-result messages for the next model turn.
+4. On fallback or abort, discard orphaned streaming tool results and emit missing/cancelled tool results to keep the protocol complete.
+5. If no tool use remains, finalize the assistant turn; recovery/compact/failure logic is not rendered as ordinary chat.
+
+Yuanbao does not need to be byte-for-byte identical, but should preserve the same
+observable contract:
+
+- The chat transcript is a typed protocol, not a raw trace viewer.
+- Internal recovery, advisor, completion review, and routing data live in trace/panel only.
+- Live streaming and session replay must apply the same visibility rules.
+- User answers to approvals/questions are supplements to the existing task, not new user goals.
+- Tool availability should be route-specific. Simple cleanup should not open broad read/search/write tools.
+
+Immediate corrections now in scope:
+
+- Completion-review approval submit is ignored once a task is terminal, preventing cancelled tasks from being resumed or failed by a late review.
+- `completion_review` approvals are no longer bridged into chat `permission_request` frames and are filtered from runtime cards.
+- Trace replay suppresses later chat events for a cancelled task so re-entering a session does not reveal buffered internal tail events.
+- Generated/local-only paths such as `%SystemDrive%`, Python caches, local memory files, IDE workspace state, and temp screenshots are blocked from `write_file` and `apply_patch`.
+- Cleanup-oriented goals get a narrow `cleanup_noise` tool policy instead of the root `*` tool set.
+
+Follow-up corrections still needed:
+
+- Plan/swarm creation should emit structured `task_update/team_update` and subtask cards rather than raw plan JSON.
+- Thinking must be segmented by turn phase: before tool use, after tool result, and before final text, never as duplicated markdown/source blocks.
+- Child-agent names should be semantic and user-readable; internal task ids should stay in metadata.
+- Completion evidence should be rendered as compact counts/preview rows in panel traces, not JSON blobs.
+- Provider transient failures should collapse into one retry/error status instead of repeated memory/goal/task failure rows.

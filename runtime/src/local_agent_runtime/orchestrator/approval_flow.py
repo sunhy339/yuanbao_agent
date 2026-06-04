@@ -165,10 +165,6 @@ class ApprovalFlowMixin:
         if comment:
             approval = {**approval, "comment": comment}
         task = self._store.get_task({"taskId": approval["taskId"]})["task"]
-        if approval.get("kind") == "worktree_merge":
-            return self._submit_worktree_merge_approval(approval=approval, task=task)
-        if approval.get("kind") == "completion_review":
-            return self._submit_completion_review_approval(approval=approval, task=task)
         if task["status"] in {"cancelled", "completed", "failed"}:
             self._publish(
                 session_id=task["sessionId"],
@@ -183,7 +179,7 @@ class ApprovalFlowMixin:
                     },
                 ),
             )
-            return {"approval": approval}
+            return {"approval": approval, "task": task, "ignored": True}
         if task["status"] == "paused":
             self._publish(
                 session_id=task["sessionId"],
@@ -198,7 +194,11 @@ class ApprovalFlowMixin:
                     },
                 ),
             )
-            return {"approval": approval}
+            return {"approval": approval, "task": task, "deferred": True}
+        if approval.get("kind") == "worktree_merge":
+            return self._submit_worktree_merge_approval(approval=approval, task=task)
+        if approval.get("kind") == "completion_review":
+            return self._submit_completion_review_approval(approval=approval, task=task)
         if approval.get("kind") == "advisor_tool" and self._is_tool_recovery_approval(approval):
             self._publish(
                 session_id=task["sessionId"],

@@ -61,6 +61,29 @@ describe("runtimeItemBuilder", () => {
     expect(items[0]?.code).toContain("snake_game/game.py");
   });
 
+  it("does not surface internal completion review approvals as runtime cards", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-review",
+          title: "completion review",
+          status: "pending",
+          kind: "completion_review",
+          parametersPreview: JSON.stringify({ advisorRequestedEvidence: [{ summary: "internal" }] }),
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items).toEqual([]);
+  });
+
   it("surfaces approval changed paths and diff preview fields", () => {
     const diff = [
       "diff --git a/src/app.ts b/src/app.ts",

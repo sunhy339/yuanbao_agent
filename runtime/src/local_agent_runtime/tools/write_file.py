@@ -43,6 +43,9 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             raise ValueError("taskId is required")
         approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip() or None
         relative_path = to_relative_path(workspace_root, file_path)
+        ensure_write_path_allowed = getattr(policy_guard, "ensure_write_path_allowed", None)
+        if callable(ensure_write_path_allowed):
+            ensure_write_path_allowed(relative_path, operation="write_file")
         reasons = WriteScopeEnforcer(store).check_patch_in_scope(task_id, relative_path)
         if reasons:
             raise ValueError("Write scope violation: " + "; ".join(reasons))

@@ -1446,6 +1446,15 @@ class PublishingMixin:
             request = payload.get("request")
             request_id = payload.get("approvalId")
             tool_name = payload.get("kind") or "approval"
+            if tool_name == "completion_review":
+                self._publish_chat_status(
+                    session_id=session_id,
+                    task=task,
+                    state="idle",
+                    payload=payload,
+                    visibility="panel",
+                )
+                return
             if tool_name == "computer_use":
                 self._publish_chat_compat_event(
                     session_id=session_id,
@@ -1504,6 +1513,15 @@ class PublishingMixin:
                 tool_name = payload.get("kind") or (
                     approval_request.get("kind") if isinstance(approval_request, dict) else None
                 )
+                if tool_name == "completion_review":
+                    self._publish_chat_status(
+                        session_id=session_id,
+                        task=task,
+                        state="idle",
+                        payload=payload,
+                        visibility="panel",
+                    )
+                    return
                 has_resolved_details = bool(
                     tool_name
                     or request

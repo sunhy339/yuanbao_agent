@@ -5770,6 +5770,94 @@ def test_react_loop_defaults_low_risk_ask_user_question_tool(tmp_path: Any) -> N
     assert "Status list" in payload["answer"]
 
 
+def test_react_loop_defaults_low_risk_cleanup_question_tool(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "name": "ask_user_question",
+                        "arguments": {
+                            "question": "Detected generated placeholder %SystemDrive%/. Should I delete it?",
+                            "options": [
+                                {
+                                    "label": "Delete",
+                                    "value": "delete",
+                                    "description": "Remove only the generated placeholder.",
+                                    "recommended": True,
+                                },
+                                {
+                                    "label": "Keep",
+                                    "value": "keep",
+                                    "description": "Leave it untouched.",
+                                },
+                            ],
+                            "summary": "Confirm generated/local cleanup.",
+                            "reason": "cleanup_generated_local_noise",
+                        },
+                    }
+                ],
+            },
+            {"final": "Removed the generated placeholder only."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "优化一下，systemdrive看看需要不需要，不需要删掉"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert not any(event["type"] == "ask_user_question" for event in runtime.events)
+    tool_messages = [
+        message
+        for message in provider.calls[1]["context"]["messages"]
+        if message.get("role") == "tool" and message.get("name") == "ask_user_question"
+    ]
+    assert len(tool_messages) == 1
+    payload = json.loads(tool_messages[0]["content"])
+    assert payload["defaulted"] is True
+    assert payload["status"] == "answered"
+    assert "cleanup intent" in payload["answer"]
+
+
+def test_cancelled_completion_review_approval_is_ignored(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="cleanup generated path",
+        plan=[],
+        status="cancelled",
+    )
+    approval = runtime.store.create_approval(
+        task_id=task["id"],
+        kind="completion_review",
+        request={"summary": "Internal completion review", "structuredResult": {"status": "needs_more_work"}},
+    )
+
+    result = _call_result(
+        _rpc(runtime, "approval.submit", {"approvalId": approval["id"], "decision": "approved"}),
+        "approval",
+    )
+
+    stored_task = runtime.store.get_task({"taskId": task["id"]})["task"]
+    assert stored_task["status"] == "cancelled"
+    assert result["decision"] == "approved"
+    resolved = [event for event in runtime.events if event["type"] == "approval.resolved"]
+    assert resolved[-1]["payload"]["ignored"] is True
+    assert not any(event["type"] == "task.runtime_work_waiting" for event in runtime.events)
+    assert not any(event["type"] == "task.failed" for event in runtime.events)
+
+
 def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [

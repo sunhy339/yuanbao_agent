@@ -648,10 +648,13 @@ class ReactRunnerMixin:
                     question=assistant_text,
                     reason=turn_result.why_complete,
                     policy_needs=turn_result.policy_needs,
+                    goal=goal,
+                    context=context,
                 ):
                     default_answer = self._default_answer_for_low_risk_question(
                         question=assistant_text,
                         policy_needs=turn_result.policy_needs,
+                        goal=goal,
                     )
                     self._publish(
                         session_id=session_id,
@@ -1790,10 +1793,13 @@ class ReactRunnerMixin:
             question=primary_question,
             reason=result.get("reason"),
             policy_needs={"questions": questions, "options": options},
+            goal=goal,
+            context=context,
         ):
             default_answer = self._default_answer_for_low_risk_question(
                 question=primary_question,
                 policy_needs={"questions": questions, "options": options},
+                goal=goal,
             )
             answered_payload = {
                 "status": "answered",
@@ -1898,8 +1904,13 @@ class ReactRunnerMixin:
         question: Any,
         reason: Any,
         policy_needs: Any,
+        goal: Any = None,
+        context: dict[str, Any] | None = None,
     ) -> bool:
         reason_text = str(reason or "").strip().casefold()
+        text = self._ask_user_question_text(question=question, reason=reason, policy_needs=policy_needs)
+        if self._is_low_risk_cleanup_question(text=text, goal=goal, context=context):
+            return False
         required_reason_markers = (
             "missing_required",
             "required_information",
@@ -1917,26 +1928,6 @@ class ReactRunnerMixin:
         )
         if any(marker in reason_text for marker in required_reason_markers):
             return True
-        text_parts = [str(question or "")]
-        if isinstance(policy_needs, dict):
-            for key in ("question", "summary", "reason"):
-                if policy_needs.get(key):
-                    text_parts.append(str(policy_needs.get(key)))
-            options = policy_needs.get("options")
-            if not isinstance(options, list):
-                questions = policy_needs.get("questions")
-                if isinstance(questions, list):
-                    options = []
-                    for item in questions:
-                        if isinstance(item, dict) and isinstance(item.get("options"), list):
-                            options.extend(item["options"])
-            if isinstance(options, list):
-                for option in options:
-                    if isinstance(option, dict):
-                        text_parts.extend(str(option.get(key) or "") for key in ("label", "value", "description"))
-                    else:
-                        text_parts.append(str(option))
-        text = " ".join(text_parts).casefold()
         low_risk_preference_markers = (
             "style",
             "format",
@@ -1960,7 +1951,103 @@ class ReactRunnerMixin:
             return False
         return True
 
-    def _default_answer_for_low_risk_question(self, *, question: Any, policy_needs: Any) -> str:
+    def _ask_user_question_text(self, *, question: Any, reason: Any, policy_needs: Any) -> str:
+        text_parts = [str(question or "")]
+        if reason:
+            text_parts.append(str(reason))
+        if isinstance(policy_needs, dict):
+            for key in ("question", "summary", "reason"):
+                if policy_needs.get(key):
+                    text_parts.append(str(policy_needs.get(key)))
+            options = policy_needs.get("options")
+            if not isinstance(options, list):
+                questions = policy_needs.get("questions")
+                if isinstance(questions, list):
+                    options = []
+                    for item in questions:
+                        if isinstance(item, dict) and isinstance(item.get("options"), list):
+                            options.extend(item["options"])
+            if isinstance(options, list):
+                for option in options:
+                    if isinstance(option, dict):
+                        text_parts.extend(str(option.get(key) or "") for key in ("label", "value", "description"))
+                    else:
+                        text_parts.append(str(option))
+        return " ".join(text_parts).casefold()
+
+    def _is_low_risk_cleanup_question(
+        self,
+        *,
+        text: str,
+        goal: Any,
+        context: dict[str, Any] | None = None,
+    ) -> bool:
+        combined_goal = " ".join(
+            str(part or "")
+            for part in (
+                goal,
+                (context or {}).get("goal") if isinstance(context, dict) else "",
+                (context or {}).get("userGoal") if isinstance(context, dict) else "",
+                (context or {}).get("content") if isinstance(context, dict) else "",
+            )
+        ).casefold()
+        cleanup_goal_markers = (
+            "delete",
+            "remove",
+            "cleanup",
+            "clean up",
+            "\u5220\u9664",
+            "\u5220\u6389",
+            "\u79fb\u9664",
+            "\u6e05\u7406",
+            "\u4e0d\u9700\u8981",
+            "\u4e0d\u8981",
+        )
+        generated_path_markers = (
+            "%systemdrive%",
+            "__pycache__",
+            ".pyc",
+            ".pytest_cache",
+            ".idea/workspace.xml",
+            "memory.md",
+            "memory.local.md",
+            "yuanbao.md",
+            "tmp_",
+            "generated",
+            "cache",
+            "local-only",
+            "\u672a\u8ddf\u8e2a",
+            "\u5360\u4f4d",
+            "\u7f13\u5b58",
+            "\u751f\u6210",
+            "\u672c\u5730",
+        )
+        cleanup_question_markers = (
+            "delete",
+            "remove",
+            "cleanup",
+            "clean up",
+            "untracked",
+            "\u5220\u9664",
+            "\u5220\u6389",
+            "\u79fb\u9664",
+            "\u6e05\u7406",
+            "\u5f02\u5e38",
+            "\u672a\u8ddf\u8e2a",
+        )
+        return (
+            any(marker in combined_goal for marker in cleanup_goal_markers)
+            and any(marker in text for marker in generated_path_markers)
+            and any(marker in text for marker in cleanup_question_markers)
+        )
+
+    def _default_answer_for_low_risk_question(self, *, question: Any, policy_needs: Any, goal: Any = None) -> str:
+        text = self._ask_user_question_text(question=question, reason=None, policy_needs=policy_needs)
+        if self._is_low_risk_cleanup_question(text=text, goal=goal, context=None):
+            return (
+                "Defaulting to the user's cleanup intent: remove only generated/local noise paths; "
+                "keep source, memory, and IDE state files unchanged."
+            )
         options: list[Any] = []
         if isinstance(policy_needs, dict):
             raw_options = policy_needs.get("options")

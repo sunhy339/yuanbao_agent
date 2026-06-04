@@ -155,7 +155,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     if (!event.taskId || !cancelledTaskIdsRef.current.has(event.taskId)) {
       return false;
     }
-    if (event.type.startsWith("task.") || event.type === "session.updated" || event.type === "approval.resolved") {
+    if (event.type.startsWith("task.") || event.type === "session.updated") {
       return false;
     }
     if (event.type === "command.cancelled") {
@@ -177,11 +177,16 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
   }
 
   const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
+  const INTERNAL_APPROVAL_KINDS = new Set(["completion_review"]);
 
   function isControlFlowToolPayload(payload: unknown): boolean {
     if (!payload || typeof payload !== "object") return false;
     const toolName = String((payload as { toolName?: unknown }).toolName ?? "").toLowerCase();
     return CONTROL_FLOW_TOOL_NAMES.has(toolName);
+  }
+
+  function isInternalApprovalKind(value: unknown): boolean {
+    return typeof value === "string" && INTERNAL_APPROVAL_KINDS.has(value);
   }
 
   function isApprovalRequiredToolResultPayload(payload: unknown): boolean {
@@ -1039,6 +1044,9 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (!payload.requestId) {
             return;
           }
+          if (isInternalApprovalKind(payload.toolName)) {
+            return;
+          }
           if (payload.resolved) {
             setChatMessages((current) =>
               resolvePermissionRequestMessage(current, {
@@ -1153,6 +1161,9 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             diffText?: unknown;
           };
           if (typeof payload.approvalId === "string" && payload.approvalId.trim()) {
+            if (isInternalApprovalKind(payload.kind)) {
+              return;
+            }
             const approvalId = payload.approvalId.trim();
             setChatMessages((current) =>
               resolveSpecialApprovalMessage(

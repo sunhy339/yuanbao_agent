@@ -135,11 +135,24 @@ function isChatCompatPayload(payload: unknown): boolean {
 }
 
 const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
+const INTERNAL_APPROVAL_KINDS = new Set(["completion_review"]);
 
 function isControlFlowToolPayload(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   const toolName = String((payload as { toolName?: unknown }).toolName ?? "").toLowerCase();
   return CONTROL_FLOW_TOOL_NAMES.has(toolName);
+}
+
+function isInternalApprovalKind(value: unknown): boolean {
+  return typeof value === "string" && INTERNAL_APPROVAL_KINDS.has(value);
+}
+
+function shouldSuppressCancelledTaskReplayEvent(event: AgentEventEnvelope, cancelledTaskIds: ReadonlySet<string>): boolean {
+  if (!event.taskId || !cancelledTaskIds.has(event.taskId)) return false;
+  if (event.type === "task.cancelled") return false;
+  if (event.type === "command.cancelled") return false;
+  if (event.type === "session.updated") return false;
+  return true;
 }
 
 function isApprovalRequiredToolResultPayload(payload: unknown): boolean {
@@ -653,6 +666,7 @@ function replayTraceEvent(
   if (event.type === "permission_request") {
     const payload = event.payload as PermissionRequestPayload;
     if (!payload.requestId) return current;
+    if (isInternalApprovalKind(payload.toolName)) return current;
     if (payload.resolved) {
       return resolvePermissionRequestMessage(current, {
         requestId: payload.requestId,
@@ -740,6 +754,7 @@ function replayTraceEvent(
       diffText?: unknown;
     };
     if (typeof payload.approvalId !== "string" || !payload.approvalId.trim()) return current;
+    if (isInternalApprovalKind(payload.kind)) return current;
     const approvalId = payload.approvalId.trim();
     return resolveSpecialApprovalMessage(
       resolvePermissionRequestMessage(current, {
@@ -795,7 +810,9 @@ export function replayTraceEventsToChatMessages(
 ): ChatMessageView[] {
   if (!traces.length) return current;
   const childTaskIds = options.childTaskIds ?? EMPTY_CHILD_TASK_IDS;
-  return traces
+  let messages = current;
+  const cancelledTaskIds = new Set<string>();
+  for (const trace of traces
     .slice()
     .sort((left, right) => {
       const seqDiff = (left.sequence ?? 0) - (right.sequence ?? 0);
@@ -803,6 +820,17 @@ export function replayTraceEventsToChatMessages(
       const timeDiff = (left.createdAt ?? 0) - (right.createdAt ?? 0);
       if (timeDiff !== 0) return timeDiff;
       return String(left.id).localeCompare(String(right.id));
-    })
-    .reduce((messages, trace) => replayTraceEvent(messages, envelopeFromTrace(trace), childTaskIds), current);
+    })) {
+    const event = envelopeFromTrace(trace);
+    if (shouldSuppressCancelledTaskReplayEvent(event, cancelledTaskIds)) {
+      continue;
+    }
+    messages = replayTraceEvent(messages, event, childTaskIds);
+    if (event.taskId && event.type === "task.cancelled") {
+      cancelledTaskIds.add(event.taskId);
+    } else if (event.taskId && (event.type === "task.started" || event.type === "task.resumed")) {
+      cancelledTaskIds.delete(event.taskId);
+    }
+  }
+  return messages;
 }

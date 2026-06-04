@@ -1960,7 +1960,7 @@ class ProviderTurnMixin:
         if final_answer is not None:
             return {"status": "completed", "summary": final_answer}
 
-        if allow_fallback and self._has_deterministic_fallback():
+        if allow_fallback:
             return {"status": "fallback"}
 
         raise RuntimeError("Provider returned no final answer or tool calls.")
@@ -2008,7 +2008,7 @@ class ProviderTurnMixin:
                 final_answer = self._final_answer(response, allow_plain_message=allow_plain_message_final)
                 if final_answer is not None:
                     decision = TurnDecision.FINAL_ANSWER
-                elif allow_fallback and self._has_deterministic_fallback():
+                elif allow_fallback:
                     decision = TurnDecision.FAILED
                 else:
                     decision = TurnDecision.FAILED
@@ -2054,6 +2054,9 @@ class ProviderTurnMixin:
     def _has_deterministic_fallback(self) -> bool:
         if not hasattr(self._provider, "choose_tool_sequence") or not hasattr(self._provider, "summarize_findings"):
             return False
+        return self._provider_config_deterministic_fallback_enabled()
+
+    def _provider_config_deterministic_fallback_enabled(self) -> bool:
         config = {}
         store = getattr(self, "_store", None)
         if store is not None:
@@ -2065,6 +2068,30 @@ class ProviderTurnMixin:
         if not isinstance(provider_config, dict):
             provider_config = {}
         deterministic_fallback = provider_config.get("deterministicFallback")
-        if deterministic_fallback is not None:
-            return bool(deterministic_fallback)
-        return str(provider_config.get("mode") or "").strip().lower() == "mock"
+        if isinstance(deterministic_fallback, bool):
+            return deterministic_fallback
+        if isinstance(deterministic_fallback, str):
+            return deterministic_fallback.strip().lower() in {"true", "1", "yes", "on"}
+        return False
+
+    def _should_use_deterministic_fallback(
+        self,
+        *,
+        goal: str,
+        context: dict[str, Any] | None = None,
+    ) -> bool:
+        if not hasattr(self._provider, "choose_tool_sequence") or not hasattr(self._provider, "summarize_findings"):
+            return False
+        if self._provider_config_deterministic_fallback_enabled():
+            return True
+        route_goal = getattr(self._provider, "_route_goal", None)
+        if not callable(route_goal):
+            return False
+        try:
+            route = route_goal(goal)
+        except Exception:  # noqa: BLE001
+            return False
+        if not isinstance(route, dict):
+            return False
+        kind = str(route.get("kind") or "").strip()
+        return kind in {"run_command", "apply_patch", "git_status", "git_diff"}

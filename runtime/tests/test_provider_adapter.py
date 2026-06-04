@@ -46,13 +46,37 @@ def test_openai_compatible_without_api_key_raises_readable_error(monkeypatch: py
         adapter.generate("inspect workspace", _context())
 
 
-def test_mock_provider_still_uses_deterministic_fallback() -> None:
+def test_mock_provider_summarizes_without_workspace_probe_by_default() -> None:
     adapter = ProviderAdapter(config={"provider": {"mode": "mock", "model": "mock-model"}})
 
     response = adapter.generate("inspect workspace", _context())
 
-    assert response["message"].startswith("Completed an initial pass over workspace demo.")
+    assert response["message"] == "Completed the requested tool action."
+    assert response["final"] == "Completed the requested tool action."
+    assert response["finish_reason"] == "mock_final"
     assert response["prompt"] == "inspect workspace"
+
+
+def test_mock_provider_leaves_opt_in_deterministic_fallback_to_orchestrator() -> None:
+    adapter = ProviderAdapter(
+        config={"provider": {"mode": "mock", "model": "mock-model", "deterministicFallback": True}}
+    )
+
+    response = adapter.generate("inspect workspace", _context())
+
+    assert response["message"] == "Completed the requested tool action."
+    assert "final" not in response
+    assert "final_answer" not in response
+
+
+def test_mock_provider_string_false_does_not_enable_deterministic_fallback() -> None:
+    adapter = ProviderAdapter(
+        config={"provider": {"mode": "mock", "model": "mock-model", "deterministicFallback": "false"}}
+    )
+
+    response = adapter.generate("inspect workspace", _context())
+
+    assert response["final"] == "Completed the requested tool action."
 
 
 @pytest.mark.parametrize(
@@ -70,6 +94,16 @@ def test_deterministic_fallback_does_not_probe_workspace_for_explicit_tools(goal
     sequence = adapter.choose_tool_sequence(goal, _context())
 
     assert [item["name"] for item in sequence] == [tool_name]
+
+
+def test_deterministic_fallback_can_be_enabled_for_workspace_probe() -> None:
+    adapter = ProviderAdapter(
+        config={"provider": {"mode": "mock", "model": "mock-model", "deterministicFallback": True}}
+    )
+
+    sequence = adapter.choose_tool_sequence("inspect workspace", _context())
+
+    assert [item["name"] for item in sequence] == ["list_dir"]
 
 
 def test_openai_compatible_request_payload(monkeypatch: pytest.MonkeyPatch) -> None:

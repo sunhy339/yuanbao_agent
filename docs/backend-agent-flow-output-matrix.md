@@ -99,6 +99,7 @@ Immediate corrections now in scope:
 - Trace replay suppresses later chat events for a cancelled task so re-entering a session does not reveal buffered internal tail events.
 - Generated/local-only paths such as `%SystemDrive%`, Python caches, local memory files, IDE workspace state, and temp screenshots are blocked from `write_file` and `apply_patch`.
 - Cleanup-oriented goals get a narrow `cleanup_noise` tool policy instead of the root `*` tool set.
+- Default mock/provider fallback no longer creates a fixed workspace probe. Ordinary natural-language prompts must finish as a provider turn unless the model emits tool calls; explicit `run command:`, `apply patch:`, `show git status`, `show git diff`, or opt-in `provider.deterministicFallback` may still enter the deterministic tool loop for diagnostics/tests.
 
 Follow-up corrections still needed:
 

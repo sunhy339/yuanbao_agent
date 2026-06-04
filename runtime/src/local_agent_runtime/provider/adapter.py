@@ -168,15 +168,22 @@ class ProviderAdapter:
 
             return response
 
-        return {
-            "message": self.summarize_findings(
-                goal=prompt,
-                context=context,
-                tool_results=[],
-            ),
+        message = self.summarize_findings(
+            goal=prompt,
+            context=context,
+            tool_results=[],
+        )
+        response: dict[str, Any] = {
+            "message": message,
             "prompt": prompt,
             "context": context,
         }
+        route = self._route_goal(prompt)
+        if route.get("kind") == "search" and not self._deterministic_fallback_enabled(context):
+            response["final"] = message
+            response["final_answer"] = message
+            response["finish_reason"] = "mock_final"
+        return response
 
     def chat(
         self,
@@ -570,6 +577,14 @@ class ProviderAdapter:
         provider_config = self._merged_provider_config(context)
         stream_flag = self._provider_stream_flag(provider_config)
         return stream_flag is True
+
+    def _deterministic_fallback_enabled(self, context: dict[str, Any] | None) -> bool:
+        value = self._merged_provider_config(context).get("deterministicFallback")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return False
 
     @staticmethod
     def _settings_for_request(
@@ -982,7 +997,7 @@ class ProviderAdapter:
 
     def _describe_directory(self, result: dict[str, Any] | None) -> str:
         if not result:
-            return "Directory structure was not collected."
+            return ""
         items = result.get("result", {}).get("items", [])
         if not items:
             return "The top-level directory appears empty or has no visible entries."

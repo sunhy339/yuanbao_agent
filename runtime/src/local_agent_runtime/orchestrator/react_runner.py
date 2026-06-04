@@ -73,7 +73,7 @@ class ReactRunnerMixin:
         budget: WorkerBudget | None = None,
     ) -> dict[str, Any]:
         if not hasattr(self._provider, "generate"):
-            if self._has_deterministic_fallback():
+            if self._should_use_deterministic_fallback(goal=goal, context=context):
                 return {"status": "fallback"}
             raise RuntimeError("Provider does not implement generate().")
 
@@ -535,15 +535,19 @@ class ReactRunnerMixin:
             task = self._store.get_task({"taskId": task["id"]})["task"]
             if task["status"] == "cancelled":
                 return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
+            deterministic_fallback_allowed = self._should_use_deterministic_fallback(
+                goal=goal,
+                context=context,
+            )
             parsed = self._parse_provider_response(
                 response,
-                allow_fallback=not react_started and steps == 0,
+                allow_fallback=deterministic_fallback_allowed and not react_started and steps == 0,
                 allow_plain_message_final=react_started,
             )
             # --- Structured turn result for decision tracing ---
             turn_result = self._parse_turn_result(
                 response,
-                allow_fallback=not react_started and steps == 0,
+                allow_fallback=deterministic_fallback_allowed and not react_started and steps == 0,
                 allow_plain_message_final=react_started,
             )
             # --- ProviderTurn: mark completed with turn decision ---

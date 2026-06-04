@@ -24,7 +24,10 @@ def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
     return response["result"][key]
 
 
-def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Path) -> None:
+def test_default_mock_message_flow_does_not_probe_workspace_without_model_tool_call(
+    runtime_harness: Any,
+    tmp_path: Path,
+) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     (workspace_root / "alpha.txt").write_text("needle in a haystack\n", encoding="utf-8")
@@ -58,13 +61,9 @@ def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Pat
     assert "task.routing.decided" in event_types
     assert "assistant.token" in event_types
     assert event_types[-1] == "task.completed"
-    assert event_types.count("tool.started") == 3
-    assert event_types.count("tool.completed") == 3
-    assert [event["payload"]["toolName"] for event in runtime_harness.events if event["type"] == "tool.started"] == [
-        "list_dir",
-        "search_files",
-        "read_file",
-    ]
+    assert event_types.count("tool.started") == 0
+    assert event_types.count("tool.completed") == 0
+    assert task["resultSummary"] == "Completed the requested tool action."
 
     task_from_store = _call_result(
         runtime_harness.call("task.get", {"taskId": task["id"]}),
@@ -73,6 +72,51 @@ def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Pat
     assert task_from_store["status"] == "completed"
     assert task_from_store["id"] == task["id"]
     assert task_from_store["plan"] == []
+
+
+def test_opt_in_deterministic_fallback_can_probe_workspace(
+    runtime_harness: Any,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "alpha.txt").write_text("needle in a haystack\n", encoding="utf-8")
+    (workspace_root / "notes.md").write_text("plain notes\n", encoding="utf-8")
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Search the workspace"},
+        ),
+        "session",
+    )
+    runtime_harness.call(
+        "config.update",
+        {"config": {"provider": {"deterministicFallback": True}}},
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "needle"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert [
+        event["payload"]["toolName"]
+        for event in runtime_harness.events
+        if event["type"] == "tool.started"
+    ] == [
+        "list_dir",
+        "search_files",
+        "read_file",
+    ]
 
 
 def test_message_list_returns_persisted_conversation(runtime_harness: Any, tmp_path: Path) -> None:
@@ -810,6 +854,9 @@ def test_search_config_is_applied(runtime_harness: Any, monkeypatch: Any, tmp_pa
         "config.update",
         {
             "config": {
+                "provider": {
+                    "deterministicFallback": True,
+                },
                 "search": {
                     "glob": ["**/*.py"],
                     "ignore": ["ignored.py"],

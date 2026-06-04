@@ -641,7 +641,7 @@
 
 ### 8.1 普通任务
 
-- [x] 发送普通消息。`test_workspace_session_message_tool_flow`。
+- [x] 发送普通消息。`test_default_mock_message_flow_does_not_probe_workspace_without_model_tool_call`。
 - [x] user message 出现。`test_message_list_returns_persisted_conversation`。
 - [x] assistant streaming 出现。`appendAssistantPlaceholder` 测试。
 - [x] assistant completed。`test_provider_success_updates_same_assistant_message`。

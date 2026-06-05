@@ -1466,6 +1466,66 @@ function readMetadataRecordList(message: SessionWorkspaceMessage, keys: string[]
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
 }
 
+function recordFromValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readMetadataRecord(message: SessionWorkspaceMessage, keys: string[]) {
+  for (const key of keys) {
+    const record = recordFromValue(message.metadata?.[key]);
+    if (record) return record;
+  }
+  return null;
+}
+
+function readMetadataPlanRecord(message: SessionWorkspaceMessage) {
+  const direct = readMetadataRecord(message, ["plan", "splitPlan", "executionPlan"]);
+  if (direct) return direct;
+  const nestedPayload = readMetadataRecord(message, ["payload"]);
+  if (nestedPayload) {
+    const nested = recordFromValue(nestedPayload.plan) ?? recordFromValue(nestedPayload.splitPlan) ?? recordFromValue(nestedPayload.executionPlan);
+    if (nested) return nested;
+  }
+  return message.metadata && typeof message.metadata === "object"
+    ? message.metadata as Record<string, unknown>
+    : null;
+}
+
+function readPlanLikeSubtasks(message: SessionWorkspaceMessage) {
+  const metadata = message.metadata ?? {};
+  const plan = readMetadataPlanRecord(message);
+  const sources = [
+    Array.isArray(metadata.subtasks) ? metadata.subtasks : null,
+    Array.isArray(metadata.tasks) ? metadata.tasks : null,
+    Array.isArray(metadata.plan) ? metadata.plan : null,
+    Array.isArray(metadata.splitPlan) ? metadata.splitPlan : null,
+    Array.isArray(metadata.executionPlan) ? metadata.executionPlan : null,
+    plan && Array.isArray(plan.subtasks) ? plan.subtasks : null,
+    plan && Array.isArray(plan.tasks) ? plan.tasks : null,
+  ].filter((items): items is unknown[] => Array.isArray(items));
+  for (const source of sources) {
+    if (source.length) return source;
+  }
+  return [];
+}
+
+function readAgentGroupTasks(message: SessionWorkspaceMessage) {
+  const agentTasks = readMetadataRecordList(message, ["agentTasks", "tasks", "subtasks"]);
+  if (agentTasks.length) return agentTasks;
+  const members = readMetadataRecordList(message, ["members"]);
+  const tasks: Record<string, unknown>[] = members.map((member, index) => ({
+    id: readString(member.agentId) || readString(member.id) || `agent-${index}`,
+    title: readString(member.currentTask) || readString(member.task) || readString(member.title) || readString(member.role) || `Agent ${index + 1}`,
+    status: readString(member.status) || "recorded",
+    agentType: readString(member.role) || readString(member.agentType),
+    workerName: readString(member.name) || readString(member.agentId),
+    summary: readString(member.summary) || readString(member.message),
+  }));
+  return tasks;
+}
+
 const SPECIAL_EVENT_METADATA_BLOCKLIST = new Set([
   "_chatCompat",
   "activeStep",
@@ -1476,6 +1536,10 @@ const SPECIAL_EVENT_METADATA_BLOCKLIST = new Set([
   "fingerprint",
   "messages",
   "options",
+  "agentTasks",
+  "agentResults",
+  "members",
+  "plan",
   "payload",
   "questions",
   "requestId",
@@ -1484,6 +1548,8 @@ const SPECIAL_EVENT_METADATA_BLOCKLIST = new Set([
   "taskId",
   "toolCallId",
   "tool_results",
+  "subtasks",
+  "tasks",
   "workspaceRoot",
 ]);
 
@@ -1560,7 +1626,7 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
   message: SessionWorkspaceMessage;
 }) {
   const [expanded, setExpanded] = useState(agentTaskTone(message.status) === "running");
-  const tasks = readMetadataRecordList(message, ["agentTasks"]);
+  const tasks = readAgentGroupTasks(message);
   const results = readMetadataRecordList(message, ["agentResults"]);
   const resultSummariesByTask = useMemo(() => mergeAgentResultSummariesByTask(results), [results]);
   const title = readMetadataString(message, ["title"]) || `派遣了 ${tasks.length} 个代理`;
@@ -1599,6 +1665,97 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
               </article>
             );
           })}
+        </div>
+      ) : null}
+    </section>
+  );
+});
+
+export const CleanPlanUpdateBlock = memo(function CleanPlanUpdateBlock({
+  message,
+}: {
+  message: SessionWorkspaceMessage;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const plan = readMetadataPlanRecord(message);
+  const rawSubtasks = readPlanLikeSubtasks(message);
+  const subtasks = rawSubtasks
+    .map((entry, index) => {
+      if (typeof entry === "string") {
+        const title = entry.trim();
+        return title ? {
+          id: `sub-${index}`,
+          title,
+          description: "",
+          agentType: "",
+          dependencies: [] as string[],
+          status: "",
+        } : null;
+      }
+      const record = recordFromValue(entry);
+      if (!record) return null;
+      const title =
+        readString(record.title) ||
+        readString(record.subtaskTitle) ||
+        readString(record.name) ||
+        readString(record.summary) ||
+        readString(record.description) ||
+        `子任务 ${index + 1}`;
+      return {
+        id: readString(record.id) || readString(record.subtaskId) || readString(record.taskId) || `sub-${index}`,
+        title,
+        description: readString(record.description) || readString(record.summary),
+        agentType: readString(record.agentType) || readString(record.agent_type) || readString(record.role),
+        dependencies: Array.isArray(record.dependencies) ? record.dependencies.map(readString).filter(Boolean) : [],
+        status: readString(record.status),
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+  const mode =
+    readRecordString(plan, ["orchestrationMode", "mode", "strategy"]) ||
+    readMetadataString(message, ["orchestrationMode", "mode", "strategy"]) ||
+    "plan";
+  const goal = readRecordString(plan, ["goal", "summary"]) || readMetadataString(message, ["goal"]);
+  const count = readRecordNumber(plan, ["subtaskCount", "taskCount"]) ?? subtasks.length;
+  const summary =
+    readMetadataString(message, ["summary", "description", "message"]) ||
+    (count ? `已拆分 ${count} 个子任务，准备派发 agent。` : cleanInlineDisplayText(message.content));
+
+  if (!subtasks.length && !summary) {
+    return <CleanSpecialEventBlock message={message} transcriptKind="plan_update" />;
+  }
+
+  return (
+    <section className="hc-agent-group hc-plan-event" data-status={agentTaskTone(message.status)}>
+      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <ListChecks size={15} />
+        <strong>{readMetadataString(message, ["title"]) || "计划更新"}</strong>
+        {summary ? <span>{compactText(summary, 180)}</span> : null}
+        <StatusChip status={readMetadataString(message, ["status"]) || message.status || "recorded"} />
+      </button>
+      {expanded ? (
+        <div className="hc-plan-approval">
+          <div className="hc-plan-approval-summary">
+            <span>{mode}</span>
+            <strong>{count ? `已拆分 ${count} 个子任务` : "执行计划"}</strong>
+            {goal ? <small>{compactText(goal, 160)}</small> : null}
+          </div>
+          {subtasks.length ? (
+            <div className="hc-agent-task-list hc-plan-subtask-list">
+              {subtasks.slice(0, 12).map((task, index) => (
+                <article key={`${task.id}:${index}`} data-tone={agentTaskTone(task.status)}>
+                  <Circle size={10} />
+                  <div>
+                    <strong>{task.title}</strong>
+                    <small>{[task.agentType ? readableAgentLabel(task.agentType) : "", displayPlanDependencySummary(task.dependencies)].filter(Boolean).join(" 路 ")}</small>
+                    {task.description ? <p>{compactText(task.description, 180)}</p> : null}
+                  </div>
+                  <em>{task.status ? formatAgentTaskStatus(task.status) : displayPlanTaskHandle(task.id, task.agentType, index)}</em>
+                </article>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>
@@ -2750,7 +2907,10 @@ export function CleanActivityItem({
     message.kind === "failure" ||
     message.status === "failed"
   ) {
-    if ((kind === "background_task" || kind === "agent_task_group") && readMetadataRecordList(message, ["agentTasks"]).length) {
+    if (kind === "plan_update" && readPlanLikeSubtasks(message).length) {
+      return wrap(<CleanPlanUpdateBlock message={message} />);
+    }
+    if ((kind === "background_task" || kind === "agent_task_group") && readAgentGroupTasks(message).length) {
       return wrap(<CleanAgentTaskGroupBlock message={message} />);
     }
     return wrap(<CleanSpecialEventBlock message={message} transcriptKind={transcriptKind} />);

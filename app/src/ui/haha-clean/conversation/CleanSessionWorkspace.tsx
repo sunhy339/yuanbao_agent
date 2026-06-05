@@ -536,6 +536,30 @@ function isLowSignalStreamingPlaceholder(message: SessionWorkspaceMessage) {
   );
 }
 
+function hasNonEmptyPlanList(value: unknown) {
+  return Array.isArray(value) && value.some((item) => {
+    if (item && typeof item === "object") return true;
+    return typeof item === "string" && Boolean(item.trim());
+  });
+}
+
+function hasStructuredPlanUpdatePayload(message: SessionWorkspaceMessage) {
+  const metadata = message.metadata;
+  if (!metadata || typeof metadata !== "object") return false;
+  if (hasNonEmptyPlanList(metadata.subtasks) || hasNonEmptyPlanList(metadata.tasks) || hasNonEmptyPlanList(metadata.plan)) {
+    return true;
+  }
+  for (const key of ["plan", "splitPlan", "executionPlan"]) {
+    const value = metadata[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const record = value as Record<string, unknown>;
+    if (hasNonEmptyPlanList(record.subtasks) || hasNonEmptyPlanList(record.tasks) || hasNonEmptyPlanList(record.steps)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
   if (isLowSignalStreamingPlaceholder(message)) {
     return true;
@@ -582,6 +606,9 @@ function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
   }
 
   if (kind === "plan_update") {
+    if (hasStructuredPlanUpdatePayload(message)) {
+      return false;
+    }
     return !hasTerminalStatus && (!ACTIONABLE_PLAN_RE.test(text) || isLowSignalSpecialText(text));
   }
 

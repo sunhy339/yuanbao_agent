@@ -196,6 +196,74 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-source")).toBe("non_stream_thought_summary");
   });
 
+  it("keeps provider thinking on either side of a live tool boundary", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_thinking_1",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "thinking",
+        ts: 10,
+        visibility: "chat",
+        payload: {
+          text: "Inspect first. ",
+          source: "provider_reasoning_delta",
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_start",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "tool.started",
+        ts: 11,
+        visibility: "chat",
+        payload: {
+          toolCallId: "tool_read",
+          toolName: "read_file",
+          arguments: { path: "snake_game/README.md" },
+          target: "snake_game/README.md",
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_done",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "tool.completed",
+        ts: 12,
+        visibility: "chat",
+        payload: {
+          toolCallId: "tool_read",
+          toolName: "read_file",
+          resultSummary: "read snake_game/README.md",
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_thinking_2",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "thinking",
+        ts: 13,
+        visibility: "chat",
+        payload: {
+          text: "Then summarize.",
+          source: "provider_reasoning_delta",
+        },
+      });
+    });
+
+    const rows = screen.getAllByText(/Inspect first|snake_game\/README\.md|Then summarize/);
+    expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual([
+      "assistant_thinking",
+      "tool_activity",
+      "assistant_thinking",
+    ]);
+    expect(rows[0].textContent).toContain("Inspect first.");
+    expect(rows[2].textContent).toContain("Then summarize.");
+  });
+
   it("renders system notifications as system transcript nodes", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());

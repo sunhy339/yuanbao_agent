@@ -46,6 +46,7 @@ import {
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdatePermissionRequestMessage,
   appendOrUpdateAssistantToolStartMessage,
+  closeAssistantThinkingForToolBoundary,
   completeAssistantToolUseMessage,
   completeChatCompatMessage,
   removeAssistantThinkingMessage,
@@ -462,6 +463,14 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     );
   }
 
+  function closeThinkingForToolBoundary(current: import("../state/chatMessages").ChatMessageView[], event: AgentEventEnvelope) {
+    return closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    });
+  }
+
   useEffect(() => {
     let active = true;
     let dispose: (() => void) | undefined;
@@ -491,7 +500,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const payload = event.payload as ContentStartPayload;
           if (payload.blockType === "tool_use" && payload.toolUseId) {
             setChatMessages((current) =>
-              appendOrUpdateAssistantToolStartMessage(current, {
+              appendOrUpdateAssistantToolStartMessage(closeThinkingForToolBoundary(current, event), {
                 toolUseId: payload.toolUseId!,
                 toolName: payload.toolName,
                 target: payload.target,
@@ -558,7 +567,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 ? payload.toolUseId
                 : `pending_${event.taskId}`;
             setChatMessages((current) =>
-              appendOrUpdateAssistantToolInputDelta(current, {
+              appendOrUpdateAssistantToolInputDelta(closeThinkingForToolBoundary(current, event), {
                 toolUseId,
                 toolName: payload.toolName,
                 target: payload.target,
@@ -587,7 +596,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 ? payload.toolUseId
                 : `pending_${event.taskId}`;
             setChatMessages((current) =>
-              appendOrUpdateAssistantToolOutputDelta(current, {
+              appendOrUpdateAssistantToolOutputDelta(closeThinkingForToolBoundary(current, event), {
                 toolUseId,
                 toolName: payload.toolName,
                 target: payload.target,
@@ -623,7 +632,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             return;
           }
           setChatMessages((current) =>
-            completeAssistantToolUseMessage(current, {
+            completeAssistantToolUseMessage(closeThinkingForToolBoundary(current, event), {
               toolUseId: payload.toolUseId,
               toolName: payload.toolName,
               input: payload.input,
@@ -657,7 +666,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             return;
           }
           setChatMessages((current) =>
-            appendAssistantToolResultMessage(current, {
+            appendAssistantToolResultMessage(closeThinkingForToolBoundary(current, event), {
               toolUseId: payload.toolUseId,
               toolName: payload.toolName,
               parentToolUseId: payload.parentToolUseId,
@@ -695,7 +704,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             return;
           }
           setChatMessages((current) =>
-            appendOrUpdateAssistantToolStartMessage(current, {
+            appendOrUpdateAssistantToolStartMessage(closeThinkingForToolBoundary(current, event), {
               toolUseId: payload.toolCallId,
               toolName: payload.toolName,
               input: payload.arguments,
@@ -743,7 +752,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             recoveryDecision: payload.recoveryDecision,
           };
           setChatMessages((current) =>
-            appendAssistantToolResultMessage(current, {
+            appendAssistantToolResultMessage(closeThinkingForToolBoundary(current, event), {
               toolUseId: payload.toolCallId,
               toolName: payload.toolName,
               parentToolUseId: payload.parentToolUseId,
@@ -792,7 +801,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const stream = payload.outputStream ?? payload.stream ?? (event.type === "tool.progress" ? "activity" : "result_preview");
           setChatMessages((current) =>
-            appendOrUpdateAssistantToolOutputDelta(current, {
+            appendOrUpdateAssistantToolOutputDelta(closeThinkingForToolBoundary(current, event), {
               toolUseId,
               toolName: payload.toolName,
               target: payload.target,
@@ -829,7 +838,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const commandTarget = payload.target ?? payload.command;
           setChatMessages((current) =>
-            appendOrUpdateAssistantToolStartMessage(current, {
+            appendOrUpdateAssistantToolStartMessage(closeThinkingForToolBoundary(current, event), {
               toolUseId: payload.toolUseId!,
               toolName: payload.toolName ?? "run_command",
               target: commandTarget,
@@ -863,7 +872,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             return;
           }
           setChatMessages((current) =>
-            appendOrUpdateAssistantToolOutputDelta(current, {
+            appendOrUpdateAssistantToolOutputDelta(closeThinkingForToolBoundary(current, event), {
               toolUseId: payload.toolUseId!,
               toolName: payload.toolName ?? "run_command",
               target: payload.target,
@@ -908,7 +917,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const commandSummary = isCancelled ? `命令已取消：${exitLabel}` : summary;
           const commandTarget = payload.target ?? payload.command;
           setChatMessages((current) =>
-            appendAssistantToolResultMessage(current, {
+            appendAssistantToolResultMessage(closeThinkingForToolBoundary(current, event), {
               toolUseId: payload.toolUseId!,
               toolName: payload.toolName ?? "run_command",
               target: commandTarget,

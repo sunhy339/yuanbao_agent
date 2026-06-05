@@ -103,8 +103,16 @@ Immediate corrections now in scope:
 
 Follow-up corrections still needed:
 
-- Plan/swarm creation should emit structured `task_update/team_update` and subtask cards rather than raw plan JSON.
-- Thinking must be segmented by turn phase: before tool use, after tool result, and before final text, never as duplicated markdown/source blocks.
+- Plan/swarm creation should keep emitting structured `task_update/team_update` and subtask cards; the clean frontend now preserves structured `plan_update` payloads and renders `plan/tasks/subtasks` as cards instead of raw JSON.
+- Thinking must be segmented by turn phase: before tool use, after tool result, and before final text, never as duplicated markdown/source blocks. Live and trace replay now close transient/provider thinking at tool and command boundaries, including command completion/failure/cancel events.
 - Child-agent names should be semantic and user-readable; internal task ids should stay in metadata.
 - Completion evidence should be rendered as compact counts/preview rows in panel traces, not JSON blobs.
 - Provider transient failures should collapse into one retry/error status instead of repeated memory/goal/task failure rows.
+
+## 2026-06-05 Live/Replay Projection Update
+
+- `message_complete` and `message.completed` are replayed from trace into the same assistant message completion path used by live streaming, so a reopened session no longer loses the final assistant text when only haha-cc-style completion frames were persisted.
+- `thinking` is finalized before visible tool/command rows in both realtime subscription and trace replay. A new provider thinking segment after a tool result stays after that tool instead of merging into the earlier segment.
+- Structured `plan_update` payloads are no longer filtered as low-signal startup noise when they contain `plan`, `tasks`, or `subtasks`. This keeps plan/swarm panels visible during live display and session recovery.
+- Team/member snapshots with haha-cc-style `members` are projected as agent task rows, hiding raw member ids as metadata and avoiding duplicated `currentTask` title/summary text.
+- Added focused contracts for repeated replay idempotency: many thinking/tool/progress cycles can be replayed multiple times, including out-of-order input, without duplicate visible ids or missing final text.

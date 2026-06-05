@@ -16,12 +16,15 @@ import type {
 import {
   appendAssistantProgressMessage,
   appendAssistantToolResultMessage,
+  closeAssistantThinkingForToolBoundary,
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdateAssistantToolInputDelta,
   appendOrUpdateAssistantToolOutputDelta,
   appendOrUpdateAssistantToolStartMessage,
   appendOrUpdatePermissionRequestMessage,
   appendSpecialEventMessage,
+  appendOrUpdateAssistantMessageCompletion,
+  completeChatCompatMessage,
   completeAssistantToolUseMessage,
   removeAssistantThinkingMessage,
   resolveAskUserQuestionMessage,
@@ -266,7 +269,11 @@ function replayTraceEvent(
   if (event.type === "content_start") {
     const payload = event.payload as ContentStartPayload;
     if (payload.blockType === "tool_use" && payload.toolUseId) {
-      return appendOrUpdateAssistantToolStartMessage(current, {
+      return appendOrUpdateAssistantToolStartMessage(closeAssistantThinkingForToolBoundary(current, {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        now: event.ts,
+      }), {
         toolUseId: payload.toolUseId,
         toolName: payload.toolName,
         target: payload.target,
@@ -311,7 +318,11 @@ function replayTraceEvent(
       if (hasToolReplayMarker(next, toolUseId, marker)) {
         return next;
       }
-      next = appendOrUpdateAssistantToolInputDelta(next, {
+      next = appendOrUpdateAssistantToolInputDelta(closeAssistantThinkingForToolBoundary(next, {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        now: event.ts,
+      }), {
         toolUseId,
         toolName: payload.toolName,
         target: payload.target,
@@ -340,7 +351,11 @@ function replayTraceEvent(
       if (hasToolReplayMarker(next, toolUseId, marker)) {
         return next;
       }
-      next = appendOrUpdateAssistantToolOutputDelta(next, {
+      next = appendOrUpdateAssistantToolOutputDelta(closeAssistantThinkingForToolBoundary(next, {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        now: event.ts,
+      }), {
         toolUseId,
         toolName: payload.toolName,
         target: payload.target,
@@ -370,7 +385,11 @@ function replayTraceEvent(
   if (event.type === "tool_use_complete") {
     const payload = event.payload as ToolUseCompletePayload;
     if (!payload.toolUseId || !payload.toolName) return current;
-    return completeAssistantToolUseMessage(current, {
+    return completeAssistantToolUseMessage(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId: payload.toolUseId,
       toolName: payload.toolName,
       input: payload.input,
@@ -396,7 +415,11 @@ function replayTraceEvent(
   if (event.type === "tool_result") {
     const payload = event.payload as ToolResultPayload;
     if (!payload.toolUseId) return current;
-    return appendAssistantToolResultMessage(current, {
+    return appendAssistantToolResultMessage(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId: payload.toolUseId,
       toolName: payload.toolName,
       parentToolUseId: payload.parentToolUseId,
@@ -428,7 +451,11 @@ function replayTraceEvent(
     if (isControlFlowToolPayload(event.payload)) return current;
     const payload = event.payload as ToolLifecyclePayload;
     if (!payload.toolCallId) return current;
-    return appendOrUpdateAssistantToolStartMessage(current, {
+    return appendOrUpdateAssistantToolStartMessage(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId: payload.toolCallId,
       toolName: payload.toolName,
       input: payload.arguments,
@@ -458,7 +485,11 @@ function replayTraceEvent(
     const payload = event.payload as ToolLifecyclePayload;
     if (!payload.toolCallId) return current;
     const isError = event.type !== "tool.completed";
-    return appendAssistantToolResultMessage(current, {
+    return appendAssistantToolResultMessage(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId: payload.toolCallId,
       toolName: payload.toolName,
       parentToolUseId: payload.parentToolUseId,
@@ -503,7 +534,11 @@ function replayTraceEvent(
     if (!delta) return current;
     const marker = replayMarker(event, "toolOutput");
     if (hasToolReplayMarker(current, toolUseId, marker)) return current;
-    const next = appendOrUpdateAssistantToolOutputDelta(current, {
+    const next = appendOrUpdateAssistantToolOutputDelta(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId,
       toolName: payload.toolName,
       target: payload.target,
@@ -532,7 +567,11 @@ function replayTraceEvent(
     const payload = event.payload as CommandLifecyclePayload;
     if (!payload.toolUseId) return current;
     const commandTarget = payload.target ?? payload.command;
-    return appendOrUpdateAssistantToolStartMessage(current, {
+    return appendOrUpdateAssistantToolStartMessage(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId: payload.toolUseId,
       toolName: payload.toolName ?? "run_command",
       target: commandTarget,
@@ -559,7 +598,11 @@ function replayTraceEvent(
     if (!payload.toolUseId || !payload.chunk) return current;
     const marker = replayMarker(event, `commandOutput:${payload.stream}`);
     if (hasToolReplayMarker(current, payload.toolUseId, marker)) return current;
-    const next = appendOrUpdateAssistantToolOutputDelta(current, {
+    const next = appendOrUpdateAssistantToolOutputDelta(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId: payload.toolUseId,
       toolName: payload.toolName ?? "run_command",
       target: payload.target,
@@ -597,7 +640,11 @@ function replayTraceEvent(
         ? `命令失败：${exitLabel}`
         : `命令已完成：${exitLabel}`;
     const commandTarget = payload.target ?? payload.command;
-    return appendAssistantToolResultMessage(current, {
+    return appendAssistantToolResultMessage(closeAssistantThinkingForToolBoundary(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      now: event.ts,
+    }), {
       toolUseId: payload.toolUseId,
       toolName: payload.toolName ?? "run_command",
       target: commandTarget,
@@ -679,6 +726,55 @@ function replayTraceEvent(
       source: typeof payload.source === "string" ? payload.source : undefined,
       now: event.ts,
     });
+  }
+
+  if (event.type === "message_complete") {
+    const payload = event.payload as {
+      messageId?: unknown;
+      content?: unknown;
+    };
+    return removeAssistantThinkingMessage(
+      completeChatCompatMessage(current, {
+        messageId: typeof payload.messageId === "string" ? payload.messageId : undefined,
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        content: typeof payload.content === "string" ? payload.content : undefined,
+        now: event.ts,
+      }),
+      {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        now: event.ts,
+      },
+    );
+  }
+
+  if (event.type === "message.completed") {
+    const payload = event.payload as {
+      messageId?: unknown;
+      content?: unknown;
+    };
+    if (typeof payload.messageId !== "string" || !payload.messageId.trim()) {
+      return removeAssistantThinkingMessage(current, {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        now: event.ts,
+      });
+    }
+    return removeAssistantThinkingMessage(
+      appendOrUpdateAssistantMessageCompletion(current, {
+        messageId: payload.messageId,
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        content: typeof payload.content === "string" ? payload.content : undefined,
+        now: event.ts,
+      }),
+      {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        now: event.ts,
+      },
+    );
   }
 
   if (event.type === "permission_request") {

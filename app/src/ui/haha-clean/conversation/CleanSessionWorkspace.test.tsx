@@ -702,6 +702,37 @@ describe("CleanSessionWorkspace", () => {
     ]);
   });
 
+  it("keeps structured plan updates visible for panel rendering", () => {
+    const messages = [
+      {
+        id: "plan_update:structured",
+        role: "assistant",
+        content: "正在用 swarm 模式拆分并安排多 agent 协作。",
+        metadata: {
+          kind: "plan_update",
+          status: "running",
+          plan: [
+            { id: "sub-0", title: "Inspect current flow", status: "pending" },
+            { id: "sub-1", title: "Implement changes", status: "pending" },
+          ],
+        },
+      },
+      {
+        id: "plan_update:empty",
+        role: "assistant",
+        content: "正在用 swarm 模式拆分并安排多 agent 协作。",
+        metadata: {
+          kind: "plan_update",
+          status: "running",
+        },
+      },
+    ] as const;
+
+    expect(filterCleanLowSignalMessages([...messages]).map((message) => message.id)).toEqual([
+      "plan_update:structured",
+    ]);
+  });
+
   it("keeps the legacy session detail strip out of the transcript", () => {
     render(
       <CleanSessionWorkspace

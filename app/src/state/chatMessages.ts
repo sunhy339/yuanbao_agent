@@ -1404,6 +1404,17 @@ export function removeAssistantThinkingMessage(
   return changed ? next : current;
 }
 
+export function closeAssistantThinkingForToolBoundary(
+  current: ChatMessageView[],
+  payload: {
+    sessionId: string;
+    taskId?: string | null;
+    now?: number;
+  },
+): ChatMessageView[] {
+  return removeAssistantThinkingMessage(current, payload);
+}
+
 export function appendOrUpdatePermissionRequestMessage(
   current: ChatMessageView[],
   payload: {

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { CleanActivityItem, CleanAgentTaskGroupBlock, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanSlashCommandBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
+import { CleanActivityItem, CleanAgentTaskGroupBlock, CleanPermissionMessageBlock, CleanPlanUpdateBlock, CleanRuntimeBlock, CleanSlashCommandBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
 
 afterEach(() => cleanup());
 
@@ -48,6 +48,76 @@ describe("CleanConversation", () => {
     expect(planner).not.toHaveTextContent("Planner Worker");
     expect(worker).toHaveTextContent("Worker");
     expect(worker).not.toHaveTextContent("Worker Worker");
+  });
+
+  it("renders haha-style team members as agent task rows", () => {
+    render(
+      <CleanAgentTaskGroupBlock
+        message={{
+          id: "team",
+          role: "assistant",
+          status: "running",
+          content: "",
+          metadata: {
+            kind: "agent_task_group",
+            title: "Team update",
+            summary: "2 agents active",
+            members: [
+              {
+                agentId: "planner-1",
+                role: "planner",
+                status: "running",
+                currentTask: "Inspect current multi-agent workflow",
+              },
+              {
+                agentId: "worker-1",
+                role: "worker",
+                status: "completed",
+                currentTask: "Implement replay ordering fix",
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Inspect current multi-agent workflow")).toBeInTheDocument();
+    expect(screen.getByText("Implement replay ordering fix")).toBeInTheDocument();
+    expect(screen.queryByText("planner-1")).not.toBeInTheDocument();
+  });
+
+  it("renders plan updates as structured subtask panels instead of raw json", () => {
+    render(
+      <CleanPlanUpdateBlock
+        message={{
+          id: "plan_update:evt_1",
+          role: "assistant",
+          status: "completed",
+          content: JSON.stringify({
+            goal: "多 agent 去优化该项",
+            orchestrationMode: "swarm",
+            subtasks: [{ id: "sub-0", title: "Inspect workflow" }],
+          }),
+          metadata: {
+            kind: "plan_update",
+            title: "计划更新",
+            summary: "已拆分 2 个 swarm 子任务，准备派发 agent。",
+            goal: "多 agent 去优化该项",
+            orchestrationMode: "swarm",
+            subtaskCount: 2,
+            subtasks: [
+              { id: "sub-0", title: "Inspect current multi-agent workflow", agentType: "planner" },
+              { id: "sub-1", title: "Implement orchestration changes", agentType: "worker" },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Inspect current multi-agent workflow")).toBeInTheDocument();
+    expect(screen.getByText("Implement orchestration changes")).toBeInTheDocument();
+    expect(screen.getByText("swarm")).toBeInTheDocument();
+    expect(screen.queryByText(/"subtasks"/)).not.toBeInTheDocument();
   });
 
   it("folds child agent result summaries into their task rows without exposing raw task ids", async () => {

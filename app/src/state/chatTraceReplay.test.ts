@@ -107,6 +107,109 @@ describe("chat trace replay", () => {
     expect(String(tool?.metadata?.resultText).match(/one line/g)).toHaveLength(1);
   });
 
+  it("keeps thinking, progress, tool, and final message order stable across replay passes", () => {
+    const traces = [
+      trace("evt_think_1", "thinking", {
+        text: "I will inspect the project first. ",
+        source: "provider_reasoning_delta",
+      }, 1, "chat"),
+      trace("evt_tool_start", "tool.started", {
+        toolCallId: "tool_read",
+        toolName: "read_file",
+        arguments: { path: "snake_game/README.md" },
+        target: "snake_game/README.md",
+        inputSummary: "snake_game/README.md",
+      }, 2, "chat"),
+      trace("evt_tool_done", "tool.completed", {
+        toolCallId: "tool_read",
+        toolName: "read_file",
+        resultSummary: "read snake_game/README.md",
+      }, 3, "chat"),
+      trace("evt_progress", "assistant_progress", {
+        text: "正在合并候选文档。",
+      }, 4, "chat"),
+      trace("evt_think_2", "thinking", {
+        text: "Now I can summarize the next step.",
+        source: "provider_reasoning_delta",
+      }, 5, "chat"),
+      trace("evt_final_delta", "content_delta", {
+        text: "下面是下一步优化路线图。",
+        messageId: "assistant_1",
+      }, 6, "chat"),
+      trace("evt_complete", "message_complete", {
+        messageId: "assistant_1",
+        content: "下面是下一步优化路线图。",
+      }, 7, "chat"),
+    ];
+
+    const first = replayTraceEventsToChatMessages([], traces);
+    const replayed = replayTraceEventsToChatMessages(first, traces);
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+
+    expect(visible.map((message) => message.id)).toEqual([
+      "assistant_thinking:evt_think_1",
+      "tool_activity:tool_read",
+      "assistant_progress:evt_progress",
+      "assistant_thinking:evt_think_2",
+      "assistant_1",
+    ]);
+    expect(visible.map((message) => message.metadata?.kind ?? "assistant_text")).toEqual([
+      "assistant_thinking",
+      "tool_activity",
+      "assistant_progress",
+      "assistant_thinking",
+      "assistant_text",
+    ]);
+    expect(visible.find((message) => message.id === "assistant_1")?.content).toBe("下面是下一步优化路线图。");
+    expect(visible.filter((message) => message.id === "assistant_1")).toHaveLength(1);
+  });
+
+  it("keeps replay idempotent under repeated thinking/tool/progress cycles", () => {
+    const traces: TraceEventRecord[] = [];
+    let sequence = 1;
+    for (let index = 0; index < 12; index += 1) {
+      traces.push(trace(`evt_think_${index}`, "thinking", {
+        text: `Thinking step ${index}.`,
+        source: "provider_reasoning_delta",
+      }, sequence += 1, "chat"));
+      traces.push(trace(`evt_tool_start_${index}`, "tool.started", {
+        toolCallId: `tool_${index}`,
+        toolName: index % 2 === 0 ? "read_file" : "search_files",
+        target: index % 2 === 0 ? `snake_game/file_${index}.py` : "snake_game",
+        inputSummary: `context ${index}`,
+      }, sequence += 1, "chat"));
+      traces.push(trace(`evt_tool_done_${index}`, "tool.completed", {
+        toolCallId: `tool_${index}`,
+        toolName: index % 2 === 0 ? "read_file" : "search_files",
+        resultSummary: `completed ${index}`,
+      }, sequence += 1, "chat"));
+      traces.push(trace(`evt_progress_${index}`, "assistant_progress", {
+        text: `Merged evidence ${index}.`,
+      }, sequence += 1, "chat"));
+    }
+    traces.push(trace("evt_final_complete", "message_complete", {
+      messageId: "assistant_final",
+      content: "Final synthesis.",
+    }, sequence += 1, "chat"));
+
+    const first = replayTraceEventsToChatMessages([], traces);
+    const second = replayTraceEventsToChatMessages(first, traces);
+    const third = replayTraceEventsToChatMessages(second, [...traces].reverse());
+    const visible = getVisibleChatMessages(third, "sess_1");
+    const ids = visible.map((message) => message.id);
+
+    expect(ids).toEqual([
+      ...Array.from({ length: 12 }).flatMap((_, index) => [
+        `assistant_thinking:evt_think_${index}`,
+        `tool_activity:tool_${index}`,
+        `assistant_progress:evt_progress_${index}`,
+      ]),
+      "assistant_final",
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(visible.filter((message) => message.id === "assistant_final")).toHaveLength(1);
+  });
+
   it("restores ask-user cards and marks them answered from supplement consumed traces", () => {
     const traces = [
       trace("evt_ask", "ask_user_question", {

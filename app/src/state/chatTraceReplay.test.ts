@@ -357,6 +357,41 @@ describe("chat trace replay", () => {
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
+  it("replays resolved plan approvals with structured sections instead of raw json", () => {
+    const previewSections = [
+      {
+        kind: "items",
+        title: "2 subtasks",
+        items: [
+          { id: "sub-0", title: "Inspect routing", description: "Check routing decisions." },
+          { id: "sub-1", title: "Repair replay", description: "Keep live and replay aligned." },
+        ],
+      },
+    ];
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_plan_resolved", "approval.resolved", {
+        approvalId: "approval_plan",
+        kind: "plan",
+        decision: "approved",
+        request: {
+          goal: "Optimize multi-agent flow",
+          orchestrationMode: "swarm",
+          subtaskCount: 2,
+          previewSections,
+        },
+        previewSections,
+      }, 1, "chat"),
+    ]);
+
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.id).toBe("permission_request:approval_plan");
+    expect(visible[0]?.status).toBe("completed");
+    expect(visible[0]?.content).toContain("Plan ready: 2 subtasks");
+    expect(visible[0]?.content).not.toContain("\"previewSections\"");
+    expect(visible[0]?.metadata?.previewSections).toEqual(previewSections);
+  });
+
   it("hides child-worker trace events on session recovery unless they are explicitly chat-visible", () => {
     const replayed = replayTraceEventsToChatMessages(
       [],

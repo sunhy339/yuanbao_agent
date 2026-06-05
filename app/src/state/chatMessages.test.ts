@@ -438,6 +438,13 @@ describe("chatMessages", () => {
         ],
       },
       description: "Plan approval required",
+      previewSections: [
+        {
+          kind: "items",
+          title: "2 subtasks",
+          items: [{ id: "sub-0", title: "Inspect routing" }],
+        },
+      ],
       sessionId: "sess_1",
       taskId: "task_3",
       now: 4,
@@ -450,6 +457,13 @@ describe("chatMessages", () => {
     expect(permission?.content).toContain("Plan ready: 2 subtasks");
     expect(permission?.content).not.toContain("\"subtasks\"");
     expect(permission?.metadata?.input).toMatchObject({ goal: "Optimize multi-agent flow" });
+    expect(permission?.metadata?.previewSections).toEqual([
+      {
+        kind: "items",
+        title: "2 subtasks",
+        items: [{ id: "sub-0", title: "Inspect routing" }],
+      },
+    ]);
   });
 
   it("marks permission request blocks resolved without keeping action state", () => {

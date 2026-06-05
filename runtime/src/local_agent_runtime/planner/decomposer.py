@@ -100,6 +100,7 @@ class TaskDecomposer:
             "messages": [{"role": "user", "content": prompt}],
         }
         provider_response: dict[str, object] | None = None
+        fallback_reason: str | None = None
         try:
             response = self._provider.generate(
                 prompt,
@@ -108,8 +109,17 @@ class TaskDecomposer:
             provider_response = response if isinstance(response, dict) else None
             raw_text = response.get("message") or ""
             subtasks = self._parse_subtasks(raw_text, fallback_goal=goal)
+            if len(subtasks) == 1 and subtasks[0].id == "sub-0" and subtasks[0].title == goal[:80] and subtasks[0].description == goal:
+                fallback_reason = "provider_returned_unparseable_plan"
         except Exception:  # noqa: BLE001
             subtasks = self._fallback_subtasks_for_provider_failure(goal)
+            fallback_reason = "provider_decomposition_failed"
+        if fallback_reason:
+            provider_response = {
+                **(provider_response or {}),
+                "decompositionFallback": True,
+                "decompositionFallbackReason": fallback_reason,
+            }
         subtasks = self._enforce_goal_contract(subtasks, goal=goal)
         dag = self.build_dag(subtasks)
         all_ids = [s.id for s in subtasks]

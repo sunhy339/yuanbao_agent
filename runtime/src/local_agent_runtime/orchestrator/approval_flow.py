@@ -109,6 +109,7 @@ class ApprovalFlowMixin:
             "kind": approval.get("kind"),
             "request": request,
             "preview": _approval_payload_preview(approval.get("kind"), request),
+            "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
             "decision": approval.get("decision"),
             "decidedBy": approval.get("decidedBy"),
             "decidedAt": approval.get("decidedAt"),
@@ -173,20 +174,6 @@ class ApprovalFlowMixin:
         existing_decision = str(existing_approval.get("decision") or "").strip()
         if existing_decision:
             task = self._store.get_task({"taskId": existing_approval["taskId"]})["task"]
-            self._publish(
-                session_id=task["sessionId"],
-                task=task,
-                event_type="approval.resolved",
-                payload=self._approval_resolved_payload(
-                    approval=existing_approval,
-                    task=task,
-                    extra={
-                        "ignored": True,
-                        "alreadyResolved": True,
-                        "taskStatus": task.get("status"),
-                    },
-                ),
-            )
             return {"approval": existing_approval, "task": task, "ignored": True}
 
         approval = self._store.resolve_approval(

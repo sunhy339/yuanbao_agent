@@ -1423,6 +1423,7 @@ export function appendOrUpdatePermissionRequestMessage(
     input: unknown;
     description?: string | null;
     preview?: Array<{ label: string; value: string }> | null;
+    previewSections?: unknown[] | null;
     filesChanged?: number | null;
     changedPaths?: string[] | null;
     diffText?: string | null;
@@ -1452,6 +1453,7 @@ export function appendOrUpdatePermissionRequestMessage(
       input: payload.input,
       approvalKind: payload.toolName ?? undefined,
       previewRows: payload.preview ?? undefined,
+      previewSections: Array.isArray(payload.previewSections) ? payload.previewSections : undefined,
       filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
       changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths : undefined,
       diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,
@@ -1474,6 +1476,7 @@ export function resolvePermissionRequestMessage(
     input?: unknown;
     toolName?: string | null;
     preview?: Array<{ label: string; value: string }> | null;
+    previewSections?: unknown[] | null;
     filesChanged?: number | null;
     changedPaths?: string[] | null;
     diffText?: string | null;
@@ -1489,6 +1492,7 @@ export function resolvePermissionRequestMessage(
     const hasDetails =
       payload.input !== undefined ||
       Boolean(payload.preview?.length) ||
+      Boolean(payload.previewSections?.length) ||
       typeof payload.filesChanged === "number" ||
       Boolean(payload.changedPaths?.length) ||
       typeof payload.diffText === "string";
@@ -1518,6 +1522,7 @@ export function resolvePermissionRequestMessage(
           ...(payload.input !== undefined ? { input: payload.input } : {}),
           ...(payload.toolName ? { approvalKind: payload.toolName } : {}),
           ...(payload.preview ? { previewRows: payload.preview } : {}),
+          ...(payload.previewSections ? { previewSections: payload.previewSections } : {}),
           ...(typeof payload.filesChanged === "number" ? { filesChanged: payload.filesChanged } : {}),
           ...(Array.isArray(payload.changedPaths) ? { changedPaths: payload.changedPaths } : {}),
           ...(typeof payload.diffText === "string" ? { diffText: payload.diffText } : {}),
@@ -1540,6 +1545,7 @@ export function resolvePermissionRequestMessage(
       ...(payload.input !== undefined ? { input: payload.input } : {}),
       ...(payload.toolName ? { approvalKind: payload.toolName } : {}),
       ...(payload.preview ? { previewRows: payload.preview } : {}),
+      ...(payload.previewSections ? { previewSections: payload.previewSections } : {}),
       ...(typeof payload.filesChanged === "number" ? { filesChanged: payload.filesChanged } : {}),
       ...(Array.isArray(payload.changedPaths) ? { changedPaths: payload.changedPaths } : {}),
       ...(typeof payload.diffText === "string" ? { diffText: payload.diffText } : {}),
@@ -1555,6 +1561,7 @@ export function resolveSpecialApprovalMessage(
     decision: "approved" | "rejected" | string;
     input?: unknown;
     preview?: Array<{ label: string; value: string }> | null;
+    previewSections?: unknown[] | null;
     filesChanged?: number | null;
     changedPaths?: string[] | null;
     diffText?: string | null;
@@ -1594,6 +1601,7 @@ export function resolveSpecialApprovalMessage(
         resolved: true,
         ...(payload.input !== undefined ? { request: payload.input } : {}),
         ...(payload.preview ? { previewRows: payload.preview } : {}),
+        ...(payload.previewSections ? { previewSections: payload.previewSections } : {}),
         ...(typeof payload.filesChanged === "number" ? { filesChanged: payload.filesChanged } : {}),
         ...(Array.isArray(payload.changedPaths) ? { changedPaths: payload.changedPaths } : {}),
         ...(typeof payload.diffText === "string" ? { diffText: payload.diffText } : {}),

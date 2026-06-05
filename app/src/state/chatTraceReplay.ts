@@ -788,6 +788,7 @@ function replayTraceEvent(
         toolName: payload.toolName,
         input: payload.input,
         preview: payload.preview,
+        previewSections: payload.previewSections,
         filesChanged: payload.filesChanged,
         changedPaths: payload.changedPaths,
         diffText: payload.diffText,
@@ -809,6 +810,7 @@ function replayTraceEvent(
         input: payload.input,
         description: payload.description,
         preview: payload.preview,
+        previewSections: payload.previewSections,
         filesChanged: payload.filesChanged,
         changedPaths: payload.changedPaths,
         diffText: payload.diffText,
@@ -863,6 +865,7 @@ function replayTraceEvent(
       kind?: unknown;
       request?: unknown;
       preview?: Array<{ label: string; value: string }>;
+      previewSections?: unknown[];
       filesChanged?: unknown;
       changedPaths?: unknown;
       diffText?: unknown;
@@ -877,6 +880,7 @@ function replayTraceEvent(
         toolName: typeof payload.kind === "string" ? payload.kind : undefined,
         input: payload.request,
         preview: payload.preview,
+        previewSections: payload.previewSections,
         filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
         changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths.filter((item): item is string => typeof item === "string") : undefined,
         diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,
@@ -890,6 +894,7 @@ function replayTraceEvent(
         decision: typeof payload.decision === "string" ? payload.decision : "approved",
         input: payload.request,
         preview: payload.preview,
+        previewSections: payload.previewSections,
         filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
         changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths.filter((item): item is string => typeof item === "string") : undefined,
         diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,

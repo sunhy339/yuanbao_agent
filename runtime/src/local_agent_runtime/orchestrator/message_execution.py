@@ -156,7 +156,24 @@ class MessageExecutionMixin:
         }
         if orchestration_mode:
             request["orchestrationMode"] = orchestration_mode
+        provider_response = getattr(plan, "provider_response", None)
+        if isinstance(provider_response, dict) and provider_response.get("decompositionFallback") is True:
+            request["decompositionFallback"] = True
+            reason = provider_response.get("decompositionFallbackReason")
+            if isinstance(reason, str) and reason.strip():
+                request["decompositionFallbackReason"] = reason.strip()
         return attach_plan_preview(request)
+
+    @staticmethod
+    def _planning_decomposition_metadata(plan: Any) -> dict[str, Any]:
+        provider_response = getattr(plan, "provider_response", None)
+        if not isinstance(provider_response, dict) or provider_response.get("decompositionFallback") is not True:
+            return {}
+        metadata: dict[str, Any] = {"decompositionFallback": True}
+        reason = provider_response.get("decompositionFallbackReason")
+        if isinstance(reason, str) and reason.strip():
+            metadata["decompositionFallbackReason"] = reason.strip()
+        return metadata
 
     def _publish_root_child_progress(
         self,
@@ -651,6 +668,7 @@ class MessageExecutionMixin:
                     "source": plan_source,
                     "subtasks": plan_result_to_dict(plan).get("subtasks", []),
                     "dag": plan_result_to_dict(plan).get("dag", {}),
+                    **self._planning_decomposition_metadata(plan),
                 },
             )
             # --- Decision trace: decomposition ---
@@ -2147,6 +2165,7 @@ class MessageExecutionMixin:
                     "mode": "supervisor",
                     "subtasks": plan_result_to_dict(plan).get("subtasks", []),
                     "dag": plan_result_to_dict(plan).get("dag", {}),
+                    **self._planning_decomposition_metadata(plan),
                 },
             )
             self._publish_planning_thinking(
@@ -2296,6 +2315,7 @@ class MessageExecutionMixin:
                     "mode": "swarm",
                     "subtasks": plan_result_to_dict(plan).get("subtasks", []),
                     "dag": plan_result_to_dict(plan).get("dag", {}),
+                    **self._planning_decomposition_metadata(plan),
                 },
             )
             self._publish_planning_thinking(

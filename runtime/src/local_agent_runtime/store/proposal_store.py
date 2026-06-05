@@ -103,6 +103,19 @@ def _approval_preview_row(label: str, value: Any, *, max_chars: int = 160) -> di
 
 def _approval_preview(kind: str, request: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str] | None]
+    explicit_preview = request.get("previewRows")
+    if isinstance(explicit_preview, list):
+        rows = []
+        for row in explicit_preview:
+            if not isinstance(row, dict):
+                continue
+            label = _approval_text(row.get("label"), max_chars=40)
+            value = _approval_text(row.get("value"), max_chars=220)
+            if label and value:
+                rows.append({"label": label, "value": value})
+        if rows:
+            return rows[:6]
+
     if kind == "run_command":
         rows = [_approval_preview_row("命令", request.get("command"), max_chars=220)]
         if request.get("toolName") == "notebook" or request.get("notebookAction") == "execute_cell":
@@ -136,6 +149,20 @@ def _approval_preview(kind: str, request: dict[str, Any]) -> list[dict[str, str]
         rows = [
             _approval_preview_row("子任务", request.get("prompt"), max_chars=240),
             _approval_preview_row("原因", request.get("reason") or request.get("risk")),
+        ]
+    elif kind == "plan":
+        execution_order = request.get("executionOrder") or request.get("execution_order")
+        order_text = ""
+        if isinstance(execution_order, list):
+            order_text = " -> ".join(str(item) for item in execution_order[:12] if str(item).strip())
+        subtask_count = request.get("subtaskCount")
+        if subtask_count is None and isinstance(request.get("subtasks"), list):
+            subtask_count = len(request["subtasks"])
+        rows = [
+            _approval_preview_row("目标", request.get("goal"), max_chars=220),
+            _approval_preview_row("模式", request.get("orchestrationMode") or request.get("mode") or "plan"),
+            _approval_preview_row("子任务", subtask_count),
+            _approval_preview_row("执行顺序", order_text, max_chars=220),
         ]
     else:
         rows = [
@@ -190,6 +217,7 @@ class ProposalStoreMixin:
                 "changedPaths": changed_paths,
                 "diffText": diff_text if isinstance(diff_text, str) else "",
                 "preview": _approval_preview(approval["kind"], request),
+                "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
                 "decision": approval["decision"],
                 "decidedBy": approval["decidedBy"],
                 "decidedAt": approval["decidedAt"],
@@ -353,6 +381,7 @@ class ProposalStoreMixin:
                 "changedPaths": changed_paths,
                 "diffText": diff_text if isinstance(diff_text, str) else "",
                 "preview": _approval_preview(approval["kind"], request),
+                "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
             },
             created_at=approval["createdAt"],
         )

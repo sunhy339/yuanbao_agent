@@ -1486,6 +1486,11 @@ class PublishingMixin:
                     "input": request if request is not None else {},
                     "description": payload.get("summary"),
                     "preview": payload.get("preview"),
+                    "previewSections": (
+                        request.get("previewSections")
+                        if isinstance(request, dict) and isinstance(request.get("previewSections"), list)
+                        else payload.get("previewSections")
+                    ),
                     "filesChanged": payload.get("filesChanged"),
                     "changedPaths": payload.get("changedPaths"),
                     "diffText": payload.get("diffText"),
@@ -1558,6 +1563,11 @@ class PublishingMixin:
                             "input": request if isinstance(request, dict) else {},
                             "description": payload.get("summary"),
                             "preview": payload.get("preview"),
+                            "previewSections": (
+                                request.get("previewSections")
+                                if isinstance(request, dict) and isinstance(request.get("previewSections"), list)
+                                else payload.get("previewSections")
+                            ),
                             "filesChanged": payload.get("filesChanged"),
                             "changedPaths": payload.get("changedPaths"),
                             "diffText": payload.get("diffText"),

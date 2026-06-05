@@ -351,6 +351,16 @@ export interface PermissionRequestPayload {
   input: unknown;
   description?: string;
   preview?: Array<{ label: string; value: string }>;
+  previewSections?: Array<{
+    kind: string;
+    title?: string;
+    items?: Array<{
+      id?: string;
+      title: string;
+      description?: string;
+      meta?: string[];
+    }>;
+  }>;
   filesChanged?: number;
   changedPaths?: string[];
   diffText?: string;

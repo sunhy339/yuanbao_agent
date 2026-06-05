@@ -150,6 +150,8 @@ type ApprovalEventPayloadDetails = {
   taskId: string;
   kind?: ApprovalRequestedPayload["kind"];
   request?: Record<string, unknown>;
+  internal?: boolean;
+  _bridge?: unknown;
   preview?: unknown;
   patchId?: string;
   filesChanged?: number;
@@ -157,6 +159,19 @@ type ApprovalEventPayloadDetails = {
   diffText?: string;
   completionReviewConclusion?: unknown;
 };
+
+function isInternalCompletionReviewApproval(payload: ApprovalEventPayloadDetails): boolean {
+  if (payload.kind !== "completion_review") {
+    return false;
+  }
+  const bridge = readRecord(payload._bridge);
+  return Boolean(
+    payload.internal === true ||
+      bridge?.internal === true ||
+      bridge?.suppressChatReplay === true ||
+      bridge?.suppressRealtimeFlat === true,
+  );
+}
 
 function buildApprovalCardView(
   payload: ApprovalEventPayloadDetails,
@@ -291,6 +306,10 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
   for (const event of events) {
     if (event.type === "approval.requested") {
       const payload = event.payload as ApprovalRequestedPayload;
+      if (isInternalCompletionReviewApproval(payload)) {
+        cards.delete(payload.approvalId);
+        continue;
+      }
       const current = cards.get(payload.approvalId);
       cards.set(payload.approvalId, buildApprovalCardView(payload, event, current, current?.status ?? "pending", {
         requestedAt: event.ts,
@@ -302,6 +321,10 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
 
     if (event.type === "approval.resolved") {
       const payload = event.payload as ApprovalResolvedPayload;
+      if (isInternalCompletionReviewApproval(payload)) {
+        cards.delete(payload.approvalId);
+        continue;
+      }
       const current = cards.get(payload.approvalId);
       cards.set(payload.approvalId, buildApprovalCardView(payload, event, current, payload.decision, {
         requestedAt: current?.requestedAt ?? event.ts,

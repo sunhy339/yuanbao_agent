@@ -187,6 +187,17 @@ function shouldHideToolFromRuntimePanel(toolCall: SessionWorkspaceToolCall) {
   return resultStatus === "approval_required";
 }
 
+function toolRawOutputDetail(toolCall: SessionWorkspaceToolCall) {
+  if (!toolCall.rawOutput || isRawJsonLike(toolCall.rawOutput)) {
+    return null;
+  }
+  const status = toolCall.status?.toLowerCase();
+  if (toolCall.toolName !== "run_command" && !["failed", "error", "blocked", "cancelled", "rejected"].includes(status ?? "")) {
+    return null;
+  }
+  return `Output\n${compactText(toolCall.rawOutput, 1200)}`;
+}
+
 function classifyBackgroundJobVisibility(job: { command: string; status: string; summary?: string }) {
   const normalizedStatus = job.status.toLowerCase();
   if (["running", "started", "pending", "queued", "failed", "error", "cancelled"].includes(normalizedStatus)) {
@@ -555,10 +566,37 @@ export function isRawJsonLike(value?: string) {
   return Boolean(trimmed && ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))));
 }
 
+function traceBridge(trace: SessionWorkspaceTrace): Record<string, unknown> {
+  const payload = trace.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {};
+  }
+  const bridge = (payload as { _bridge?: unknown })._bridge;
+  return bridge && typeof bridge === "object" && !Array.isArray(bridge)
+    ? bridge as Record<string, unknown>
+    : {};
+}
+
+function isInternalBridgeTrace(trace: SessionWorkspaceTrace) {
+  const bridge = traceBridge(trace);
+  const payload = trace.payload && typeof trace.payload === "object" && !Array.isArray(trace.payload)
+    ? trace.payload as Record<string, unknown>
+    : {};
+  return Boolean(
+    payload.internal === true ||
+      bridge.internal === true ||
+      bridge.suppressChatReplay === true ||
+      bridge.suppressRealtimeFlat === true,
+  );
+}
+
 export function isUserVisibleTrace(trace: SessionWorkspaceTrace) {
   const type = trace.type.toLowerCase();
   const status = trace.status?.toLowerCase();
   const haystack = `${trace.type} ${trace.source ?? ""} ${trace.title ?? ""} ${trace.summary ?? ""}`.toLowerCase();
+  if (isInternalBridgeTrace(trace)) {
+    return false;
+  }
   if (type === "task.failed") {
     return false;
   }
@@ -774,7 +812,7 @@ export function buildRuntimeItems({
       meta: presentation.meta,
       code: presentation.code,
       rawDetail: compactMeta([
-        toolCall.rawOutput ? `输出\n${toolCall.rawOutput}` : null,
+        toolRawOutputDetail(toolCall),
         toolCall.stdout ? `标准输出\n${compactText(toolCall.stdout, 1200)}` : null,
         toolCall.stderr ? `标准错误\n${compactText(toolCall.stderr, 1200)}` : null,
       ]).join("\n\n"),

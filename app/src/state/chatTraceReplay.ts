@@ -661,6 +661,7 @@ function replayTraceEvent(
         eventId: event.eventId,
         state: payload.state,
         verb: payload.verb,
+        transient: true,
         now: event.ts,
       });
     }

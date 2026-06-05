@@ -130,13 +130,31 @@ describe("CleanConversation", () => {
           role: "assistant",
           content: "我在检查相关文件。",
           streaming: true,
-          metadata: { kind: "assistant_thinking" },
+          metadata: { kind: "assistant_thinking", source: "provider_reasoning_delta", transient: false },
         }}
       />,
     );
 
     expect(screen.getByRole("button", { name: /正在思考/ })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("我在检查相关文件。")).toBeInTheDocument();
+  });
+
+  it("renders transient status thinking as processing instead of provider reasoning", () => {
+    render(
+      <CleanThinkingBlock
+        message={{
+          id: "thinking-status",
+          role: "assistant",
+          content: "正在定位相关文件",
+          streaming: true,
+          metadata: { kind: "assistant_thinking", state: "thinking", transient: true },
+        }}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: /正在处理/ });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: /正在思考/ })).not.toBeInTheDocument();
   });
 
   it("renders expanded thinking markdown instead of raw source blocks", () => {

@@ -648,6 +648,56 @@ describe("computeApprovalCards completion evidence", () => {
     expect(card.completionEvidence?.audit?.approvals?.[0]?.kind).toBe("completion_review");
     expect(card.completionEvidence?.audit?.completionAdvisor?.proposalRecordId).toBe("proposal_1");
   });
+
+  it("does not create approval cards for internal completion review gates", () => {
+    const cards = computeApprovalCards([
+      {
+        eventId: "evt_requested",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "approval.requested",
+        ts: 1778734168000,
+        payload: {
+          approvalId: "approval_internal",
+          taskId: "task_1",
+          kind: "completion_review",
+          internal: true,
+          _bridge: {
+            internal: true,
+            suppressRealtimeFlat: true,
+            suppressChatReplay: true,
+          },
+          request: {
+            reason: "Internal completion gate.",
+            completionEvidence: {
+              evidenceLevel: "summary_only",
+            },
+          },
+        },
+      },
+      {
+        eventId: "evt_resolved",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "approval.resolved",
+        ts: 1778734169000,
+        payload: {
+          approvalId: "approval_internal",
+          taskId: "task_1",
+          kind: "completion_review",
+          internal: true,
+          _bridge: {
+            internal: true,
+            suppressRealtimeFlat: true,
+            suppressChatReplay: true,
+          },
+          decision: "approved",
+        },
+      },
+    ]);
+
+    expect(cards).toEqual([]);
+  });
 });
 
 describe("computePatchCards", () => {

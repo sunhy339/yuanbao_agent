@@ -301,6 +301,7 @@ export interface SessionWorkspaceTrace {
   id: string;
   type: string;
   source?: string;
+  payload?: unknown;
   time?: number;
   title?: string;
   summary?: string;

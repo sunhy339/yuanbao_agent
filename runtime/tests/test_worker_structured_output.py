@@ -201,8 +201,10 @@ class TestStructuredResultBuild:
 
 
 class TestCompletionHardGate:
-    def test_write_task_summary_only_waits_for_completion_review(self, tmp_path: Any) -> None:
+    def test_write_task_summary_only_records_internal_gate_without_user_approval(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
         session = store.create_session(workspace_id=workspace["id"], title="completion gate")
@@ -222,17 +224,30 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
-        assert result["structuredResult"]["status"] == "needs_review"
+        assert result["status"] == "completed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_user_review"
+        assert result["structuredResult"]["completionGate"]["internal"] is True
         assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "summary_only"
         approvals = store._conn.execute(
             "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
             (task["id"], "completion_review"),
         ).fetchall()
-        assert len(approvals) == 1
+        assert approvals == []
+        assert not [
+            event for event in captured_events
+            if event.type == "task.waiting_approval" and event.payload.get("internalGate") == "completion_review"
+        ]
+        internal_event = next(
+            event for event in captured_events
+            if event.type == "agent.decision.completion"
+            and event.payload.get("internal") is True
+            and event.payload.get("decision") == "needs_user_review"
+        )
+        assert internal_event.visibility == "trace"
+        assert internal_event.payload["_bridge"]["suppressRealtimeFlat"] is True
+        assert internal_event.payload["_bridge"]["suppressChatReplay"] is True
 
-    def test_no_approval_mode_fails_summary_only_write_task(self, tmp_path: Any) -> None:
+    def test_no_approval_mode_still_fails_summary_only_write_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -297,8 +312,9 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "running"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_workspace_evidence"
+        assert result["structuredResult"]["completionGate"]["decision"] == "continue_after_internal_review"
         evidence = result["structuredResult"]["completionEvidence"]["workspaceEvidence"]
         assert evidence["required"] is True
         assert evidence["status"] == "missing"
@@ -378,7 +394,7 @@ class TestCompletionHardGate:
         ).fetchall()
         assert approvals == []
 
-    def test_write_task_with_runtime_evidence_without_verification_waits_for_review(self, tmp_path: Any) -> None:
+    def test_write_task_with_runtime_evidence_without_verification_records_internal_gate(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -403,15 +419,16 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
-        assert result["structuredResult"]["status"] == "needs_review"
+        assert result["status"] == "completed"
+        assert result["structuredResult"]["status"] == "success"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert result["structuredResult"]["completionGate"]["internal"] is True
         assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "runtime_evidence"
         approvals = store._conn.execute(
             "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
             (task["id"], "completion_review"),
         ).fetchall()
-        assert len(approvals) == 1
+        assert approvals == []
 
     def test_failed_verification_blocks_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -565,8 +582,9 @@ class TestCompletionHardGate:
             force_complete_after_review=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "running"
         assert result["structuredResult"]["completionGate"]["status"] == "advisor_needs_review"
+        assert result["structuredResult"]["completionGate"]["decision"] == "continue_after_internal_review"
         assert result["structuredResult"]["completionEvidence"]["completionAdvisor"]["payload"]["is_complete"] is False
 
     def test_no_approval_mode_records_completion_advisor_review_without_blocking(self, tmp_path: Any) -> None:
@@ -773,7 +791,7 @@ class TestCompletionHardGate:
         ).fetchall()
         assert approvals == []
 
-    def test_failed_acceptance_criteria_waits_for_review(self, tmp_path: Any) -> None:
+    def test_failed_acceptance_criteria_fails_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -805,12 +823,13 @@ class TestCompletionHardGate:
         )
 
         evidence = result["structuredResult"]["completionEvidence"]
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
+        assert result["structuredResult"]["completionGate"]["terminal"] is True
         assert evidence["counts"]["failedAcceptanceCriteria"] == 1
         assert evidence["acceptance"][1]["status"] == "failed"
 
-    def test_missing_explicit_acceptance_criteria_waits_for_review(self, tmp_path: Any) -> None:
+    def test_missing_explicit_acceptance_criteria_records_internal_gate(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -841,8 +860,9 @@ class TestCompletionHardGate:
         )
 
         evidence = result["structuredResult"]["completionEvidence"]
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "completed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
+        assert result["structuredResult"]["completionGate"]["internal"] is True
         assert evidence["counts"]["unverifiedAcceptanceCriteria"] == 1
         assert evidence["acceptance"][1]["source"] == "explicit_missing"
 
@@ -883,7 +903,7 @@ class TestCompletionHardGate:
         assert evidence["counts"]["failedAcceptanceCriteria"] == 0
         assert evidence["counts"]["unverifiedAcceptanceCriteria"] == 0
 
-    def test_unresolved_failed_tool_result_waits_for_review(self, tmp_path: Any) -> None:
+    def test_unresolved_failed_tool_result_fails_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -916,8 +936,9 @@ class TestCompletionHardGate:
         )
 
         evidence = result["structuredResult"]["completionEvidence"]
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_tool_review"
+        assert result["structuredResult"]["completionGate"]["terminal"] is True
         assert evidence["counts"]["failedToolResults"] == 1
         assert evidence["unresolvedToolFailures"][0]["name"] == "run_command"
 
@@ -1125,8 +1146,9 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "completed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert result["structuredResult"]["completionGate"]["internal"] is True
 
     def test_code_change_with_targeted_verification_completes(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -1288,8 +1310,9 @@ class TestCompletionHardGate:
         )
 
         evidence = result["structuredResult"]["completionEvidence"]
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "completed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert result["structuredResult"]["completionGate"]["internal"] is True
         assert evidence["verificationRequirements"]["required"] == ["python:test"]
         assert evidence["verificationRequirements"]["missing"] == ["python:test"]
         assert "python:lint" in evidence["verificationRequirements"]["matched"]
@@ -1568,8 +1591,9 @@ class TestCompletionHardGate:
         )
 
         evidence = result["structuredResult"]["completionEvidence"]
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "completed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert result["structuredResult"]["completionGate"]["internal"] is True
         assert evidence["verificationRequirements"]["required"] == ["javascript"]
         assert evidence["verificationRequirements"]["missing"] == ["javascript"]
 
@@ -1715,8 +1739,9 @@ class TestCompletionHardGate:
         )
 
         evidence = result["structuredResult"]["completionEvidence"]
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "completed"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert result["structuredResult"]["completionGate"]["internal"] is True
         assert evidence["verificationRequirements"]["required"] == ["javascript:test"]
         assert evidence["verificationRequirements"]["missing"] == ["javascript:test"]
         assert "javascript:typecheck" in evidence["verificationRequirements"]["matched"]
@@ -1782,8 +1807,10 @@ class TestCompletionHardGate:
         assert result["status"] == "completed"
         assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "verified"
 
-    def test_completion_review_approval_allows_completion(self, tmp_path: Any) -> None:
+    def test_legacy_completion_review_approval_still_allows_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
         session = store.create_session(workspace_id=workspace["id"], title="completion gate")
@@ -1793,15 +1820,23 @@ class TestCompletionHardGate:
             goal="modify the implementation",
             plan=[],
             routing={"scenario": "code_edit"},
+            status="waiting_approval",
         )
-        waiting = rt.orchestrator._complete_task(
-            session_id=session["id"],
-            task=task,
-            summary="I changed the implementation.",
-            context={"routing": {"scenario": "code_edit"}},
-            skip_reflection=True,
+        completion_review = store.create_approval(
+            task["id"],
+            "completion_review",
+            {
+                "summary": "I changed the implementation.",
+                "structuredResult": {
+                    "summary": "I changed the implementation.",
+                    "status": "needs_review",
+                    "completionGate": {"status": "needs_user_review"},
+                    "completionEvidence": {"evidenceLevel": "summary_only", "status": "summary_only"},
+                },
+                "completionEvidence": {"evidenceLevel": "summary_only", "status": "summary_only"},
+            },
         )
-        approval_id = waiting["structuredResult"]["completionGate"]["approvalId"]
+        approval_id = completion_review["id"]
 
         result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
 
@@ -1813,6 +1848,13 @@ class TestCompletionHardGate:
         assert review["approvalId"] == approval_id
         assert review["decision"] == "approved"
         assert completed["structuredResult"]["completionEvidence"]["reviewConclusion"]["decision"] == "approved"
+        resolved_event = next(
+            event for event in captured_events
+            if event.type == "approval.resolved" and event.payload.get("kind") == "completion_review"
+        )
+        assert resolved_event.payload["internal"] is True
+        assert resolved_event.payload["_bridge"]["suppressRealtimeFlat"] is True
+        assert resolved_event.payload["_bridge"]["suppressChatReplay"] is True
 
     def test_completion_review_approval_waits_for_pending_child_approval(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -1923,6 +1965,10 @@ class TestCompletionHardGate:
             plan=[],
             routing={"scenario": "swarm_task"},
         )
+        continuations: list[dict[str, Any]] = []
+        rt.orchestrator._start_background_message = (  # type: ignore[method-assign]
+            lambda **kwargs: continuations.append(kwargs)
+        )
 
         waiting = rt.orchestrator._complete_task(
             session_id=session["id"],
@@ -1932,35 +1978,39 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert waiting["status"] == "waiting_approval"
+        assert waiting["status"] == "running"
         gate = waiting["structuredResult"]["completionGate"]
         assert gate["status"] == "advisor_needs_review"
-        approval_id = gate["approvalId"]
-
-        continuations: list[dict[str, Any]] = []
-        rt.orchestrator._start_background_message = (  # type: ignore[method-assign]
-            lambda **kwargs: continuations.append(kwargs)
-        )
-        result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
-
-        assert result["task"]["status"] == "running"
+        assert gate["decision"] == "continue_after_internal_review"
         assert len(continuations) == 1
         continuation = continuations[0]
         assert continuation["task"]["id"] == task["id"]
-        assert "Continue the existing task after completion review" in continuation["goal"]
-        assert continuation["context"]["completionReviewContinuation"]["approvalId"] == approval_id
+        assert "Continue the existing task after an internal completion gate" in continuation["goal"]
+        assert continuation["context"]["completionReviewContinuation"]["internal"] is True
+        assert continuation["context"]["completionReviewContinuation"]["gateStatus"] == "advisor_needs_review"
         refreshed = store.get_task({"taskId": task["id"]})["task"]
         assert refreshed["status"] == "running"
         refreshed_gate = refreshed["structuredResult"]["completionGate"]
         assert refreshed_gate["status"] == "advisor_needs_review"
-        assert refreshed_gate["decision"] == "continue_after_review"
+        assert refreshed_gate["decision"] == "continue_after_internal_review"
 
-        repeated = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+        final = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=refreshed,
+            summary="I inspected again but still lack evidence.",
+            context={
+                "routing": {"scenario": "swarm_task"},
+                "completionReviewContinuation": {
+                    "internal": True,
+                    "gateStatus": "advisor_needs_review",
+                    "decision": "advisor_needs_review",
+                },
+            },
+            skip_reflection=True,
+        )
 
-        assert repeated["ignored"] is True
-        assert repeated["task"]["status"] == "running"
+        assert final["status"] == "completed"
         assert len(continuations) == 1
-        assert store.get_task({"taskId": task["id"]})["task"]["status"] == "running"
 
     def test_invalid_advisor_tool_approval_does_not_execute_empty_write_file(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -2033,44 +2083,37 @@ class TestCompletionHardGate:
             routing={"scenario": "code_edit"},
         )
 
-        waiting = rt.orchestrator._complete_task(
+        result = rt.orchestrator._complete_task(
             session_id=session["id"],
             task=task,
             summary="I changed the implementation.",
             context={"routing": {"scenario": "code_edit"}},
             skip_reflection=True,
         )
-        approval_id = waiting["structuredResult"]["completionGate"]["approvalId"]
 
-        result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
-
-        assert result["task"]["status"] == "completed"
+        assert result["status"] == "completed"
         completion_calls = [context for kind, context in advisor.calls if kind == "completion_decision"]
-        assert len(completion_calls) == 2
+        assert len(completion_calls) == 1
         final_audit = completion_calls[-1]["completion_audit"]
-        assert final_audit["approvalCounts"] == {"total": 1, "approved": 1, "rejected": 0, "pending": 0}
-        assert final_audit["reviewConclusion"]["approvalId"] == approval_id
-        assert final_audit["reviewConclusion"]["decision"] == "approved"
-        assert final_audit["approvals"][0]["kind"] == "completion_review"
-        assert final_audit["approvals"][0]["decision"] == "approved"
+        assert final_audit["approvalCounts"] == {"total": 0, "approved": 0, "rejected": 0, "pending": 0}
 
         completed = store.get_task({"taskId": task["id"]})["task"]
         evidence_audit = completed["structuredResult"]["completionEvidence"]["audit"]
-        assert evidence_audit["approvalCounts"]["approved"] == 1
+        assert evidence_audit["approvalCounts"] == {"total": 0, "approved": 0, "rejected": 0, "pending": 0}
         assert evidence_audit["completionAdvisor"]["proposalRecordId"]
         completion_event = [
             event for event in captured_events
             if event.type == "agent.decision.completion" and event.payload.get("decision") == "completed"
         ][-1]
-        assert completion_event.payload["audit"]["approvalCounts"]["approved"] == 1
+        assert completion_event.payload["audit"]["approvalCounts"]["approved"] == 0
         assert completion_event.payload["audit"]["completionAdvisor"]["proposalRecordId"]
         proposal = store.list_proposals({
             "taskId": task["id"],
             "kind": "completion_decision",
         })["proposals"][0]
-        assert proposal["source"]["completionAudit"]["approvalCounts"]["approved"] == 1
+        assert proposal["source"]["completionAudit"]["approvalCounts"]["approved"] == 0
 
-    def test_swarm_task_summary_only_requires_completion_review(self, tmp_path: Any) -> None:
+    def test_swarm_task_summary_only_records_internal_gate(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -2091,9 +2134,10 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "completed"
         gate = result["structuredResult"]["completionGate"]
         assert gate["status"] == "needs_user_review"
+        assert gate["internal"] is True
         assert "summary" in gate["reason"].lower()
 
     def test_summarizer_child_summary_only_can_complete_without_write_or_verification_evidence(self, tmp_path: Any) -> None:
@@ -2160,12 +2204,13 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         evidence = result["structuredResult"]["completionEvidence"]
         failed = [item["criterion"] for item in evidence["acceptance"] if item["status"] == "failed"]
         assert "Expected artifact exists: feedback_storage.py" in failed
         assert "Expected artifact exists: app.js" in failed
         assert "Expected pytest file count >= 2" in failed
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
 
     def test_package_layout_commands_satisfy_root_artifact_mentions(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -2240,7 +2285,7 @@ class TestCompletionHardGate:
         assert structural
         assert all(item["status"] == "supported" for item in structural)
 
-    def test_generated_artifact_mojibake_waits_for_review(self, tmp_path: Any) -> None:
+    def test_generated_artifact_mojibake_fails_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         project = tmp_path / "project"
@@ -2268,7 +2313,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         evidence = result["structuredResult"]["completionEvidence"]
         readability = [
             item for item in evidence["acceptance"]
@@ -2509,7 +2554,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         evidence = result["structuredResult"]["completionEvidence"]
         asset = [
             item for item in evidence["acceptance"]
@@ -2572,7 +2617,7 @@ class TestCompletionHardGate:
         assert asset["status"] == "supported"
         assert asset["source"] == "static_asset_reachability"
 
-    def test_static_frontend_blank_route_waits_for_review(self, tmp_path: Any) -> None:
+    def test_static_frontend_blank_route_fails_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         project = tmp_path / "project"
@@ -2608,7 +2653,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         evidence = result["structuredResult"]["completionEvidence"]
         route = [
             item for item in evidence["acceptance"]
@@ -2619,7 +2664,7 @@ class TestCompletionHardGate:
         assert "no visible text found" in route["issues"]
         assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
 
-    def test_static_frontend_missing_route_link_waits_for_review(self, tmp_path: Any) -> None:
+    def test_static_frontend_missing_route_link_fails_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         project = tmp_path / "project"
@@ -2659,7 +2704,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         evidence = result["structuredResult"]["completionEvidence"]
         route = [
             item for item in evidence["acceptance"]
@@ -2946,7 +2991,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "running"
         assert [call[0] for call in advisor.calls] == [
             "product_surface_decision",
             "completion_decision",
@@ -2995,6 +3040,7 @@ class TestCompletionHardGate:
         assert proposal["source"]["type"] == "llm"
         assert proposal["source"]["advisorProposalId"] == "advisor_review_1"
         assert result["structuredResult"]["completionGate"]["status"] == "advisor_needs_review"
+        assert result["structuredResult"]["completionGate"]["decision"] == "continue_after_internal_review"
 
     def test_product_surface_advisor_can_request_design_evidence(self, tmp_path: Any) -> None:
         class RecordingAdvisor:
@@ -3080,7 +3126,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "running"
         evidence = result["structuredResult"]["completionEvidence"]
         assert evidence["productSurfaceAdvisor"]["payload"]["surface_type"] == "architecture_design"
         assert evidence["advisorRequestedEvidence"][0]["kind"] == "design_review"
@@ -3090,10 +3136,9 @@ class TestCompletionHardGate:
         assert len(evidence_events) == 1
         assert evidence_events[0].payload["surfaceType"] == "architecture_design"
         assert evidence_events[0].payload["evidenceRequests"][0]["target"] == "docs/auth-storage-adr.md"
-        approval_event = next(event for event in captured_events if event.type == "approval.requested")
-        request = approval_event.payload["request"]
-        assert request["advisorRequestedEvidence"][0]["kind"] == "design_review"
+        assert not [event for event in captured_events if event.type == "approval.requested"]
         assert result["structuredResult"]["completionGate"]["advisorRequestedEvidence"][0]["kind"] == "design_review"
+        assert result["structuredResult"]["completionGate"]["decision"] == "continue_after_internal_review"
 
     def test_product_surface_advisor_nonblocking_evidence_event_is_generic(self, tmp_path: Any) -> None:
         class RecordingAdvisor:
@@ -4463,7 +4508,7 @@ class TestCompletionHardGate:
         ]
         assert transitions[-1] == "rejected"
 
-    def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
+    def test_static_frontend_script_syntax_failure_fails_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         project = tmp_path / "project"
@@ -4499,7 +4544,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "failed"
         evidence = result["structuredResult"]["completionEvidence"]
         syntax = [
             item for item in evidence["acceptance"]
@@ -5493,7 +5538,7 @@ class TestCompletionHardGate:
         assert evidence["counts"]["failedTestsRun"] == 0
         assert evidence["counts"]["passedTestsRun"] >= 1
 
-    def test_completion_review_rejection_fails_task(self, tmp_path: Any) -> None:
+    def test_legacy_completion_review_rejection_fails_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -5504,15 +5549,23 @@ class TestCompletionHardGate:
             goal="modify the implementation",
             plan=[],
             routing={"scenario": "code_edit"},
+            status="waiting_approval",
         )
-        waiting = rt.orchestrator._complete_task(
-            session_id=session["id"],
-            task=task,
-            summary="I changed the implementation.",
-            context={"routing": {"scenario": "code_edit"}},
-            skip_reflection=True,
+        completion_review = store.create_approval(
+            task["id"],
+            "completion_review",
+            {
+                "summary": "I changed the implementation.",
+                "structuredResult": {
+                    "summary": "I changed the implementation.",
+                    "status": "needs_review",
+                    "completionGate": {"status": "needs_user_review"},
+                    "completionEvidence": {"evidenceLevel": "summary_only", "status": "summary_only"},
+                },
+                "completionEvidence": {"evidenceLevel": "summary_only", "status": "summary_only"},
+            },
         )
-        approval_id = waiting["structuredResult"]["completionGate"]["approvalId"]
+        approval_id = completion_review["id"]
 
         result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "rejected"})
 

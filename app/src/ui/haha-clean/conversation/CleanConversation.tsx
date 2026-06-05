@@ -1155,15 +1155,17 @@ export const CleanThinkingBlock = memo(function CleanThinkingBlock({ message }: 
   const [expanded, setExpanded] = useState(false);
   const text = message.content.trim() || "正在思考";
   const preview = compactText(text.split(/\r?\n/).find((line) => line.trim()) ?? text, 120);
-  const title = message.streaming ? "正在思考" : "思考";
+  const transient = message.metadata?.transient === true;
+  const title = transient ? "正在处理" : message.streaming ? "正在思考" : "思考";
+  const canExpand = !transient;
   return (
     <section className="hc-thinking">
-      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
-        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      <button type="button" aria-expanded={canExpand ? expanded : false} onClick={() => canExpand && setExpanded((open) => !open)}>
+        {canExpand ? (expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : null}
         <span>{title}</span>
         <em>{preview}</em>
       </button>
-      {expanded ? (
+      {canExpand && expanded ? (
         <div className="hc-thinking-detail">
           <CleanMarkdown content={text} />
         </div>

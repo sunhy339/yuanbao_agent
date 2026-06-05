@@ -5,6 +5,8 @@ import logging
 from copy import deepcopy
 from typing import Any
 
+from .output_bridges import internal_completion_gate_bridge
+
 logger = logging.getLogger(__name__)
 
 _APPROVAL_KIND_CAPABILITY: dict[str, str] = {
@@ -111,6 +113,9 @@ class ApprovalFlowMixin:
             "decidedBy": approval.get("decidedBy"),
             "decidedAt": approval.get("decidedAt"),
         }
+        if approval.get("kind") == "completion_review":
+            payload["internal"] = True
+            payload["_bridge"] = internal_completion_gate_bridge()
         comment = str(approval.get("comment") or "").strip()
         if comment:
             payload["comment"] = comment

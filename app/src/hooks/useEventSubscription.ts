@@ -519,6 +519,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 taskId: event.taskId,
                 state: "streaming",
                 text: "正在输出回复",
+                transient: true,
                 now: event.ts,
               }),
             );
@@ -1012,6 +1013,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 taskId: event.taskId,
                 state: payload.state,
                 verb: payload.verb,
+                transient: true,
                 now: event.ts,
               }),
             );

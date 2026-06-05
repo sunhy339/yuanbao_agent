@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from local_agent_runtime.context.builder import ContextBuilder
+from local_agent_runtime.models import RuntimeEvent
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import (
     BUILTIN_TOOL_SCHEMAS,
@@ -17,6 +18,10 @@ EXPECTED_TOOL_NAMES = {
     "list_dir",
     "search_files",
     "read_file",
+    "ask_user_question",
+    "enter_plan_mode",
+    "exit_plan_mode",
+    "agent",
     "run_command",
     "apply_patch",
     "git_status",
@@ -389,3 +394,156 @@ def test_trace_list_rpc(runtime_harness: Any) -> None:
 
     assert "result" in response, response
     assert response["result"]["traceEvents"][0]["id"] == event["id"]
+
+
+def test_trace_replay_keeps_chat_compat_message_delta_flat_frames_for_adapter_history(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="Trace replay")
+        task = store.create_task(session_id=session["id"], task_type="chat", goal="trace replay", plan=[])
+
+        store.append_trace_event(
+            task_id=task["id"],
+            event_type="message.delta",
+            source="message",
+            payload={"messageId": "msg_1", "delta": "hello", "_chatCompat": True},
+            session_id=session["id"],
+        )
+        store.append_trace_event(
+            task_id=task["id"],
+            event_type="message.completed",
+            source="message",
+            payload={"messageId": "msg_1", "content": "hello", "_chatCompat": True},
+            session_id=session["id"],
+        )
+        store.append_trace_event(
+            task_id=task["id"],
+            event_type="content_delta",
+            source="assistant",
+            payload={"text": "direct flat text"},
+            session_id=session["id"],
+        )
+
+        events = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+
+        assert events[0]["hahaCc"] == {"type": "content_delta", "text": "hello"}
+        assert events[0]["yuanbao"] == events[0]["hahaCc"]
+        assert events[1]["hahaCc"] == {
+            "type": "message_complete",
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        assert events[1]["yuanbao"] == events[1]["hahaCc"]
+        assert events[2]["hahaCc"] == {"type": "content_delta", "text": "direct flat text"}
+        assert events[2]["yuanbao"] == events[2]["hahaCc"]
+    finally:
+        store.close()
+
+
+def test_trace_replay_respects_suppress_chat_replay_bridge(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="Trace replay")
+        task = store.create_task(session_id=session["id"], task_type="chat", goal="trace replay", plan=[])
+
+        store.append_trace_event(
+            task_id=task["id"],
+            event_type="thinking",
+            source="assistant",
+            payload={
+                "text": "internal only",
+                "_bridge": {"suppressChatReplay": True},
+            },
+            session_id=session["id"],
+        )
+
+        event = store.list_trace_events({"taskId": task["id"]})["traceEvents"][0]
+
+        assert "hahaCc" not in event
+        assert "yuanbao" not in event
+    finally:
+        store.close()
+
+
+def test_runtime_trace_mirror_converts_realtime_flat_suppression_to_chat_replay_suppression(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="Trace replay")
+        task = store.create_task(session_id=session["id"], task_type="chat", goal="trace replay", plan=[])
+
+        store.append_runtime_event(
+            RuntimeEvent(
+                event_id="evt_internal_progress",
+                session_id=session["id"],
+                task_id=task["id"],
+                type="assistant_progress",
+                ts=1,
+                payload={
+                    "text": "internal phase",
+                    "_bridge": {"suppressRealtimeFlat": True},
+                },
+                visibility="chat",
+            )
+        )
+
+        event = store.list_trace_events({"taskId": task["id"]})["traceEvents"][0]
+
+        assert event["payload"]["_bridge"]["suppressRealtimeFlat"] is True
+        assert event["payload"]["_bridge"]["suppressChatReplay"] is True
+        assert "hahaCc" not in event
+        assert "yuanbao" not in event
+    finally:
+        store.close()
+
+
+def test_completion_review_internal_bridge_trace_events_do_not_emit_flat_history(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="Completion review")
+        task = store.create_task(session_id=session["id"], task_type="edit", goal="change code", plan=[])
+        bridge = {
+            "internal": True,
+            "kind": "completion_review",
+            "suppressRealtimeFlat": True,
+            "suppressChatReplay": True,
+        }
+
+        store.append_trace_event(
+            task_id=task["id"],
+            event_type="approval.requested",
+            source="approval",
+            payload={
+                "approvalId": "appr_review",
+                "taskId": task["id"],
+                "kind": "completion_review",
+                "internal": True,
+                "_bridge": bridge,
+                "request": {"summary": "internal gate"},
+            },
+            session_id=session["id"],
+            visibility="trace",
+        )
+        store.append_trace_event(
+            task_id=task["id"],
+            event_type="task.waiting_approval",
+            source="task",
+            payload={
+                "status": "waiting_approval",
+                "internalGate": "completion_review",
+                "_bridge": bridge,
+            },
+            session_id=session["id"],
+            visibility="trace",
+        )
+
+        events = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+
+        assert [event["type"] for event in events] == ["approval.requested", "task.waiting_approval"]
+        assert all(event["visibility"] == "trace" for event in events)
+        assert all("hahaCc" not in event for event in events)
+        assert all("yuanbao" not in event for event in events)
+    finally:
+        store.close()

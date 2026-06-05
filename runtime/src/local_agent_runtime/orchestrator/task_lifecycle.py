@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import subprocess
+from copy import deepcopy
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
@@ -15,6 +16,7 @@ from ..policy.tool_policy_resolver import TOOL_CAPABILITIES, ToolPolicyResolver
 from ..services.runtime_dependencies import resolve_node_executable
 from ..tools._shared import approval_request, normalize_shell
 from ..tools.run_command import _powershell_execution_command
+from .output_bridges import internal_completion_gate_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -282,12 +284,16 @@ class TaskLifecycleMixin:
                     approval_ids=pending_evidence_approvals,
                     skip_drain=skip_drain,
                 )
-            return self._request_completion_review(
+            return self._handle_internal_completion_gate(
                 session_id=session_id,
                 task=task,
                 summary=final_summary,
+                context=context or {},
+                reflection_data=reflection_data,
                 structured_result=structured_result,
                 completion_evidence=completion_evidence,
+                completion_advice=completion_advice,
+                tool_results=tool_results,
                 reason=completion_gate["reason"],
                 risk=completion_gate.get("risk"),
                 gate_status=completion_gate.get("gateStatus"),
@@ -295,6 +301,24 @@ class TaskLifecycleMixin:
                 skip_drain=skip_drain,
             )
         if completion_gate["action"] == "fail":
+            failed_gate_status = (
+                completion_gate.get("gateStatus")
+                or completion_gate.get("decision")
+                or "completion_failed"
+            )
+            failed_structured_result = {
+                **structured_result,
+                "status": "failed",
+                "completionGate": {
+                    "status": failed_gate_status,
+                    "decision": completion_gate.get("decision") or failed_gate_status,
+                    "reason": completion_gate["reason"],
+                    "risk": completion_gate.get("risk"),
+                    "internal": True,
+                    "terminal": True,
+                },
+            }
+            failed_structured_result["completionEvidence"] = completion_evidence
             failure_summary = self._merge_failed_completion_summary(
                 final_summary=final_summary,
                 failure_reason=completion_gate["reason"],
@@ -305,13 +329,38 @@ class TaskLifecycleMixin:
                 task=task,
                 summary=failure_summary,
                 error_code="COMPLETION_EVIDENCE_INSUFFICIENT",
-                structured_result=structured_result,
+                structured_result=failed_structured_result,
                 skip_drain=skip_drain,
             )
+        return self._finalize_completed_task(
+            session_id=session_id,
+            task=task,
+            final_summary=final_summary,
+            structured_result=structured_result,
+            completion_evidence=completion_evidence,
+            reflection_data=reflection_data,
+            completion_advice=completion_advice,
+            tool_results=tool_results,
+            skip_drain=skip_drain,
+        )
+
+    def _finalize_completed_task(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        final_summary: str,
+        structured_result: dict[str, Any],
+        completion_evidence: dict[str, Any],
+        reflection_data: dict[str, Any] | None,
+        completion_advice: dict[str, Any] | None,
+        tool_results: list[dict[str, Any]] | None,
+        skip_drain: bool,
+    ) -> dict[str, Any]:
         completed_task = self._store.update_task(
             task_id=task["id"],
             status="completed",
-            plan=task["plan"],
+            plan=task.get("plan") or [],
             summary=final_summary,
             result_summary=final_summary,
             reflection=reflection_data,
@@ -319,11 +368,10 @@ class TaskLifecycleMixin:
         )
         runtime_task = {
             **completed_task,
-            "plan": task["plan"],
+            "plan": task.get("plan") or [],
             "resultSummary": final_summary,
         }
         logger.info("Task %s completed: summary_len=%d", task["id"], len(final_summary))
-        # Update existing active assistant message or create a new one
         active_msg_id = runtime_task.get("activeAssistantMessageId")
         message_content = final_summary
         if active_msg_id:
@@ -353,7 +401,6 @@ class TaskLifecycleMixin:
         self._consolidate_working_memories(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
-        # --- Decision trace: completion ---
         completion_payload = {
             "decision": "completed",
             "whyComplete": final_summary[:500],
@@ -376,7 +423,7 @@ class TaskLifecycleMixin:
         final_completion_audit = (
             completion_evidence.get("audit")
             if isinstance(completion_evidence.get("audit"), dict)
-            else completion_audit
+            else {}
         )
         if final_completion_audit:
             completion_payload["audit"] = final_completion_audit
@@ -417,6 +464,384 @@ class TaskLifecycleMixin:
         if not skip_drain:
             self._drain_session_queue(session_id)
         return runtime_task
+
+    def _handle_internal_completion_gate(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        context: dict[str, Any],
+        reflection_data: dict[str, Any] | None,
+        structured_result: dict[str, Any],
+        completion_evidence: dict[str, Any],
+        completion_advice: dict[str, Any] | None,
+        tool_results: list[dict[str, Any]] | None,
+        reason: str,
+        risk: str | None,
+        gate_status: str | None,
+        decision: str | None,
+        skip_drain: bool,
+    ) -> dict[str, Any]:
+        status = gate_status or "internal_review"
+        gate_decision = decision or status
+        internal_gate_bridge = internal_completion_gate_bridge()
+        review_structured_result = {
+            **structured_result,
+            "completionGate": {
+                "status": status,
+                "decision": gate_decision,
+                "reason": reason,
+                "risk": risk,
+                "internal": True,
+            },
+        }
+        review_structured_result["completionEvidence"] = completion_evidence
+        advisor_requested_evidence = completion_evidence.get("advisorRequestedEvidence")
+        if isinstance(advisor_requested_evidence, list):
+            review_structured_result["completionGate"]["advisorRequestedEvidence"] = advisor_requested_evidence
+        advisor_evidence_approvals = completion_evidence.get("advisorEvidenceApprovals")
+        if isinstance(advisor_evidence_approvals, list):
+            review_structured_result["completionGate"]["advisorEvidenceApprovals"] = advisor_evidence_approvals
+        if self._completion_gate_requires_continuation(
+            gate_status=status,
+            decision=gate_decision,
+            completion_evidence=completion_evidence,
+            context=context,
+        ):
+            return self._continue_after_internal_completion_gate(
+                session_id=session_id,
+                task=task,
+                summary=summary,
+                structured_result=review_structured_result,
+                completion_evidence=completion_evidence,
+                reason=reason,
+                risk=risk,
+                gate_status=status,
+                decision=gate_decision,
+                skip_drain=skip_drain,
+            )
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="agent.decision.completion",
+            payload={
+                "decision": gate_decision,
+                "whyBlocked": reason,
+                "completionEvidence": completion_evidence,
+                "internal": True,
+                "_bridge": internal_gate_bridge,
+            },
+            visibility="trace",
+        )
+        return self._finalize_completed_task(
+            session_id=session_id,
+            task=task,
+            final_summary=summary,
+            structured_result=review_structured_result,
+            completion_evidence=completion_evidence,
+            reflection_data=reflection_data,
+            completion_advice=completion_advice,
+            tool_results=tool_results,
+            skip_drain=skip_drain,
+        )
+
+    def _continue_after_internal_completion_gate(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        structured_result: dict[str, Any],
+        completion_evidence: dict[str, Any],
+        reason: str,
+        risk: str | None,
+        gate_status: str,
+        decision: str,
+        skip_drain: bool,
+    ) -> dict[str, Any]:
+        continued_structured_result = {
+            **structured_result,
+            "status": "waiting_runtime_work",
+            "completionGate": {
+                **(structured_result.get("completionGate") if isinstance(structured_result.get("completionGate"), dict) else {}),
+                "status": gate_status,
+                "decision": "continue_after_internal_review",
+                "reason": reason,
+                "risk": risk,
+                "internal": True,
+            },
+        }
+        if task.get("status") != "running":
+            self._validate_task_transition(task["status"], "running", task["id"], silent=True)
+        continued = self._store.update_task(
+            task_id=task["id"],
+            status="running",
+            plan=task.get("plan") or [],
+            summary=summary,
+            result_summary=summary,
+            structured_result=continued_structured_result,
+        )
+        runtime_task = {
+            **continued,
+            "plan": task.get("plan") or [],
+            "resultSummary": summary,
+        }
+        internal_gate_bridge = internal_completion_gate_bridge()
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="agent.decision.completion",
+            payload={
+                "decision": "continue_after_internal_review",
+                "gateStatus": gate_status,
+                "reason": reason,
+                "risk": risk,
+                "completionEvidence": completion_evidence,
+                "internal": True,
+                "_bridge": internal_gate_bridge,
+            },
+            visibility="trace",
+        )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="task.runtime_work_waiting",
+            payload={
+                "status": "running",
+                "detail": reason,
+                "completionGate": continued_structured_result["completionGate"],
+                "internalGate": "completion_review",
+            },
+        )
+        scheduled = False
+        if not skip_drain:
+            scheduled = self._schedule_internal_completion_continuation(
+                task=runtime_task,
+                summary=summary,
+                completion_evidence=completion_evidence,
+                reason=reason,
+                gate_status=gate_status,
+                decision=decision,
+            )
+        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="running")
+        if not scheduled and not skip_drain:
+            self._drain_session_queue(session_id)
+        return runtime_task
+
+    def _schedule_internal_completion_continuation(
+        self,
+        *,
+        task: dict[str, Any],
+        summary: str,
+        completion_evidence: dict[str, Any],
+        reason: str,
+        gate_status: str,
+        decision: str,
+    ) -> bool:
+        if self._completion_gate_waits_for_external_runtime_work(completion_evidence):
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="task.continuation.deferred",
+                payload={
+                    "status": task.get("status"),
+                    "reason": "waiting_for_pending_runtime_work",
+                    "gateStatus": gate_status,
+                    "internalGate": "completion_review",
+                },
+            )
+            return False
+        continuation_goal = self._internal_completion_continuation_goal(
+            task=task,
+            summary=summary,
+            completion_evidence=completion_evidence,
+            reason=reason,
+            gate_status=gate_status,
+            decision=decision,
+        )
+        routing = self._internal_completion_continuation_routing(
+            task=task,
+            completion_evidence=completion_evidence,
+            gate_status=gate_status,
+            decision=decision,
+        )
+        try:
+            context = self._context_builder.build(
+                session_id=task["sessionId"],
+                goal=continuation_goal,
+                lightweight=True,
+            )
+            context["routing"] = routing
+            context["completionReviewContinuation"] = {
+                "gateStatus": gate_status,
+                "decision": decision,
+                "summary": summary,
+                "internal": True,
+            }
+            updated = self._store.update_task(
+                task_id=task["id"],
+                status=task.get("status") or "running",
+                plan=task.get("plan") or [],
+                current_step=task.get("currentStep"),
+                routing=routing,
+            )
+            runtime_task = {**task, **updated, "routing": routing, "plan": task.get("plan") or []}
+            self._publish(
+                session_id=runtime_task["sessionId"],
+                task=runtime_task,
+                event_type="task.continuation.started",
+                payload={
+                    "status": runtime_task.get("status"),
+                    "reason": "completion_gate_requires_more_work",
+                    "gateStatus": gate_status,
+                    "internalGate": "completion_review",
+                },
+            )
+            publish_progress = getattr(self, "_publish_assistant_progress", None)
+            if callable(publish_progress):
+                publish_progress(
+                    session_id=runtime_task["sessionId"],
+                    task=runtime_task,
+                    text="继续补齐当前任务缺少的证据或后续动作。",
+                    phase="completion_gate_continuation",
+                    payload={
+                        "gateStatus": gate_status,
+                        "internalGate": "completion_review",
+                    },
+                )
+            self._start_background_message(
+                session_id=runtime_task["sessionId"],
+                task=runtime_task,
+                goal=continuation_goal,
+                context=context,
+                routing=routing,
+                skill_id=routing.get("skill_id") if isinstance(routing.get("skill_id"), str) else None,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to schedule internal completion continuation for task=%s: %s", task.get("id"), exc)
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="task.continuation.failed",
+                payload={
+                    "status": task.get("status"),
+                    "reason": str(exc),
+                    "gateStatus": gate_status,
+                    "internalGate": "completion_review",
+                },
+            )
+            return False
+
+    def _completion_gate_requires_continuation(
+        self,
+        *,
+        gate_status: str,
+        decision: str,
+        completion_evidence: dict[str, Any],
+        context: dict[str, Any],
+    ) -> bool:
+        continuation_context = context.get("completionReviewContinuation") if isinstance(context, dict) else None
+        if isinstance(continuation_context, dict) and continuation_context.get("internal") is True:
+            return False
+        normalized_status = gate_status.strip().casefold()
+        normalized_decision = decision.strip().casefold()
+        continuation_statuses = {
+            "advisor_needs_review",
+            "advisor_evidence_requested",
+            "needs_workspace_evidence",
+        }
+        if normalized_status in continuation_statuses:
+            return True
+        if normalized_decision in continuation_statuses:
+            return True
+        advice = completion_evidence.get("completionAdvisor")
+        if isinstance(advice, dict) and advice.get("accepted") is True:
+            payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
+            confidence = advice.get("confidence")
+            if payload.get("is_complete") is False and isinstance(confidence, (int, float)) and confidence >= 0.75:
+                return True
+        return False
+
+    def _completion_gate_waits_for_external_runtime_work(self, completion_evidence: dict[str, Any]) -> bool:
+        return bool(
+            self._completion_pending_approval_items(completion_evidence)
+            or self._completion_unresolved_child_tasks(completion_evidence)
+        )
+
+    def _internal_completion_continuation_routing(
+        self,
+        *,
+        task: dict[str, Any],
+        completion_evidence: dict[str, Any],
+        gate_status: str,
+        decision: str,
+    ) -> dict[str, Any]:
+        routing = deepcopy(task.get("routing") or {})
+        routing["strategy"] = "react_standard"
+        routing["enable_planning"] = False
+        routing["continuation"] = {
+            "kind": "completion_review",
+            "gateStatus": gate_status,
+            "decision": decision,
+            "internal": True,
+        }
+        workflow = dict(routing.get("mainWorkflow") or {})
+        workflow["continuation"] = routing["continuation"]
+        workflow.setdefault("convergence", {})
+        routing["mainWorkflow"] = workflow
+        routing["completionEvidenceSnapshot"] = {
+            "status": completion_evidence.get("status"),
+            "evidenceLevel": completion_evidence.get("evidenceLevel"),
+            "counts": completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {},
+        }
+        return routing
+
+    @staticmethod
+    def _internal_completion_continuation_goal(
+        *,
+        task: dict[str, Any],
+        summary: str,
+        completion_evidence: dict[str, Any],
+        reason: str,
+        gate_status: str,
+        decision: str,
+    ) -> str:
+        requested = completion_evidence.get("advisorRequestedEvidence")
+        requested_lines: list[str] = []
+        if isinstance(requested, list):
+            for item in requested[:5]:
+                if not isinstance(item, dict):
+                    continue
+                item_summary = str(item.get("summary") or item.get("kind") or "").strip()
+                status = str(item.get("status") or "").strip()
+                if item_summary:
+                    requested_lines.append(f"- {item_summary}" + (f" ({status})" if status else ""))
+        if not requested_lines:
+            advisor = completion_evidence.get("completionAdvisor") if isinstance(completion_evidence.get("completionAdvisor"), dict) else {}
+            payload = advisor.get("payload") if isinstance(advisor.get("payload"), dict) else {}
+            issues = payload.get("blocking_issues") or payload.get("remaining_risks") or []
+            if not isinstance(issues, list):
+                issues = [issues]
+            for item in issues[:5]:
+                text = str(item).strip()
+                if text:
+                    requested_lines.append(f"- {text}")
+        requested_text = "\n".join(requested_lines) if requested_lines else "- Continue with the smallest sufficient runtime evidence or next action."
+        original_goal = str(task.get("goal") or "").strip()
+        return (
+            "Continue the existing task after an internal completion gate.\n"
+            f"Original user goal: {original_goal}\n"
+            f"Gate status: {gate_status}\n"
+            f"Decision: {decision}\n"
+            f"Reason: {reason or 'The completion gate still requires more work.'}\n"
+            f"Previous summary:\n{summary.strip()}\n\n"
+            "Required follow-up:\n"
+            f"{requested_text}\n\n"
+            "Do not treat this as a new user request. Do not repeat the final answer. "
+            "Use only the minimal necessary tools, then update the same task with the missing evidence or finish the work."
+        )
 
     def _completion_gate_decision(
         self,
@@ -861,13 +1286,13 @@ class TaskLifecycleMixin:
         if failed_tool_count <= 0:
             return None
         return {
-            "action": "review",
+            "action": "fail",
             "decision": "needs_tool_review",
             "gateStatus": "needs_tool_review",
             "risk": "tool results include unresolved failures",
             "reason": (
                 "Completion blocked because tool results include unresolved failures. "
-                "Resolve the failed tool result or approve the completion evidence before marking it completed."
+                "Resolve the failed tool result before marking it completed."
             ),
         }
 
@@ -880,12 +1305,19 @@ class TaskLifecycleMixin:
         if failed_count > 0:
             reason = (
                 "Completion blocked because explicit acceptance evidence reports unmet criteria. "
-                "Resolve or review the failed criteria before marking the task completed."
+                "Resolve the failed criteria before marking the task completed."
             )
+            return {
+                "action": "fail",
+                "decision": "needs_acceptance_review",
+                "gateStatus": "needs_acceptance_review",
+                "risk": "acceptance criteria failed",
+                "reason": reason,
+            }
         else:
             reason = (
                 "Completion blocked because explicit acceptance evidence does not cover every criterion. "
-                "Provide coverage or approve the completion evidence before marking the task completed."
+                "The gap is recorded as an internal completion audit."
             )
         return {
             "action": "review",
@@ -1834,6 +2266,7 @@ class TaskLifecycleMixin:
                 content=summary,
                 status="streaming",
             )
+        internal_gate_bridge = internal_completion_gate_bridge()
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -1842,8 +2275,11 @@ class TaskLifecycleMixin:
                 "approvalId": approval["id"],
                 "taskId": task["id"],
                 "kind": "completion_review",
+                "internal": True,
+                "_bridge": internal_gate_bridge,
                 "request": json.loads(approval.get("requestJson") or "{}"),
             },
+            visibility="trace",
         )
         self._fire_hooks(
             "on_approval_required",
@@ -1860,6 +2296,8 @@ class TaskLifecycleMixin:
                 "whyBlocked": reason,
                 "completionEvidence": completion_evidence,
                 "approvalId": approval["id"],
+                "internal": True,
+                "_bridge": internal_gate_bridge,
             },
         )
         self._publish(
@@ -1870,8 +2308,11 @@ class TaskLifecycleMixin:
                 "status": "waiting_approval",
                 "detail": reason,
                 "approvalId": approval["id"],
+                "internalGate": "completion_review",
                 "completionEvidence": completion_evidence,
+                "_bridge": internal_gate_bridge,
             },
+            visibility="trace",
         )
         self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="waiting_approval")
         if not skip_drain:

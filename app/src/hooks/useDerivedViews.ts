@@ -311,6 +311,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
           id: trace.id,
           type: trace.type,
           source: trace.source,
+          payload: trace.payload,
           time: trace.createdAt,
           title: trace.type,
           summary: summarizeValue(trace.payload, trace.type, 120),

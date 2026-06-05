@@ -84,6 +84,37 @@ describe("runtimeItemBuilder", () => {
     expect(items).toEqual([]);
   });
 
+  it("does not surface internal bridge traces as runtime cards", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      traces: [
+        {
+          id: "trace-review",
+          type: "task.waiting_approval",
+          source: "task",
+          summary: JSON.stringify({ completionEvidence: { evidenceLevel: "summary_only" } }),
+          detail: JSON.stringify({ request: { summary: "internal completion gate" } }),
+          payload: {
+            internalGate: "completion_review",
+            _bridge: {
+              internal: true,
+              suppressRealtimeFlat: true,
+              suppressChatReplay: true,
+            },
+          },
+          visibility: "trace",
+        },
+      ],
+    });
+
+    expect(items).toEqual([]);
+  });
+
   it("surfaces approval changed paths and diff preview fields", () => {
     const diff = [
       "diff --git a/src/app.ts b/src/app.ts",
@@ -273,6 +304,38 @@ describe("runtimeItemBuilder", () => {
       toolSemanticParentLabel: "搜索",
       previewRows: [{ label: "命中", value: "2 项" }],
     });
+  });
+
+  it("does not render successful structured tool JSON as raw runtime detail", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_read",
+          toolUseId: "call_read",
+          toolName: "read_file",
+          status: "completed",
+          target: "snake_game/README.md",
+          resultSummary: "read snake_game/README.md (4105 bytes)",
+          resultPreview: [{ label: "文件", value: "snake_game/README.md" }],
+          rawOutput: JSON.stringify({
+            path: "snake_game/README.md",
+            bytesRead: 4105,
+            content: "# Snake Game\n...",
+          }),
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.summary).toContain("read snake_game/README.md");
+    expect(items[0]?.previewRows).toEqual([{ label: "文件", value: "snake_game/README.md" }]);
+    expect(items[0]?.rawDetail).toBe("");
   });
 
   it("hides control-flow tools from runtime panel tool rows", () => {

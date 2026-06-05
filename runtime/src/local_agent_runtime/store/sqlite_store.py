@@ -28,7 +28,7 @@ from ..yuanbao_event_adapter import to_yuanbao_server_message
 
 def _suppresses_flat_bridge(payload: dict[str, Any]) -> bool:
     bridge = payload.get("_bridge")
-    return isinstance(bridge, dict) and bridge.get("suppressRealtimeFlat") is True
+    return isinstance(bridge, dict) and bridge.get("suppressChatReplay") is True
 
 
 class _LockedCursor:

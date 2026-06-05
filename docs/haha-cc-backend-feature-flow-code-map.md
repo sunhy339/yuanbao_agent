@@ -233,6 +233,10 @@ Action:
   write/edit, risky command, computer use, explicit plan approval.
 - `completion_review` is an internal gate. If visible, it should be a compact
   panel audit, not a chat permission request.
+- New task completion no longer creates `completion_review` approvals. The
+  completion state machine now separates clear failures, internal audit gaps,
+  and same-task continuation for advisor/workspace evidence. Legacy
+  `completion_review` approvals are still accepted for old stored sessions.
 - All approval/question responses are one-shot supplements to the existing
   task, never new user goals.
 
@@ -564,7 +568,13 @@ Rules:
 
 2. Evidence/completion:
    - `workspaceEvidenceRequired` only from explicit metadata/advisor contract.
-   - Completion review is internal; no flat `permission_request`.
+   - Completion review is internal; no flat `permission_request`, no new
+     user-visible approval, and no new user goal after approval/resume.
+   - Failed verification, failed acceptance, and unresolved failed tool
+     evidence terminate as task failures with structured completion-gate
+     metadata. Missing but non-failing evidence is recorded as an internal
+     audit, or continues the same task when advisor/workspace evidence is
+     explicitly required.
    - Terminal states block late review/resume/chat events.
 
 3. Event projection/replay:
@@ -604,4 +614,3 @@ Rules:
   - one-shot approval/question resolution,
   - provider thinking separate from backend progress,
   - terminal-state absorbing behavior.
-

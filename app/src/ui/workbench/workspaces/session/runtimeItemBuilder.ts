@@ -566,6 +566,17 @@ export function isRawJsonLike(value?: string) {
   return Boolean(trimmed && ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))));
 }
 
+const USER_FACING_TRACE_TITLES: Record<string, string> = {
+  goal_event: "目标状态",
+  "task.cancelled": "任务已取消",
+  "task.failed": "任务未完成",
+  "runtime.error": "运行异常",
+  "provider.error": "模型调用异常",
+  "mcp.error": "MCP 异常",
+  "context.trimmed": "上下文已压缩",
+  "routing.decision": "路由决策",
+};
+
 function traceBridge(trace: SessionWorkspaceTrace): Record<string, unknown> {
   const payload = trace.payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -623,6 +634,10 @@ export function isUserVisibleTrace(trace: SessionWorkspaceTrace) {
 export function formatTraceTitle(trace: SessionWorkspaceTrace) {
   if (trace.title && trace.title !== trace.type) {
     return trace.title;
+  }
+  const mappedTitle = USER_FACING_TRACE_TITLES[trace.type.toLowerCase()];
+  if (mappedTitle) {
+    return mappedTitle;
   }
   return trace.type
     .split(".")

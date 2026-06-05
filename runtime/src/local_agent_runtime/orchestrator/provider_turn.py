@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 class ProviderTurnMixin:
     """Mixin providing provider turn handling, streaming, and response parsing."""
 
+    def _raise_if_provider_task_cancelled(self, task: dict[str, Any]) -> None:
+        checker = getattr(self, "_task_is_cancelled", None)
+        if callable(checker) and checker(task):
+            raise RuntimeError("Task was cancelled.")
+
     @staticmethod
     def _provider_stream_tool_metadata(tool_name: Any, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         if not isinstance(tool_name, str) or not tool_name.strip():
@@ -701,6 +706,7 @@ class ProviderTurnMixin:
             _active_tool_streams = {}
             try:
                 for event in self._provider.stream(goal, provider_context):
+                    self._raise_if_provider_task_cancelled(task)
                     event_type = event.get("type")
                     if event_type == "content_delta":
                         delta = event.get("delta")
@@ -810,12 +816,15 @@ class ProviderTurnMixin:
                     "Stream completed for task=%s: deltas=%d streamed=%s has_final=%s",
                     task["id"], _delta_count, streamed_content, final_response is not None,
                 )
+                self._raise_if_provider_task_cancelled(task)
                 if _stream_text_parts:
                     _active_msg_id = task.get("activeAssistantMessageId")
                     if _active_msg_id:
                         self._store.update_message(_active_msg_id, content="".join(_stream_text_parts))
                 break
             except Exception as stream_exc:
+                if self._task_is_cancelled(task):
+                    raise
                 from ..provider.openai_compatible import ProviderAdapterError
                 recovery = classify_provider_failure(stream_exc)
                 has_partial_output = bool(streamed_content or _stream_text_parts or final_response)
@@ -929,6 +938,7 @@ class ProviderTurnMixin:
                     continue
                 raise
 
+        self._raise_if_provider_task_cancelled(task)
         if final_response is None:
             if hasattr(self._provider, "generate"):
                 self._append_provider_trace(

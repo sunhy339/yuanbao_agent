@@ -143,6 +143,38 @@ _RAW_PANEL_MIRROR_EVENT_TYPES = {
     "task.updated",
 }
 
+_TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled", "canceled"}
+
+_TERMINAL_TASK_ALLOWED_EVENTS = {
+    "completed": {
+        "agent.decision.completion",
+        "approval.resolved",
+        "memory_event",
+        "message.completed",
+        "session.updated",
+        "task.completed",
+        "task.reflection.completed",
+    },
+    "failed": {
+        "agent.decision.completion",
+        "approval.resolved",
+        "memory_event",
+        "message.failed",
+        "session.updated",
+        "task.failed",
+    },
+    "cancelled": {
+        "command.cancelled",
+        "session.updated",
+        "task.cancelled",
+    },
+    "canceled": {
+        "command.cancelled",
+        "session.updated",
+        "task.cancelled",
+    },
+}
+
 _LARGE_VISIBLE_PAYLOAD_KEYS = {
     "base64",
     "body",
@@ -372,6 +404,41 @@ class PublishingMixin:
         if explicit_visibility is None and event_type in _RAW_PANEL_MIRROR_EVENT_TYPES:
             return "panel"
         return effective_visibility
+
+    def _latest_terminal_task_status(self, task: dict[str, Any]) -> str | None:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id or task_id.startswith("ctask_"):
+            return None
+        status = str(task.get("status") or "").strip().lower()
+        try:
+            latest = self._store.get_task({"taskId": task_id})["task"]
+            status = str(latest.get("status") or status).strip().lower()
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to refresh task status before publishing %s", task_id, exc_info=True)
+        return status if status in _TERMINAL_TASK_STATUSES else None
+
+    def _should_drop_event_after_terminal_task(
+        self,
+        *,
+        task: dict[str, Any],
+        event_type: str,
+        effective_visibility: str,
+    ) -> bool:
+        status = self._latest_terminal_task_status(task)
+        if status is None:
+            return False
+        allowed = _TERMINAL_TASK_ALLOWED_EVENTS.get(status, set())
+        if event_type in allowed:
+            return False
+        if status not in {"cancelled", "canceled"} and effective_visibility == "trace":
+            return False
+        logger.debug(
+            "Suppressing late %s event for terminal task %s (%s)",
+            event_type,
+            task.get("id"),
+            status,
+        )
+        return True
 
     def _goal_event_payload_for_task_event(self, event_type: str, task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
         mapping = {
@@ -1862,6 +1929,12 @@ class PublishingMixin:
             payload.setdefault("outOfScope", list(task.get("outOfScope") or []))
             payload.setdefault("currentStep", task.get("currentStep"))
         effective_visibility = visibility or self._infer_event_visibility(event_type, task)
+        if self._should_drop_event_after_terminal_task(
+            task=task,
+            event_type=event_type,
+            effective_visibility=effective_visibility,
+        ):
+            return
         payload = self._sanitize_visible_event_payload(event_type, payload, effective_visibility)
         if event_type == "content_start" and effective_visibility == "chat":
             self._remember_chat_content_start(task=task, payload=payload)

@@ -322,6 +322,18 @@ describe("chat trace replay", () => {
   it("does not replay late chat events after task cancellation", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       trace("evt_cancel", "task.cancelled", { status: "cancelled" }, 1, "chat"),
+      trace("evt_late_token", "assistant.token", {
+        messageId: "msg_cancelled",
+        delta: "late pending assistant text",
+      }, 2, "chat"),
+      trace("evt_late_message_completed", "message.completed", {
+        messageId: "msg_cancelled",
+        content: "late final answer",
+      }, 3, "chat"),
+      trace("evt_late_message_complete", "message_complete", {
+        messageId: "msg_cancelled",
+        content: "late legacy final answer",
+      }, 4, "chat"),
       trace("evt_late_progress", "assistant_progress", { summary: "late internal work" }, 2, "chat"),
       trace("evt_late_tool", "tool.completed", {
         toolCallId: "tool_late",

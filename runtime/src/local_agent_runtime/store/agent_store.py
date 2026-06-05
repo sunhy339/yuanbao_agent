@@ -271,6 +271,22 @@ class AgentStoreMixin:
         row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()
         return dict(row) if row else {}
 
+    def cancel_provider_turn(self, *, turn_id: str, summary: str = "Task was cancelled.") -> dict[str, Any]:
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE provider_turns
+            SET status = 'cancelled',
+                error_summary = ?,
+                completed_at = ?
+            WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (summary[:500], now, turn_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()
+        return dict(row) if row else {}
+
     def list_provider_turns(self, task_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM provider_turns WHERE task_id = ? ORDER BY turn_index",

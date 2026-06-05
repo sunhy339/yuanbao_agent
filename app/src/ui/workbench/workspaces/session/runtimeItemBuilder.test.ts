@@ -115,6 +115,32 @@ describe("runtimeItemBuilder", () => {
     expect(items).toEqual([]);
   });
 
+  it("formats protocol trace event names as user-facing titles", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      traces: [
+        {
+          id: "goal-failed",
+          type: "goal_event",
+          source: "task",
+          status: "failed",
+          summary: "Provider returned error",
+          payload: { action: "failed", summary: "Provider returned error" },
+          visibility: "panel",
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.title).toBe("目标状态");
+    expect(items[0]?.title).not.toBe("Goal Event");
+  });
+
   it("surfaces approval changed paths and diff preview fields", () => {
     const diff = [
       "diff --git a/src/app.ts b/src/app.ts",

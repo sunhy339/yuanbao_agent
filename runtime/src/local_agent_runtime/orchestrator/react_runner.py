@@ -500,6 +500,7 @@ class ReactRunnerMixin:
                 )
             except Exception as exc:
                 if self._task_is_cancelled(task):
+                    self._store.cancel_provider_turn(turn_id=provider_turn["id"])
                     return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
                 recorded_recovery = provider_context.get("_provider_failure_recovery_payload")
                 failure_recovery = (
@@ -534,6 +535,7 @@ class ReactRunnerMixin:
                 raise
             task = self._store.get_task({"taskId": task["id"]})["task"]
             if task["status"] == "cancelled":
+                self._store.cancel_provider_turn(turn_id=provider_turn["id"])
                 return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
             deterministic_fallback_allowed = self._should_use_deterministic_fallback(
                 goal=goal,

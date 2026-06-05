@@ -31,6 +31,37 @@ class ScriptedProvider:
         return self._responses.pop(0)
 
 
+class CancellingStreamProvider:
+    def __init__(self) -> None:
+        self.runtime: SimpleNamespace | None = None
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("streaming provider should not fall back to generate")
+
+    def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        self.calls.append({"prompt": prompt, "context": context})
+        yield {"type": "content_delta", "delta": "visible before cancel "}
+        if self.runtime is None:
+            raise AssertionError("runtime not attached")
+        running_tasks = [
+            task
+            for task in self.runtime.store.list_tasks({})["tasks"]
+            if task.get("status") == "running"
+        ]
+        assert running_tasks, "expected a running task to cancel"
+        self.runtime.orchestrator.cancel_task({"taskId": running_tasks[0]["id"]})
+        yield {"type": "content_delta", "delta": "late after cancel "}
+        yield {
+            "type": "final",
+            "response": {
+                "message": {"content": "visible before cancel late after cancel "},
+                "finish_reason": "stop",
+                "raw": {},
+            },
+        }
+
+
 def _make_runtime(tmp_path: Path, provider: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
@@ -305,10 +336,130 @@ def test_transient_provider_failure_has_single_user_failure_surface(tmp_path: Pa
     types = _event_types(runtime)
     assert types.count("message.failed") == 1
     assert types.count("task.failed") == 1
-    assert len([event for event in runtime.events if event["type"] == "goal_event" and event["payload"].get("action") == "failed"]) == 1
+    goal_events = [event for event in runtime.events if event["type"] == "goal_event" and event["payload"].get("action") == "failed"]
+    assert len(goal_events) == 1
+    assert goal_events[0]["visibility"] == "panel"
     assert not [event for event in runtime.events if event["type"] == "memory_event"]
     assert not [event for event in runtime.events if event["type"] == "approval.requested"]
     assert not [event for event in runtime.events if event["type"] == "completion_review"]
+
+
+def test_terminal_cancel_absorbs_late_visible_runtime_events(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="stop this run",
+        plan=[],
+        status="running",
+    )
+
+    runtime.orchestrator.cancel_task({"taskId": task["id"]})
+    cancelled_event_count = len(runtime.events)
+    cancelled_trace_count = len(runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"])
+    cancelled_task = runtime.store.get_task({"taskId": task["id"]})["task"]
+
+    for event_type, payload in [
+        (
+            "tool.started",
+            {
+                "toolCallId": "call_late",
+                "toolName": "read_file",
+                "arguments": {"path": "README.md"},
+                "target": "README.md",
+            },
+        ),
+        (
+            "tool.completed",
+            {
+                "toolCallId": "call_late",
+                "toolName": "read_file",
+                "result": {"content": "late"},
+                "target": "README.md",
+            },
+        ),
+        ("thinking", {"text": "late provider thinking"}),
+        ("message.completed", {"messageId": "msg_late", "content": "late answer"}),
+        (
+            "approval.resolved",
+            {
+                "approvalId": "approval_late",
+                "kind": "completion_review",
+                "decision": "approved",
+                "summary": "late review",
+            },
+        ),
+        ("assistant_progress", {"summary": "late progress"}),
+    ]:
+        runtime.orchestrator._publish(
+            session_id=session["id"],
+            task=cancelled_task,
+            event_type=event_type,
+            payload=payload,
+        )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=cancelled_task,
+        event_type="command.cancelled",
+        payload={
+            "status": "cancelled",
+            "toolUseId": "cmd_cancelled",
+            "toolName": "run_command",
+            "command": "long-running",
+        },
+    )
+
+    emitted_after_cancel = runtime.events[cancelled_event_count:]
+    assert [event["type"] for event in emitted_after_cancel] == ["command.cancelled"]
+    persisted_after_cancel = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"][cancelled_trace_count:]
+    assert persisted_after_cancel == []
+    assert all(event["type"] != "message_complete" for event in runtime.events[cancelled_event_count:])
+    assert all(event["type"] != "tool_result" for event in runtime.events[cancelled_event_count:])
+
+
+def test_provider_stream_cancel_stops_late_message_persistence(tmp_path: Path) -> None:
+    provider = CancellingStreamProvider()
+    runtime = _make_runtime(tmp_path, provider)
+    provider.runtime = runtime
+    config = runtime.store.get_config({})["config"]
+    config["provider"]["streamingEnabled"] = True
+    config["provider"]["apiFormat"] = "openai-chat"
+    runtime.store.update_config({"config": config})
+    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
+        scenario=Scenario.SIMPLE_QUERY,
+        strategy=ExecutionStrategy.REACT_FAST,
+        confidence=0.95,
+        max_steps=3,
+        enable_reflection=False,
+        enable_planning=False,
+        reasoning="stream cancel regression",
+    )
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "stream then stop"})
+
+    task = response["result"]["task"]
+    assert task["status"] == "cancelled"
+    assistant_messages = [
+        message
+        for message in runtime.store.list_messages({"sessionId": session["id"]})["messages"]
+        if message["role"] == "assistant" and message.get("taskId") == task["id"]
+    ]
+    provider_turns = runtime.store.list_provider_turns(task["id"])
+    assert provider_turns[-1]["status"] == "cancelled"
+    assert provider_turns[-1]["completed_at"] is not None
+    assert assistant_messages
+    assert "late after cancel" not in (assistant_messages[0].get("content") or "")
+    assert "message.completed" not in _event_types(runtime)
+    assert "message_complete" not in _event_types(runtime)
+    assert not [
+        event
+        for event in runtime.events
+        if event["type"] == "assistant.token"
+        and event["payload"].get("delta") == "late after cancel "
+    ]
 
 
 def test_strict_swarm_plan_approval_uses_structured_preview_and_flat_sections(tmp_path: Path) -> None:
@@ -525,3 +676,52 @@ def test_non_strict_swarm_executes_with_ordered_panel_events_not_raw_plan_json(t
     assert assistant_messages[-1]["content"] == "Swarm execution finished with structured event panels."
     raw_plan_fragments = ['"executionOrder"', '"subtasks"', '"dag"']
     assert not any(fragment in assistant_messages[-1]["content"] for fragment in raw_plan_fragments)
+
+
+def test_planning_progress_is_visible_but_synthetic_thinking_stays_trace_only(tmp_path: Path) -> None:
+    plan = PlanResult(
+        subtasks=[
+            Subtask(
+                id="sub-0",
+                title="Inspect current flow",
+                description="Inspect how backend events are emitted.",
+                agent_type="planner",
+            ),
+        ],
+        dag={"sub-0": []},
+        execution_order=["sub-0"],
+    )
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    _force_route(runtime, scenario=Scenario.SWARM_TASK, strategy=ExecutionStrategy.PLAN_SWARM)
+    session = _open_session(runtime, tmp_path)
+    runtime.orchestrator._decomposer.decompose = lambda **_kwargs: plan
+    runtime.orchestrator._swarm.execute = lambda *_args, **_kwargs: OrchestrationResult(
+        success=True,
+        summary="Structured planning complete.",
+        subtask_results=[{"id": "sub-0", "title": "Inspect current flow", "status": "completed"}],
+        handoff_count=0,
+        completed=["sub-0"],
+        results={"sub-0": "done"},
+    )
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "Use multiple agents to inspect flow"})
+
+    assert response["result"]["task"]["status"] == "completed"
+    planning_thinking = [
+        event
+        for event in runtime.events
+        if event["type"] == "thinking"
+        and str(event["payload"].get("source") or "").startswith("swarm_")
+    ]
+    assert planning_thinking
+    assert {event["visibility"] for event in planning_thinking} == {"trace"}
+    assert all(event["payload"].get("_bridge", {}).get("suppressRealtimeFlat") is True for event in planning_thinking)
+
+    visible_progress = [
+        event
+        for event in runtime.events
+        if event["type"] == "assistant_progress"
+        and event["payload"].get("mode") == "swarm"
+    ]
+    assert visible_progress
+    assert {event["visibility"] for event in visible_progress} == {"chat"}

@@ -273,7 +273,7 @@ class TestEventBusVisibility:
         assert payload["yuanbao"] == {"type": "content_delta", "text": "hello"}
         assert payload["hahaCc"] == payload["yuanbao"]
 
-    def test_payload_suppresses_bridge_message_delta_flat_duplicate(self):
+    def test_payload_derives_flat_message_delta_as_content_delta(self):
         from local_agent_runtime.event_bus import EventBus
         bus = EventBus()
         event = type("E", (), {
@@ -284,6 +284,21 @@ class TestEventBusVisibility:
         })()
         payload = bus.as_payload(event)
         assert payload["type"] == "message.delta"
+        assert payload["yuanbao"] == {"type": "content_delta", "text": "hello"}
+        assert payload["hahaCc"] == payload["yuanbao"]
+
+    def test_payload_suppresses_panel_assistant_progress_flat_message(self):
+        from local_agent_runtime.event_bus import EventBus
+        bus = EventBus()
+        event = type("E", (), {
+            "event_id": "e3p", "session_id": "s1", "task_id": "t1",
+            "type": "assistant_progress", "ts": 0, "seq": 0,
+            "payload": {"summary": "Internal panel progress"},
+            "visibility": "panel",
+        })()
+        payload = bus.as_payload(event)
+        assert payload["type"] == "assistant_progress"
+        assert payload["visibility"] == "panel"
         assert "yuanbao" not in payload
         assert "hahaCc" not in payload
 

@@ -596,7 +596,6 @@ class ToolPolicyResolver:
                 "userGoal",
                 "user_goal",
                 "latestUserMessagePreview",
-                "reasoning",
             ):
                 candidates.append(routing.get(key))
             profile = routing.get("profile")

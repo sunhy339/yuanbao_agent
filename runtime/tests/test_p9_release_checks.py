@@ -213,8 +213,8 @@ class TestEventCompatAssistantToken:
             assert replay is not None
             assert event["seq"] == replay["sequence"]
 
-    def test_assistant_progress_panel_events_are_replayable(self, tmp_path: Any) -> None:
-        """Root progress panels must survive refresh just like haha-cc task progress messages."""
+    def test_assistant_progress_panel_events_do_not_emit_flat_chat_messages(self, tmp_path: Any) -> None:
+        """Root progress panels survive refresh as panel events, not flat chat protocol."""
         runtime = _make_runtime(tmp_path)
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir()
@@ -239,25 +239,15 @@ class TestEventCompatAssistantToken:
         progress_event = next(event for event in raw_events if event["type"] == "assistant_progress")
         assert progress_event["visibility"] == "panel"
         assert progress_event["payload"]["_bridge"]["persistTraceMirror"] is True
+        assert "yuanbao" not in progress_event
+        assert "hahaCc" not in progress_event
 
         replay = _rpc(
             runtime,
             "events.yuanbaoAfter",
             {"sessionId": session["id"], "afterSeq": 0},
         )["result"]
-        assert replay["messages"] == [
-            {
-                "type": "system_notification",
-                "subtype": "task_progress",
-                "message": "Inspecting repo",
-                "data": {
-                    "text": "Inspecting repo",
-                    "summary": "Inspecting repo",
-                    "phase": "inspect",
-                    "status": "running",
-                },
-            }
-        ]
+        assert replay["messages"] == []
 
     def test_assistant_token_emits_single_chat_message_delta(self, tmp_path: Any) -> None:
         """assistant.token emits one haha-cc style text delta via message.delta."""

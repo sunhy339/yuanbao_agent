@@ -679,10 +679,11 @@ def test_assistant_token_bridge_emits_single_text_start(tmp_path: Any) -> None:
         event for event in runtime.events
         if event["type"] == "content_start" and event["payload"].get("blockType") == "text"
     ]
-    deltas = [event for event in runtime.events if event["type"] == "content_delta"]
+    deltas = [event for event in runtime.events if event["type"] == "message.delta"]
     assert len(starts) == 1
     assert starts[0]["payload"]["messageId"] == "msg_assistant_1"
-    assert [event["payload"]["text"] for event in deltas] == ["First sentence.", " Second sentence."]
+    assert [event["payload"]["delta"] for event in deltas] == ["First sentence.", " Second sentence."]
+    assert [event["yuanbao"]["text"] for event in deltas] == ["First sentence.", "Second sentence."]
 
 
 def test_tool_started_bridge_does_not_duplicate_streamed_tool_start(tmp_path: Any) -> None:
@@ -1678,7 +1679,7 @@ def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: A
     ]
     assert "prepare (completed): Inspect inventory\n" in task_activity_outputs
     assert "dispatch (completed): Child inspected inventory.py and found the target function.\n" in task_activity_outputs
-    assert "child_task (completed): task_child_1\n" in task_activity_outputs
+    assert "child_task (completed): Child task recorded.\n" in task_activity_outputs
     task_output = next(
         event["payload"]
         for event in runtime.events
@@ -2421,10 +2422,12 @@ def test_workspace_focus_update_rpc_injects_future_task_context(tmp_path: Any) -
 
     first_context = provider.calls[0]["context"]
     started_event = next(event for event in runtime.events if event["type"] == "task.started")
-    event_context = started_event["payload"]["context"]
     assert updated_workspace["focus"] == "Keep attention on durable context and long-running product work."
-    # In lightweight mode, project focus is not injected into messages,
-    # but it is stored in the context bundle and workspace.
+    # Full context stays out of visible lifecycle events; the model receives the
+    # focus and budget bundle through provider context.
+    assert "context" not in started_event["payload"]
+    assert first_context["project_focus"] == "Keep attention on durable context and long-running product work."
+    event_context = {"budgetStats": first_context["budgetStats"]}
     assert event_context["budgetStats"]["estimatedInputTokens"] > 0
     assert event_context["budgetStats"]["messageTokens"] > 0
     assert event_context["budgetStats"]["toolSchemaTokens"] >= 0
@@ -2496,8 +2499,10 @@ def test_react_loop_executes_tool_call_and_returns_result_to_provider(tmp_path: 
     first_text_delta_index = next(
         index
         for index, event in enumerate(runtime.events)
-        if event["type"] == "content_delta" and event["payload"].get("text") == "Searching the workspace."
+        if event["type"] == "message.delta" and event["payload"].get("delta") == "Searching the workspace."
     )
+    assert runtime.events[first_text_delta_index]["yuanbao"]["type"] == "content_delta"
+    assert runtime.events[first_text_delta_index]["yuanbao"]["text"] == "Searching the workspace."
     first_tool_block_index = next(
         index
         for index, event in enumerate(runtime.events)
@@ -7345,11 +7350,7 @@ def test_react_loop_publishes_live_context_budget_updates(tmp_path: Any) -> None
     )
 
     assert task["status"] == "completed"
-    started_context = next(
-        event["payload"]["context"]
-        for event in runtime.events
-        if event["type"] == "task.started" and event["taskId"] == task["id"]
-    )
+    started_context = provider.calls[0]["context"]
     context_updates = [
         event["payload"]["context"]
         for event in runtime.events

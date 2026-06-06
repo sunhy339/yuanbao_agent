@@ -68,6 +68,8 @@ class EventBus:
 def _suppresses_realtime_flat_message(event: RuntimeEvent) -> bool:
     if event.visibility == "trace":
         return True
+    if event.type == "assistant_progress" and event.visibility != "chat":
+        return True
     event_payload = event.payload if isinstance(event.payload, dict) else {}
     if event.type == "message.completed" and event_payload.get("_chatCompat") is True:
         return True

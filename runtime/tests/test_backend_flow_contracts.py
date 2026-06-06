@@ -355,13 +355,14 @@ def test_provider_thinking_surrounds_tool_cycle_in_haha_order(tmp_path: Path) ->
         and event["payload"].get("text") == "Search result is enough to answer."
     )
     final_delta = index_of(
-        lambda event: event["type"] == "content_delta"
-        and event["payload"].get("text") == "Found needle in alpha.txt."
+        lambda event: event["type"] == "message.delta"
+        and event["payload"].get("delta") == "Found needle in alpha.txt."
+        and event.get("yuanbao") == {"type": "content_delta", "text": "Found needle in alpha.txt."}
     )
     message_complete = index_of(lambda event: event["type"] == "message_complete")
 
     assert first_thinking < tool_start < tool_result < second_thinking < final_delta < message_complete
-    assert all(event["visibility"] == "chat" for event in events if event["type"] in {"thinking", "content_start", "tool_result", "content_delta", "message_complete"})
+    assert all(event["visibility"] == "chat" for event in events if event["type"] in {"thinking", "content_start", "tool_result", "message.delta", "message_complete"})
 
 
 def test_chat_compat_tool_frames_persist_for_session_replay(tmp_path: Path) -> None:

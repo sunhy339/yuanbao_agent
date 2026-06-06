@@ -718,6 +718,24 @@ def test_read_only_user_constraint_can_come_from_main_workflow_preview() -> None
     assert set(decision.denied_tool_names) == {"write_file", "run_command"}
 
 
+def test_internal_routing_reasoning_does_not_create_read_only_constraint() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "react_standard",
+                "reasoning": "model-first-default: rule-match: keyword='read-only-doc-overrides-write:doc'",
+            },
+        },
+        tool_results=[],
+        registered_tools=_tools("read_file", "write_file", "run_command", "ask_user_question"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"ask_user_question", "read_file", "write_file", "run_command"}
+    assert "read-only user constraint" not in decision.reasons.get("*", "")
+
+
 def test_read_only_multi_agent_keeps_subagent_tools_without_write_tools() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(

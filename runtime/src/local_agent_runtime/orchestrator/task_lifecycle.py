@@ -864,10 +864,6 @@ class TaskLifecycleMixin:
                     "Fix the failed checks before marking the task completed."
                 ),
             }
-        if force_complete_after_review:
-            return {"action": "complete", "reason": "Completion review was approved."}
-        if context.get("_allow_summary_only_completion") is True:
-            return {"action": "complete", "reason": "Summary-only completion explicitly allowed."}
         reviews_disabled = self._completion_reviews_disabled(context)
         workspace_evidence_gate = self._completion_workspace_evidence_gate(completion_evidence)
         if workspace_evidence_gate is not None:
@@ -892,6 +888,10 @@ class TaskLifecycleMixin:
                     ),
                 }
             return advisor_gate
+        if force_complete_after_review:
+            return {"action": "complete", "reason": "Completion review was approved."}
+        if context.get("_allow_summary_only_completion") is True:
+            return {"action": "complete", "reason": "Summary-only completion explicitly allowed."}
         tool_failure_gate = self._completion_tool_failure_gate(completion_evidence)
         if tool_failure_gate is not None:
             if reviews_disabled and tool_failure_gate.get("action") == "review":

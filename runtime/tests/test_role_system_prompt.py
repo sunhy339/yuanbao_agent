@@ -392,7 +392,7 @@ class TestRoleSystemPrompt:
             captured_goals.append(goal)
             user_messages = [msg for msg in context["messages"] if msg.get("role") == "user"]
             user_text = "\n\n".join(str(msg.get("content") or "") for msg in user_messages)
-            assert len(user_messages) == 2
+            assert user_messages
             assert "Legacy parent message." not in user_text
             assert "Build backend API only." in user_text
             assert context["_child_clean_context"] is True

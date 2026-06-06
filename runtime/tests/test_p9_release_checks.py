@@ -406,12 +406,98 @@ class TestEventCompatAssistantToken:
         tool_use = next(event for event in collected if event.type == "tool_use_complete")
         assert tool_started.payload["arguments"]["path"] == "README.md"
         assert tool_started.payload["arguments"]["mode"] == "overwrite"
-        assert tool_started.payload["arguments"]["content"]["omitted"] is True
-        assert tool_started.payload["arguments"]["content"]["chars"] == len(large_content)
+        assert tool_started.payload["arguments"]["content"] == large_content
         assert tool_use.payload["input"]["content"]["omitted"] is True
         assert tool_use.payload["input"]["content"]["chars"] == len(large_content)
-        assert large_content not in json.dumps(tool_started.payload, ensure_ascii=False)
         assert large_content not in json.dumps(tool_use.payload, ensure_ascii=False)
+
+    def test_tool_use_complete_hides_runtime_bound_arguments(self, tmp_path: Any) -> None:
+        """Chat-visible tool inputs keep model intent, not runtime worktree bindings."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.started",
+            payload={
+                "toolCallId": "tc_1",
+                "toolName": "read_file",
+                "arguments": {
+                    "path": "README.md",
+                    "workspaceRoot": str(tmp_path),
+                    "originalWorkspaceRoot": "D:/source/project",
+                    "activeWorktreeId": "wt_123",
+                    "ignore": ["node_modules", ".git"],
+                    "max_bytes": 12000,
+                    "encoding": "utf-8",
+                },
+            },
+        )
+
+        raw_started = next(event for event in collected if event.type == "tool.started")
+        tool_use = next(event for event in collected if event.type == "tool_use_complete")
+        assert raw_started.payload["arguments"]["workspaceRoot"] == str(tmp_path)
+        assert tool_use.payload["input"] == {"path": "README.md"}
+        encoded = json.dumps(tool_use.payload, ensure_ascii=False)
+        for key in ("workspaceRoot", "originalWorkspaceRoot", "activeWorktreeId", "ignore", "max_bytes", "encoding"):
+            assert key not in encoded
+
+    def test_tool_result_hides_runtime_bound_result_fields(self, tmp_path: Any) -> None:
+        """Chat-visible tool outputs stay public even when the raw trace result is small."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.completed",
+            payload={
+                "toolCallId": "tc_1",
+                "toolName": "git_status",
+                "target": ".",
+                "result": {
+                    "status": "completed",
+                    "branch": "main",
+                    "changes": [],
+                    "workspaceRoot": str(tmp_path),
+                    "originalWorkspaceRoot": "D:/source/project",
+                    "activeWorktreeId": "wt_123",
+                    "ignore": ["node_modules", ".git"],
+                    "max_bytes": 12000,
+                    "sessionId": "s1",
+                    "taskId": "t1",
+                    "steps": [
+                        {
+                            "label": "resolve",
+                            "status": "completed",
+                            "summary": str(tmp_path),
+                            "workspaceRoot": str(tmp_path),
+                        }
+                    ],
+                },
+            },
+        )
+
+        raw_completed = next(event for event in collected if event.type == "tool.completed")
+        chat_result = next(event for event in collected if event.type == "tool_result")
+        assert raw_completed.payload["result"]["workspaceRoot"] == str(tmp_path)
+        assert chat_result.payload["content"]["branch"] == "main"
+        encoded = json.dumps(chat_result.payload, ensure_ascii=False)
+        for key in (
+            "workspaceRoot",
+            "originalWorkspaceRoot",
+            "activeWorktreeId",
+            "ignore",
+            "max_bytes",
+            "sessionId",
+            "taskId",
+        ):
+            assert key not in encoded
 
     def test_core_tools_emit_standard_chat_tool_sequence(self, tmp_path: Any) -> None:
         """Core tools emit content_start/tool_use_complete/content_delta/tool_result."""

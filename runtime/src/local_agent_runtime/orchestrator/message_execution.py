@@ -2520,13 +2520,6 @@ class MessageExecutionMixin:
                     },
                     visibility="panel",
                 )
-                worker._publish(
-                    session_id=session_id,
-                    task=task,
-                    event_type="assistant.token",
-                    payload={"delta": "Building context and preparing the first tool calls..."},
-                    visibility="panel",
-                )
             else:
                 context = worker._context_with_task_focus(context, task)
                 context = worker._context_with_worktree_binding(

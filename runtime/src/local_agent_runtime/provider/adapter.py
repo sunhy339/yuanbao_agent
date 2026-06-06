@@ -792,6 +792,8 @@ class ProviderAdapter:
             )
         if max_tool_argument_chars is None:
             max_tool_argument_chars = 120_000
+        reasoning_effort = self._reasoning_effort(context=context, provider_config=provider_config)
+        reasoning_summary = self._reasoning_summary(provider_config)
         return OpenAICompatibleSettings(
             base_url=base_url,
             api_key=api_key,
@@ -802,6 +804,8 @@ class ProviderAdapter:
             timeout=self._timeout_value(provider_config),
             stream_timeout=stream_timeout,
             max_tool_argument_chars=max_tool_argument_chars,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
         )
 
     def _anthropic_env_available(self) -> bool:
@@ -893,6 +897,35 @@ class ProviderAdapter:
                     if key not in ignored_keys
                 })
         return resolved
+
+    def _reasoning_effort(
+        self,
+        *,
+        context: dict[str, Any] | None,
+        provider_config: dict[str, Any],
+    ) -> str | None:
+        provider_value = self._string_value(
+            provider_config,
+            "reasoningEffort",
+            "reasoning_effort",
+            "reasoning",
+        )
+        if provider_value:
+            return provider_value
+        context_config = context.get("config") if context else None
+        ui_config = context_config.get("ui") if isinstance(context_config, dict) else None
+        if isinstance(ui_config, dict):
+            return self._string_value(ui_config, "reasoningEffort", "reasoning_effort")
+        return None
+
+    def _reasoning_summary(self, provider_config: dict[str, Any]) -> str | None:
+        return self._string_value(
+            provider_config,
+            "reasoningSummary",
+            "reasoning_summary",
+            "reasoningSummaryMode",
+            "reasoning_summary_mode",
+        )
 
     def _env(self, *names: str) -> str | None:
         for name in names:

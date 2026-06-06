@@ -67,6 +67,10 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
     }
 
     text = _message_text(context)
+    assert "User-facing text:" in text
+    assert "before first tool" in text
+    assert "after tool batches" in text
+    assert "Backend status is not thinking" in text
     assert "write files only through apply_patch or write_file" in text
     assert "use write_file for new/full files" in text
     assert "run commands only through run_command" in text

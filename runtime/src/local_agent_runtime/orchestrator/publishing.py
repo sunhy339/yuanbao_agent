@@ -228,8 +228,16 @@ _VISIBLE_PAYLOAD_PREVIEW_LIMIT = 240
 _VISIBLE_PAYLOAD_LIST_LIMIT = 20
 _VISIBLE_PAYLOAD_MAX_DEPTH = 4
 _INTERNAL_VISIBLE_PAYLOAD_KEYS = {
+    "activeWorktreeId",
+    "active_worktree_id",
     "approvalId",
     "approval_id",
+    "encoding",
+    "ignore",
+    "maxBytes",
+    "max_bytes",
+    "originalWorkspaceRoot",
+    "original_workspace_root",
     "sessionId",
     "session_id",
     "taskId",
@@ -244,6 +252,8 @@ _INTERNAL_VISIBLE_PAYLOAD_KEYS = {
     "tool_operation_label",
     "toolTotal",
     "tool_total",
+    "worktreePath",
+    "worktree_path",
     "workspaceRoot",
     "workspace_root",
 }
@@ -331,13 +341,13 @@ class PublishingMixin:
         self._publish(
             session_id=session_id,
             task=task,
-            event_type="task.updated",
+            event_type="task.context.updated",
             payload={
                 "status": task.get("status"),
                 "currentStep": task.get("currentStep"),
                 "context": context_summary,
             },
-            visibility="panel",
+            visibility="trace",
         )
 
     def _publish_task_run_snapshot(self, *, session_id: str, task: dict[str, Any]) -> None:
@@ -394,7 +404,17 @@ class PublishingMixin:
         if (
             visibility in {"chat", "panel"}
             and event_type.startswith("task.")
-            and not event_type.startswith(("task.planning.", "task.subtask.", "task.child.", "task.runtime_", "task.worktree."))
+            and not event_type.startswith((
+                "task.budget.",
+                "task.child.",
+                "task.planning.",
+                "task.provider_",
+                "task.runtime_",
+                "task.subtask.",
+                "task.supplement.",
+                "task.validation.",
+                "task.worktree.",
+            ))
         ):
             return cls._visible_task_lifecycle_payload(event_type, payload)
         if visibility in {"chat", "panel"} and event_type in {"approval.requested", "approval.resolved"}:
@@ -559,7 +579,26 @@ class PublishingMixin:
             return arguments if arguments is not None else {}
         if str(tool_name or "") == "exit_plan_mode":
             return cls._public_plan_request_input(arguments)
-        return arguments
+        return cls._sanitize_visible_payload_value("input", arguments)
+
+    @classmethod
+    def _public_tool_result_content(
+        cls,
+        *,
+        tool_name: str,
+        result: Any,
+        target: str = "",
+        summary: str = "",
+        preview: list[dict[str, str]] | None = None,
+    ) -> Any:
+        content = _frontend_visible_tool_result(
+            tool_name,
+            result,
+            target,
+            summary=summary,
+            preview=preview,
+        )
+        return cls._sanitize_visible_payload_value("content", content)
 
     @classmethod
     def _sanitize_visible_payload_value(cls, key: str, value: Any, *, depth: int = 0) -> Any:
@@ -574,6 +613,12 @@ class PublishingMixin:
                 "preview": value[:_VISIBLE_PAYLOAD_PREVIEW_LIMIT],
             }
         if isinstance(value, dict):
+            if cls._is_compacted_text_payload(value):
+                return {
+                    str(child_key): child_value
+                    for child_key, child_value in value.items()
+                    if str(child_key) not in _INTERNAL_VISIBLE_PAYLOAD_KEYS
+                }
             if depth >= _VISIBLE_PAYLOAD_MAX_DEPTH:
                 return {
                     "omitted": True,
@@ -605,6 +650,20 @@ class PublishingMixin:
                 )
             return items
         return value
+
+    @staticmethod
+    def _is_compacted_text_payload(value: dict[str, Any]) -> bool:
+        if value.get("truncated") is True and (
+            isinstance(value.get("head"), str)
+            or isinstance(value.get("tail"), str)
+            or isinstance(value.get("text"), str)
+        ):
+            return True
+        return (
+            isinstance(value.get("head"), str)
+            and isinstance(value.get("tail"), str)
+            and any(key in value for key in ("chars", "omittedChars"))
+        )
 
     @staticmethod
     def _raw_runtime_event_visibility(event_type: str, effective_visibility: str, explicit_visibility: str | None) -> str:
@@ -1385,10 +1444,10 @@ class PublishingMixin:
                 payload={
                     "toolUseId": tool_call_id,
                     "toolName": payload.get("toolName"),
-                    "content": _frontend_visible_tool_result(
-                        str(payload.get("toolName") or ""),
-                        payload.get("result"),
-                        str(payload.get("target") or ""),
+                    "content": self._public_tool_result_content(
+                        tool_name=str(payload.get("toolName") or ""),
+                        result=payload.get("result"),
+                        target=str(payload.get("target") or ""),
                         summary=str(payload.get("resultSummary") or ""),
                         preview=payload.get("resultPreview") if isinstance(payload.get("resultPreview"), list) else None,
                     ),
@@ -1824,6 +1883,7 @@ class PublishingMixin:
         return "trace"
 
     def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any], *, visibility: str | None = None) -> None:
+        raw_payload = deepcopy(payload)
         if event_type in _CHAT_COMPAT_EVENT_TYPES:
             payload = dict(payload)
             payload.setdefault("_chatCompat", True)
@@ -1856,6 +1916,7 @@ class PublishingMixin:
             payload.setdefault("acceptanceCriteria", list(task.get("acceptanceCriteria") or []))
             payload.setdefault("outOfScope", list(task.get("outOfScope") or []))
             payload.setdefault("currentStep", task.get("currentStep"))
+        raw_payload = deepcopy(payload)
         effective_visibility = visibility or self._infer_event_visibility(event_type, task)
         if self._should_drop_event_after_terminal_task(
             task=task,
@@ -1864,29 +1925,29 @@ class PublishingMixin:
             effective_visibility=effective_visibility,
         ):
             return
-        payload = self._sanitize_visible_event_payload(event_type, payload, effective_visibility)
+        visible_payload = self._sanitize_visible_event_payload(event_type, payload, effective_visibility)
         if event_type == "content_start" and effective_visibility == "chat":
-            self._remember_chat_content_start(task=task, payload=payload)
+            self._remember_chat_content_start(task=task, payload=visible_payload)
         self._publish_goal_event_for_task_event(
             session_id=session_id,
             task=task,
             event_type=event_type,
-            payload=payload,
+            payload=visible_payload if effective_visibility in {"chat", "panel"} else raw_payload,
         )
         token_delta_payload: dict[str, Any] | None = None
         if event_type == "assistant.token":
-            payload = dict(payload)
+            visible_payload = dict(visible_payload)
             active_msg_id = task.get("activeAssistantMessageId")
             if active_msg_id:
-                payload["messageId"] = active_msg_id
-            payload["_chatCompat"] = True
-            token_delta_payload = {**payload}
+                visible_payload["messageId"] = active_msg_id
+            visible_payload["_chatCompat"] = True
+            token_delta_payload = {**visible_payload}
             token_delta_payload.setdefault("messageId", active_msg_id or "")
         self._publish_chat_compat_for_event(
             session_id=session_id,
             task=task,
             event_type=event_type,
-            payload=payload,
+            payload=visible_payload,
             effective_visibility=effective_visibility,
         )
         if token_delta_payload is not None:
@@ -1907,7 +1968,7 @@ class PublishingMixin:
             task_id=task["id"],
             type=event_type,
             ts=self._store.now(),
-            payload=payload,
+            payload=visible_payload if raw_visibility in {"chat", "panel"} else raw_payload,
             visibility=raw_visibility,
         )
         self._event_bus.publish(event)

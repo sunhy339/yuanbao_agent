@@ -687,7 +687,7 @@ def test_assistant_token_bridge_emits_single_text_start(tmp_path: Any) -> None:
     assert len(starts) == 1
     assert starts[0]["payload"]["messageId"] == "msg_assistant_1"
     assert [event["payload"]["delta"] for event in deltas] == ["First sentence.", " Second sentence."]
-    assert [event["yuanbao"]["text"] for event in deltas] == ["First sentence.", "Second sentence."]
+    assert [event["yuanbao"]["text"] for event in deltas] == ["First sentence.", " Second sentence."]
 
 
 def test_tool_started_bridge_does_not_duplicate_streamed_tool_start(tmp_path: Any) -> None:
@@ -2560,7 +2560,7 @@ def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
     assert [event["payload"]["toolPhaseId"] for event in started] == ["search", "context_read"]
     assert [event["payload"]["toolPhaseLabel"] for event in started] == ["搜索", "读取上下文"]
     assert started[0]["payload"].get("parentToolUseId") is None
-    assert started[1]["payload"]["parentToolUseId"] == "call_search"
+    assert started[1]["payload"].get("parentToolUseId") is None
     tool_group_id = started[0]["payload"]["toolGroupId"]
     assert [event["payload"]["toolSemanticParentId"] for event in started] == [
         f"group:{tool_group_id}:phase:search",
@@ -2572,7 +2572,7 @@ def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
 
     tool_use_blocks = [event for event in runtime.events if event["type"] == "tool_use_complete"]
     assert [event["payload"]["toolUseId"] for event in tool_use_blocks] == ["call_search", "call_read"]
-    assert tool_use_blocks[1]["payload"]["parentToolUseId"] == "call_search"
+    assert tool_use_blocks[1]["payload"].get("parentToolUseId") is None
     assert [event["payload"]["toolCategory"] for event in tool_use_blocks] == ["search", "context_read"]
     assert [event["payload"]["toolPhaseLabel"] for event in tool_use_blocks] == ["搜索", "读取上下文"]
     assert [event["payload"]["toolSemanticParentId"] for event in tool_use_blocks] == [
@@ -2591,7 +2591,7 @@ def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
     assert [result["toolGroupId"] for result in tool_results] == [started[0]["payload"]["toolGroupId"]] * 2
     assert [result["toolIndex"] for result in tool_results] == [0, 1]
     assert [result["toolTotal"] for result in tool_results] == [2, 2]
-    assert tool_results[1]["parentToolUseId"] == "call_search"
+    assert tool_results[1].get("parentToolUseId") is None
     assert [result["toolCategory"] for result in tool_results] == ["search", "context_read"]
     assert [result["toolPhaseLabel"] for result in tool_results] == ["搜索", "读取上下文"]
     assert [result["toolSemanticParentId"] for result in tool_results] == [
@@ -2620,7 +2620,7 @@ def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
         for event in runtime.events
         if event["type"] == "tool.output" and event["payload"].get("toolName") == "read_file"
     )
-    assert read_output["parentToolUseId"] == "call_search"
+    assert read_output.get("parentToolUseId") is None
     assert read_output["toolCategory"] == "context_read"
     assert read_output["outputStream"] == "result_preview"
     assert "文件: alpha.txt" in read_output["chunk"]
@@ -2634,7 +2634,7 @@ def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
         and event["payload"].get("outputStream") == "result_preview"
         and event["payload"].get("toolOutput") == read_output["chunk"]
     )
-    assert read_output_delta["parentToolUseId"] == "call_search"
+    assert read_output_delta.get("parentToolUseId") is None
     assert read_output_delta["toolCategory"] == "context_read"
     read_preview_deltas = [
         event["payload"]
@@ -2803,7 +2803,7 @@ def test_react_loop_does_not_parallelize_across_write_tools(tmp_path: Any) -> No
     ]
 
 
-def test_minimal_loop_parents_follow_up_read_to_prior_search_result(tmp_path: Any) -> None:
+def test_minimal_loop_keeps_follow_up_read_independent_from_prior_search_result(tmp_path: Any) -> None:
     provider = MinimalSearchProvider()
     runtime = _make_runtime(
         tmp_path,
@@ -2841,7 +2841,7 @@ def test_minimal_loop_parents_follow_up_read_to_prior_search_result(tmp_path: An
     )
 
     assert [result["name"] for result in tool_results] == ["search_files", "read_file"]
-    assert tool_results[1]["parentToolUseId"] == tool_results[0]["id"]
+    assert tool_results[1].get("parentToolUseId") is None
     started_read = next(
         event
         for event in runtime.events
@@ -2857,12 +2857,12 @@ def test_minimal_loop_parents_follow_up_read_to_prior_search_result(tmp_path: An
         for event in runtime.events
         if event["type"] == "tool_result" and event["payload"].get("toolName") == "read_file"
     )
-    assert started_read["payload"]["parentToolUseId"] == tool_results[0]["id"]
-    assert completed_read["payload"]["parentToolUseId"] == tool_results[0]["id"]
-    assert tool_result["payload"]["parentToolUseId"] == tool_results[0]["id"]
+    assert started_read["payload"].get("parentToolUseId") is None
+    assert completed_read["payload"].get("parentToolUseId") is None
+    assert tool_result["payload"].get("parentToolUseId") is None
 
 
-def test_react_loop_parents_cross_turn_read_to_prior_search_result(tmp_path: Any) -> None:
+def test_react_loop_keeps_cross_turn_read_independent_from_prior_search_result(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [
             {
@@ -2912,10 +2912,10 @@ def test_react_loop_parents_cross_turn_read_to_prior_search_result(tmp_path: Any
         for event in runtime.events
         if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
     )
-    assert started_read["payload"]["parentToolUseId"] == "call_search"
-    assert completed_read["payload"]["parentToolUseId"] == "call_search"
+    assert started_read["payload"].get("parentToolUseId") is None
+    assert completed_read["payload"].get("parentToolUseId") is None
     tool_results = provider.calls[2]["context"]["tool_results"]
-    assert tool_results[1]["parentToolUseId"] == "call_search"
+    assert tool_results[1].get("parentToolUseId") is None
 
 
 def test_react_loop_parents_cross_turn_verification_to_prior_file_change(tmp_path: Any) -> None:
@@ -3216,19 +3216,19 @@ def test_react_loop_assigns_missing_tool_call_ids_before_inferring_batch_tree(tm
     started = [event["payload"] for event in runtime.events if event["type"] == "tool.started"]
     assert len(started) == 2
     assert all(payload["toolCallId"].startswith("tc_") for payload in started)
-    assert started[1]["parentToolUseId"] == started[0]["toolCallId"]
+    assert started[1].get("parentToolUseId") is None
 
     assistant_tool_calls = provider.calls[1]["context"]["messages"][-3]["tool_calls"]
     assert assistant_tool_calls[0]["id"] == started[0]["toolCallId"]
     assert assistant_tool_calls[1]["id"] == started[1]["toolCallId"]
-    assert assistant_tool_calls[1]["parentToolUseId"] == started[0]["toolCallId"]
+    assert "parentToolUseId" not in assistant_tool_calls[1]
     tool_messages = provider.calls[1]["context"]["messages"][-2:]
     assert [message["tool_call_id"] for message in tool_messages] == [
         started[0]["toolCallId"],
         started[1]["toolCallId"],
     ]
     tool_results = provider.calls[1]["context"]["tool_results"]
-    assert tool_results[1]["parentToolUseId"] == started[0]["toolCallId"]
+    assert tool_results[1].get("parentToolUseId") is None
 
 
 def test_react_loop_preserves_explicit_tool_parent_when_inferring_batch_tree(tmp_path: Any) -> None:
@@ -7354,7 +7354,7 @@ def test_react_loop_publishes_live_context_budget_updates(tmp_path: Any) -> None
     context_updates = [
         event["payload"]["context"]
         for event in runtime.events
-        if event["type"] == "task.updated"
+        if event["type"] == "task.context.updated"
         and event["taskId"] == task["id"]
         and isinstance(event.get("payload"), dict)
         and isinstance(event["payload"].get("context"), dict)

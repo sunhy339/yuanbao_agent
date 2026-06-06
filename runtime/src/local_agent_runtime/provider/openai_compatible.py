@@ -106,6 +106,8 @@ class OpenAICompatibleSettings:
     stream_timeout: float = 180.0
     max_tool_argument_chars: int = 120_000
     anthropic_version: str = "2023-06-01"
+    reasoning_effort: str | None = None
+    reasoning_summary: str | None = None
 
 
 _shared_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1089,6 +1091,10 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         )
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         status, response_body = self._request(settings=settings, body=body)
+        if status >= 400 and self._should_retry_without_reasoning(payload, response_body=response_body):
+            retry_payload = self._without_reasoning(payload)
+            body = json.dumps(retry_payload, ensure_ascii=False).encode("utf-8")
+            status, response_body = self._request(settings=settings, body=body)
         if status >= 400:
             raise ProviderAdapterError(
                 f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
@@ -1152,9 +1158,73 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
             payload["max_output_tokens"] = settings.max_tokens
         if tools:
             payload["tools"] = tools
+        reasoning = self._responses_reasoning_payload(settings)
+        if reasoning:
+            payload["reasoning"] = reasoning
         if stream:
             payload["stream"] = True
         return payload
+
+    @staticmethod
+    def _responses_reasoning_payload(settings: OpenAICompatibleSettings) -> dict[str, str] | None:
+        effort = OpenAIResponsesClient._normalize_reasoning_effort(settings.reasoning_effort)
+        summary = OpenAIResponsesClient._normalize_reasoning_summary(settings.reasoning_summary)
+        if effort and not summary:
+            summary = "auto"
+        if not effort and not summary:
+            return None
+        payload: dict[str, str] = {}
+        if effort:
+            payload["effort"] = effort
+        if summary:
+            payload["summary"] = summary
+        return payload or None
+
+    @staticmethod
+    def _normalize_reasoning_effort(value: str | None) -> str | None:
+        normalized = (value or "").strip().lower().replace("_", "-")
+        if normalized in {"", "none", "off", "false", "disabled"}:
+            return None
+        if normalized == "max":
+            return "high"
+        if normalized in {"minimal", "low", "medium", "high"}:
+            return normalized
+        return None
+
+    @staticmethod
+    def _normalize_reasoning_summary(value: str | None) -> str | None:
+        normalized = (value or "").strip().lower().replace("_", "-")
+        if normalized in {"", "none", "off", "false", "disabled"}:
+            return None
+        if normalized in {"auto", "concise", "detailed"}:
+            return normalized
+        return None
+
+    @staticmethod
+    def _without_reasoning(payload: dict[str, Any]) -> dict[str, Any]:
+        retry_payload = dict(payload)
+        retry_payload.pop("reasoning", None)
+        return retry_payload
+
+    @staticmethod
+    def _should_retry_without_reasoning(payload: dict[str, Any], *, response_body: bytes) -> bool:
+        if "reasoning" not in payload:
+            return False
+        try:
+            message = response_body.decode("utf-8", errors="replace").lower()
+        except Exception:
+            message = ""
+        if "reasoning" not in message:
+            return False
+        unsupported_markers = (
+            "unsupported",
+            "unknown parameter",
+            "unrecognized",
+            "not supported",
+            "extra_forbidden",
+            "invalid_request_error",
+        )
+        return any(marker in message for marker in unsupported_markers)
 
     def stream(
         self,
@@ -1175,6 +1245,14 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         status, chunks = self._stream_request(settings=settings, body=body)
         if status >= 400:
             response_body = b"".join(chunks)
+            if self._should_retry_without_reasoning(payload, response_body=response_body):
+                retry_payload = self._without_reasoning(payload)
+                body = json.dumps(retry_payload, ensure_ascii=False).encode("utf-8")
+                status, chunks = self._stream_request(settings=settings, body=body)
+                if status < 400:
+                    yield from self._normalize_responses_stream(chunks, settings=settings, tool_name_map=tool_name_map)
+                    return
+                response_body = b"".join(chunks)
             raise ProviderAdapterError(
                 f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
             )

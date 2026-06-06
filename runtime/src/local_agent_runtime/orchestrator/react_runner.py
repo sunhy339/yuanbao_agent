@@ -2917,6 +2917,13 @@ class ReactRunnerMixin:
                             return max(1, int(budget_steps))
                         except (TypeError, ValueError):
                             pass
+            for key in ("max_steps", "maxSteps"):
+                routing_steps = routing.get(key)
+                if routing_steps is not None:
+                    try:
+                        return max(1, int(routing_steps))
+                    except (TypeError, ValueError):
+                        pass
         autonomy_steps = self._autonomy_profile_int(context, "maxSteps")
         if autonomy_steps is not None:
             return autonomy_steps

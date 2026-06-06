@@ -703,6 +703,86 @@ def test_openai_responses_api_format_posts_responses_payload(monkeypatch: pytest
     assert payload["input"] == [{"role": "user", "content": "hi"}]
 
 
+def test_openai_responses_includes_reasoning_from_ui_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"id":"resp_1","status":"completed","output_text":"ok","output":[]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "apiFormat": "openai-responses",
+            "model": "test-chat",
+            "reasoningSummary": "auto",
+        },
+        "ui": {"reasoningEffort": "max"},
+    }
+
+    adapter.chat(messages=[{"role": "user", "content": "hi"}], context=context)
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["reasoning"] == {"effort": "high", "summary": "auto"}
+
+
+def test_openai_responses_retries_without_reasoning_when_proxy_rejects_it() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        payload = json.loads(kwargs["body"].decode("utf-8"))
+        if "reasoning" in payload:
+            return 400, b'{"error":{"message":"Unknown parameter: reasoning"}}'
+        return 200, b'{"id":"resp_1","status":"completed","output_text":"ok","output":[]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+                "reasoningEffort": "high",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "ok"
+    assert len(calls) == 2
+    assert json.loads(calls[0]["body"].decode("utf-8"))["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert "reasoning" not in json.loads(calls[1]["body"].decode("utf-8"))
+
+
 def test_openai_responses_serializes_image_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "LOCAL_AGENT_PROVIDER_MODEL",
@@ -1854,6 +1934,65 @@ def test_openai_responses_stream_routes_reasoning_summary_to_thinking_delta() ->
         {"type": "content_delta", "delta": "Done"},
     ]
     assert events[-1]["response"]["message"]["content"] == "Done"
+
+
+def test_openai_responses_stream_retries_without_reasoning_when_proxy_rejects_it() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        payload = json.loads(kwargs["body"].decode("utf-8"))
+        if "reasoning" in payload:
+            return 400, iter([b'{"error":{"message":"Unknown parameter: reasoning"}}'])
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"Done"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Done","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+                "reasoningEffort": "high",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+            "reasoningEffort": "high",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "hi"}], context=context))
+
+    assert len(stream_calls) == 2
+    assert json.loads(stream_calls[0]["body"].decode("utf-8"))["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert "reasoning" not in json.loads(stream_calls[1]["body"].decode("utf-8"))
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Done"},
+    ]
 
 
 def test_openai_responses_stream_routes_reasoning_text_to_thinking_delta() -> None:

@@ -272,9 +272,6 @@ class ReactToolHelpersMixin:
                 self._inherit_batch_tool_operation(next_call, operation_by_tool_id)
             if self._tool_call_parent_id(next_call) is not None and tool_name not in _FILE_CHANGE_TOOL_NAMES:
                 self._inherit_batch_tool_operation(next_call, operation_by_tool_id)
-            if tool_name in _CONTEXT_DISCOVERY_TOOL_NAMES:
-                if tool_id:
-                    read_parent_candidates.append((tool_id, tool_name, set()))
             if tool_name == _GIT_STATUS_TOOL_NAME and tool_id:
                 git_status_parent_tool_id = tool_id
             if tool_name in _FILE_CHANGE_TOOL_NAMES:
@@ -443,9 +440,6 @@ class ReactToolHelpersMixin:
                 self._inherit_batch_tool_operation(next_spec, operation_by_tool_id)
             if self._tool_call_parent_id(next_spec) is not None and tool_name not in _FILE_CHANGE_TOOL_NAMES:
                 self._inherit_batch_tool_operation(next_spec, operation_by_tool_id)
-            if tool_name in _CONTEXT_DISCOVERY_TOOL_NAMES:
-                if tool_id:
-                    read_parent_candidates.append((tool_id, tool_name, set()))
             if tool_name == _GIT_STATUS_TOOL_NAME and tool_id:
                 git_status_parent_tool_id = tool_id
             if tool_name in _FILE_CHANGE_TOOL_NAMES:
@@ -700,8 +694,6 @@ class ReactToolHelpersMixin:
         for tool_id, tool_name, candidate_paths in reversed(candidates):
             if not tool_id:
                 continue
-            if tool_name in _CONTEXT_DISCOVERY_TOOL_NAMES:
-                return tool_id
             if read_paths and self._paths_overlap(read_paths, candidate_paths):
                 return tool_id
         return ""
@@ -711,10 +703,6 @@ class ReactToolHelpersMixin:
             if not isinstance(tool_result, dict):
                 continue
             tool_name = str(tool_result.get("name") or "").strip()
-            if tool_name in _CONTEXT_DISCOVERY_TOOL_NAMES:
-                tool_id = self._tool_call_id(tool_result)
-                if tool_id:
-                    return tool_id
             if tool_name in _FILE_CHANGE_TOOL_NAMES and read_paths and self._paths_overlap(
                 read_paths,
                 self._tool_reference_paths(tool_result),

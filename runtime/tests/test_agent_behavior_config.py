@@ -87,6 +87,7 @@ def test_agent_soul_prompt_layers_are_injected_and_audited(tmp_path: Any) -> Non
     layer_names = [layer["name"] for layer in metadata["prompt_layers"]]
     assert layer_names == [
         "role",
+        "communication",
         "agent_soul",
         "workspace_instructions",
         "runtime_safety",

@@ -65,7 +65,7 @@ def test_provider_tool_call_to_spec_preserves_parent_tool_use_id() -> None:
     assert spec["parentToolUseId"] == "call_parent"
 
 
-def test_annotate_tool_call_batch_assigns_ids_before_inferring_parents() -> None:
+def test_annotate_tool_call_batch_assigns_ids_without_parenting_context_read_to_search() -> None:
     helper = _ToolHelperHarness()
 
     annotated = helper._annotate_tool_call_batch(
@@ -77,11 +77,11 @@ def test_annotate_tool_call_batch_assigns_ids_before_inferring_parents() -> None
 
     assert annotated[0]["id"].startswith("tc_")
     assert annotated[1]["id"].startswith("tc_")
-    assert annotated[1]["parentToolUseId"] == annotated[0]["id"]
+    assert "parentToolUseId" not in annotated[1]
     assert annotated[0]["toolGroupId"] == annotated[1]["toolGroupId"]
     assert [call["toolIndex"] for call in annotated] == [0, 1]
-    assert annotated[1]["toolOperationId"] == annotated[0]["toolOperationId"]
     assert annotated[0]["toolOperationId"] == "context:search:needle"
+    assert annotated[1]["toolOperationId"] == "context:path:alpha.txt"
 
 
 def test_annotate_tool_call_batch_infers_file_change_follow_up_parents_without_ids() -> None:
@@ -144,7 +144,7 @@ def test_annotate_tool_spec_batch_assigns_ids_before_inferring_parents() -> None
     assert annotated[2]["parentToolUseId"] == annotated[0]["id"]
 
 
-def test_annotate_tool_spec_batch_infers_context_read_parent_without_ids() -> None:
+def test_annotate_tool_spec_batch_keeps_context_read_independent_from_search() -> None:
     helper = _ToolHelperHarness()
 
     annotated = helper._annotate_tool_spec_batch(
@@ -156,14 +156,14 @@ def test_annotate_tool_spec_batch_infers_context_read_parent_without_ids() -> No
 
     assert annotated[0]["id"].startswith("tc_")
     assert annotated[1]["id"].startswith("tc_")
-    assert annotated[1]["parentToolUseId"] == annotated[0]["id"]
+    assert "parentToolUseId" not in annotated[1]
     assert annotated[0]["toolGroupId"] == annotated[1]["toolGroupId"]
     assert [spec["toolIndex"] for spec in annotated] == [0, 1]
-    assert annotated[1]["toolOperationId"] == annotated[0]["toolOperationId"]
     assert annotated[0]["toolOperationId"] == "context:search:needle"
+    assert annotated[1]["toolOperationId"] == "context:path:alpha.txt"
 
 
-def test_annotate_follow_up_tool_spec_parents_read_to_prior_context_result() -> None:
+def test_annotate_follow_up_tool_spec_keeps_read_independent_from_prior_search_result() -> None:
     helper = _ToolHelperHarness()
 
     follow_up = helper._annotate_follow_up_tool_spec(
@@ -180,13 +180,13 @@ def test_annotate_follow_up_tool_spec_parents_read_to_prior_context_result() -> 
     )
 
     assert follow_up is not None
-    assert follow_up["parentToolUseId"] == "tc_search"
+    assert "parentToolUseId" not in follow_up
     assert follow_up["id"].startswith("tc_")
-    assert follow_up["toolOperationId"] == "context:search:needle"
+    assert follow_up["toolOperationId"] == "context:path:alpha.txt"
     assert follow_up["toolOperationLabel"] == "读取上下文"
 
 
-def test_annotate_tool_call_batch_with_history_parents_cross_turn_read() -> None:
+def test_annotate_tool_call_batch_with_history_keeps_cross_turn_read_independent_from_search() -> None:
     helper = _ToolHelperHarness()
 
     annotated = helper._annotate_tool_call_batch_with_history(
@@ -201,9 +201,9 @@ def test_annotate_tool_call_batch_with_history_parents_cross_turn_read() -> None
         ],
     )
 
-    assert annotated[0]["parentToolUseId"] == "tc_search"
+    assert "parentToolUseId" not in annotated[0]
     assert annotated[0]["id"].startswith("tc_")
-    assert annotated[0]["toolOperationId"] == "context:search:needle"
+    assert annotated[0]["toolOperationId"] == "context:path:alpha.txt"
 
 
 def test_annotate_tool_call_batch_with_history_parents_cross_turn_verification() -> None:
@@ -374,7 +374,7 @@ def test_annotate_tool_call_batch_with_history_parents_computer_use_browser_acti
     assert annotated[0]["toolOperationLabel"] == "桌面操作"
 
 
-def test_annotate_tool_call_batch_with_history_keeps_context_read_parent_priority() -> None:
+def test_annotate_tool_call_batch_with_history_prefers_changed_file_parent_over_search() -> None:
     helper = _ToolHelperHarness()
 
     annotated = helper._annotate_tool_call_batch_with_history(
@@ -385,7 +385,7 @@ def test_annotate_tool_call_batch_with_history_keeps_context_read_parent_priorit
         ],
     )
 
-    assert annotated[0]["parentToolUseId"] == "tc_search"
+    assert annotated[0]["parentToolUseId"] == "tc_write"
 
 
 def test_annotate_follow_up_tool_spec_preserves_explicit_parent() -> None:

@@ -12,6 +12,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from local_agent_runtime.store._constants import DEFAULT_AGENT_SOUL_PROFILE
 from local_agent_runtime.tools.registry import BUILTIN_TOOL_SCHEMAS, to_openai_function_tools
 
 from .compactor import ContextCompactor
@@ -75,21 +76,7 @@ IMAGE_ATTACHMENT_MIME_TYPES = {
 }
 IMAGE_ATTACHMENT_METADATA_KEYS = ("attachments", "images", "imagePaths")
 
-DEFAULT_AGENT_SOUL_BASELINE = {
-    "id": "default",
-    "name": "Default",
-    "identity": "A capable local coding agent that works inside the user's desktop runtime.",
-    "principles": [
-        "Be practical, careful, and transparent about uncertainty.",
-        "Prefer existing project patterns over unnecessary new abstractions.",
-        "Keep the user in control of risky actions.",
-    ],
-    "communicationStyle": "Clear, concise, collaborative.",
-    "reasoningStyle": "Inspect the current workspace before making changes.",
-    "collaborationStyle": "Explain meaningful decisions and keep work scoped to the user's request.",
-    "domainPreferences": [],
-    "customSystemPrompt": "",
-}
+DEFAULT_AGENT_SOUL_BASELINE = DEFAULT_AGENT_SOUL_PROFILE
 
 
 class ContextBuilder(HistoryMixin):
@@ -1131,6 +1118,8 @@ class ContextBuilder(HistoryMixin):
         effective_role = (role or "root").lower()
         role_prompt = self._role_prompt(effective_role)
         sections.append(("role", self._base_role_prompt(), {"role": "base"}))
+        if self._max_context_tokens(config) >= 512:
+            sections.append(("communication", self._communication_prompt(), {"locked": True}))
 
         soul_profile = self._active_agent_soul_profile(config)
         soul_prompt = self._agent_soul_prompt(soul_profile)
@@ -1179,6 +1168,11 @@ class ContextBuilder(HistoryMixin):
 
     def _base_role_prompt(self) -> str:
         return "You are a local coding agent operating in a user-controlled desktop runtime."
+
+    def _communication_prompt(self) -> str:
+        return (
+            "User-facing text: before first tool, say what you will inspect; after tool batches, summarize findings briefly. Backend status is not thinking."
+        )
 
     def _role_prompt(self, role: str | None = None) -> str:
         effective_role = (role or "root").lower()
@@ -1278,7 +1272,7 @@ class ContextBuilder(HistoryMixin):
                 if normalized != expected:
                     return False
                 continue
-            if str(value or "").strip() != str(expected).strip():
+            if str("" if value is None else value).strip() != str(expected).strip():
                 return False
         return True
 

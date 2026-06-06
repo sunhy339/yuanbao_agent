@@ -121,7 +121,7 @@ describe("useEventSubscription", () => {
     runtimeMocks.handler = null;
   });
 
-  it("renders assistant_progress events as lightweight progress messages", async () => {
+  it("keeps legacy assistant_progress events out of the chat transcript", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
 
@@ -139,13 +139,10 @@ describe("useEventSubscription", () => {
           toolSemanticParentId: "phase:context_read",
           toolSemanticParentLabel: "读取上下文",
         },
-      });
+      } as unknown as AgentEventEnvelope);
     });
 
-    const row = screen.getByText("正在整理上下文");
-    expect(row.getAttribute("data-kind")).toBe("assistant_progress");
-    expect(row.getAttribute("data-semantic-parent")).toBe("phase:context_read");
-    expect(row.getAttribute("data-semantic-label")).toBe("读取上下文");
+    expect(screen.queryByText("正在整理上下文")).toBeNull();
   });
 
   it("preserves haha-cc messages on the live trace cache", async () => {
@@ -249,6 +246,40 @@ describe("useEventSubscription", () => {
     const row = screen.getByText("先确认相关文件。");
     expect(row.getAttribute("data-kind")).toBe("assistant_thinking");
     expect(row.getAttribute("data-source")).toBe("non_stream_thought_summary");
+  });
+
+  it("keeps runtime status events out of the chat transcript", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_status_thinking",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "status",
+        ts: 10,
+        visibility: "chat",
+        payload: {
+          state: "thinking",
+          verb: "model",
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_status_streaming",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "status",
+        ts: 11,
+        visibility: "chat",
+        payload: {
+          state: "streaming",
+          verb: "model",
+        },
+      });
+    });
+
+    expect(document.querySelector('[data-kind="assistant_thinking"]')).toBeNull();
   });
 
   it("keeps provider thinking on either side of a live tool boundary", async () => {

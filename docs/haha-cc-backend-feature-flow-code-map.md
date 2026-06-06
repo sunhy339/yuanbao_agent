@@ -87,6 +87,15 @@ Yuanbao alignment decision from this evidence:
   default for code/doc/workspace prompts.
 - Plan/swarm/team/agent panels should be projected from model tool calls or
   explicit mode state, not from raw planner JSON.
+- Parity fixes must be source-driven, not filter-driven. Do not treat raw JSON,
+  duplicate progress, misplaced thinking, or fixed workflows as frontend-only
+  rendering bugs. First remove or opt-in the backend source that creates the
+  wrong flow; then map only core trajectory outputs to the flat protocol:
+  assistant text -> `content_start/content_delta/message_complete`, provider
+  reasoning -> `thinking`, tool calls -> `tool_use_complete/tool_result`,
+  permissions -> `permission_request`, and task/team/agent state -> structured
+  panel events. Synthetic backend stage logs must not masquerade as chat or
+  provider thinking.
 
 ## Code-Level Initial Turn Diff
 
@@ -382,8 +391,8 @@ Yuanbao current code:
 
 Gap:
 
-- Yuanbao mixes real provider reasoning, synthetic progress, and backend phase
-  logs under similar UI surfaces.
+- Yuanbao previously mixed real provider reasoning, synthetic progress, and
+  backend phase logs under similar UI surfaces.
 - Some providers cannot emit true token-level thinking, so backend-generated
   progress must not pretend to be provider thinking.
 
@@ -391,9 +400,11 @@ Action:
 
 - `thinking`: only provider reasoning delta/summary or explicitly marked model
   thought summary.
-- `assistant_progress` / `status`: backend phase/status heartbeat.
-- Frontend should render them differently and avoid markdown-source-looking
-  raw blocks for internal progress.
+- Production backend must not emit synthetic `assistant_progress` chat frames.
+- Backend budget/planning state uses typed panel events such as
+  `task.budget.progress` and `task.planning.progress`.
+- Frontend keeps legacy `assistant_progress` out of live/replay chat so old
+  traces do not rehydrate as new transcript noise.
 
 ### 4. Tool Lifecycle
 
@@ -738,7 +749,7 @@ fallback orchestration sometimes acts before the model has chosen a path.
 | Workspace evidence | Gate too broad | P0 | Only explicit router/advisor contract requires it. |
 | Session replay | Live/reload mismatch | P0 | One projection/visibility contract for live and replay. |
 | Completion review | Internal gate leaks | P0 | Trace/panel audit only unless real user decision is required. |
-| Thinking | Provider reasoning mixed with progress | P0 | Separate `thinking` from `assistant_progress/status`. |
+| Thinking | Provider reasoning mixed with backend progress | P0 | `thinking` is provider trajectory only; backend progress is typed panel/status, not chat text. |
 | Tool panels | Raw JSON and duplicate groups | P0 | Tool-specific presentation and persisted chat-compatible frames. |
 | Plan approval | Raw plan JSON | P0 | Structured subtask/section cards. |
 | Agent/subagent | Generic names / internal ids | P1 | Model-provided readable names, IDs in metadata only. |
@@ -843,8 +854,11 @@ Rules:
 
 5. Thinking/progress:
    - Provider reasoning -> `thinking`.
-   - Backend heartbeat -> `status` / `assistant_progress`.
-   - Render both in phase order around tool calls.
+   - Backend budget/planning state -> typed panel events (`task.budget.progress`,
+     `task.planning.progress`) or `status`.
+   - Do not synthesize chat/thinking/progress text from backend stage logs.
+   - Render tool order from `content_start` / `tool_use_complete` /
+     `tool_result`, not from guessed text deltas.
 
 ## What We Should Cut
 

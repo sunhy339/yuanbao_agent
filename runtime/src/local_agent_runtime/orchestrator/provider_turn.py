@@ -642,14 +642,14 @@ class ProviderTurnMixin:
         provider_context: dict[str, Any],
         budget: Any | None = None,
     ) -> dict[str, Any]:
-        if hasattr(self, "_publish"):
-            self._publish(
+        status_publisher = getattr(self, "_publish_chat_status", None)
+        if callable(status_publisher):
+            status_publisher(
                 session_id=session_id,
                 task=task,
-                event_type="status",
+                state="thinking",
+                verb="model",
                 payload={
-                    "state": "thinking",
-                    "verb": "model",
                     "step": provider_context.get("step"),
                 },
             )
@@ -667,14 +667,13 @@ class ProviderTurnMixin:
             event_type="provider.request",
             payload={**self._provider_trace_payload(provider_context), "stream": True},
         )
-        if hasattr(self, "_publish"):
-            self._publish(
+        if callable(status_publisher):
+            status_publisher(
                 session_id=session_id,
                 task=task,
-                event_type="status",
+                state="streaming",
+                verb="model",
                 payload={
-                    "state": "streaming",
-                    "verb": "model",
                     "step": provider_context.get("step"),
                 },
             )

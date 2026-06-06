@@ -428,18 +428,6 @@ class ReactRunnerMixin:
             },
             visibility="trace",
         )
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="assistant_progress",
-            payload={
-                "summary": result_summary,
-                "phase": "default_preference",
-                "reason": "ask_user_question_tool_low_risk_preference",
-                "toolCallId": tool_call_id,
-            },
-            visibility="panel",
-        )
 
     @staticmethod
     def _provider_turn_allows_tool(
@@ -919,17 +907,6 @@ class ReactRunnerMixin:
                         policy_needs=turn_result.policy_needs,
                         goal=goal,
                     )
-                    self._publish(
-                        session_id=session_id,
-                        task=task,
-                        event_type="assistant_progress",
-                        payload={
-                            "summary": default_answer,
-                            "phase": "default_preference",
-                            "reason": "ask_user_question_low_risk_preference",
-                        },
-                        visibility="panel",
-                    )
                     messages.append({"role": "assistant", "content": assistant_text})
                     messages.append({"role": "user", "content": f"[Default preference]\n{default_answer}"})
                     continue
@@ -973,13 +950,6 @@ class ReactRunnerMixin:
                 }
 
             tool_calls = self._annotate_tool_call_batch_with_history(parsed["tool_calls"], tool_results)
-            self._publish_tool_batch_phase_progress(
-                session_id=session_id,
-                task=task,
-                tool_calls=tool_calls,
-                context=context,
-                stage="before",
-            )
             messages.append(
                 {
                     "role": "assistant",
@@ -1303,13 +1273,6 @@ class ReactRunnerMixin:
                 index += 1
 
             # After all tool calls in this step, check for cooperative pause
-            self._publish_tool_batch_phase_progress(
-                session_id=session_id,
-                task=task,
-                tool_calls=tool_calls,
-                context=context,
-                stage="after",
-            )
             task = self._store.get_task({"taskId": task["id"]})["task"]
             if task["status"] == "paused":
                 self._pending_react_tasks[task["id"]] = {
@@ -1639,9 +1602,6 @@ class ReactRunnerMixin:
         remaining_steps: Any = None,
         recommended_action: str | None = None,
     ) -> None:
-        publish_progress = getattr(self, "_publish_assistant_progress", None)
-        if not callable(publish_progress):
-            return
         if phase == "budget_exhausted":
             text = "已达到步骤预算，正在整理当前进展"
             status = "waiting"
@@ -1650,13 +1610,14 @@ class ReactRunnerMixin:
             status = "running"
         else:
             return
-        publish_progress(
+        self._publish(
             session_id=session_id,
             task=task,
-            text=text,
-            phase=phase,
-            status=status,
+            event_type="task.budget.progress",
             payload={
+                "summary": text,
+                "phase": phase,
+                "status": status,
                 "pressure": pressure,
                 "consumedSteps": consumed_steps,
                 "remainingSteps": remaining_steps,
@@ -1850,51 +1811,6 @@ class ReactRunnerMixin:
             "recent": recent[-5:],
         }
 
-    def _publish_tool_batch_phase_progress(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        tool_calls: list[dict[str, Any]],
-        context: dict[str, Any],
-        stage: str,
-    ) -> None:
-        publish_progress = getattr(self, "_publish_assistant_progress", None)
-        if not callable(publish_progress) or not tool_calls:
-            return
-        tool_names = [
-            str(self._provider_tool_call_to_spec(tool_call, context).get("name") or "").strip()
-            for tool_call in tool_calls
-            if isinstance(tool_call, dict)
-        ]
-        tool_names = [name for name in tool_names if name]
-        if not tool_names:
-            return
-        if stage == "after":
-            text = "正在合并清单" if any(name in {"read_file", "search_files", "code_search", "list_dir", "list_directory"} for name in tool_names) else "正在合并工具结果"
-            phase = "merge_findings"
-        elif any(name in {"search_files", "code_search", "list_dir", "list_directory", "git_status", "git_diff"} for name in tool_names):
-            text = "正在定位任务来源"
-            phase = "locate_sources"
-        elif any(name == "read_file" for name in tool_names):
-            text = "正在读取候选文档"
-            phase = "read_candidates"
-        else:
-            text = "正在执行工具批次"
-            phase = "tool_batch"
-        publish_progress(
-            session_id=session_id,
-            task=task,
-            text=text,
-            phase=phase,
-            payload={
-                "toolTotal": len(tool_names),
-                "toolNames": tool_names[:10],
-                "stage": stage,
-            },
-            visibility="panel",
-        )
-
     def _pause_react_for_user_question(
         self,
         *,
@@ -2028,18 +1944,6 @@ class ReactRunnerMixin:
                 "result": answered_payload,
                 "modelVisibleResult": answered_payload,
             }
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type="assistant_progress",
-                payload={
-                    "summary": default_answer,
-                    "phase": "default_preference",
-                    "reason": "ask_user_question_tool_low_risk_preference",
-                    "toolCallId": tool_call.get("id") or tool_result.get("id"),
-                },
-                visibility="panel",
-            )
             return {
                 "status": "defaulted",
                 "tool_result": tool_result,
@@ -3013,12 +2917,6 @@ class ReactRunnerMixin:
                             return max(1, int(budget_steps))
                         except (TypeError, ValueError):
                             pass
-            routing_steps = routing.get("max_steps")
-            if routing_steps is not None:
-                try:
-                    return max(1, int(routing_steps))
-                except (TypeError, ValueError):
-                    pass
         autonomy_steps = self._autonomy_profile_int(context, "maxSteps")
         if autonomy_steps is not None:
             return autonomy_steps

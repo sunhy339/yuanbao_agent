@@ -82,6 +82,18 @@ class MessageRoutingMixin:
         orchestration_mode = metadata.get("orchestrationMode") if isinstance(metadata, dict) else None
         runtime_mode = metadata.get("runtime") if isinstance(metadata, dict) else None
         intent_hints = metadata.get("intentHints") if isinstance(metadata, dict) else None
+        legacy_flags: dict[str, bool] = {}
+        if isinstance(metadata, dict):
+            for key in (
+                "legacyPlanner",
+                "legacy_planner",
+                "legacyPlanExecution",
+                "legacy_plan_execution",
+                "useLegacyPlanner",
+                "use_legacy_planner",
+            ):
+                if metadata.get(key) is True:
+                    legacy_flags[key] = True
         goal_text = ""
         if isinstance(context, dict):
             goal_text = str(context.get("goal") or context.get("userGoal") or context.get("content") or "")
@@ -101,6 +113,7 @@ class MessageRoutingMixin:
             **({"orchestrationMode": orchestration_mode} if isinstance(orchestration_mode, str) and orchestration_mode else {}),
             **({"runtime": runtime_mode} if isinstance(runtime_mode, str) and runtime_mode else {}),
             **({"intentHints": deepcopy(intent_hints)} if isinstance(intent_hints, dict) else {}),
+            **legacy_flags,
             **({"profile": profile} if profile else {}),
             "profile_snapshot": self._runtime_profile_snapshot(context),
             "worktreeBindingRequired": False,
@@ -326,7 +339,7 @@ class MessageRoutingMixin:
     ) -> dict[str, Any]:
         policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
         provider = config.get("provider") if isinstance(config.get("provider"), dict) else {}
-        max_steps = self._safe_int(routing.get("max_steps"), autonomy_profile.get("maxSteps"), policy.get("maxTaskSteps"), 20)
+        max_steps = self._safe_int(autonomy_profile.get("maxSteps"), policy.get("maxTaskSteps"), 20)
         max_context_tokens = self._safe_int(provider.get("maxContextTokens"), 256000)
         child_task_timeout_ms = self._safe_int(
             autonomy_profile.get("childTaskTimeoutMs"),
@@ -346,6 +359,7 @@ class MessageRoutingMixin:
             "commandTimeoutMs": self._safe_int(policy.get("commandTimeoutMs"), 600000),
             "providerTimeoutSeconds": self._safe_int(provider.get("timeout"), 30),
             "maxContextTokens": max_context_tokens,
+            "routingMaxStepsHint": self._safe_int(routing.get("max_steps"), 0),
             "pressure": "normal",
             "exhausted": False,
             "convergenceRequired": True,

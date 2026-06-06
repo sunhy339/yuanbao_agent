@@ -197,7 +197,7 @@ def test_task_schema_is_exposed_through_registry_and_context(tmp_path: Path) -> 
         store.close()
 
 
-def test_trace_append_list_orders_by_time_and_sequence(tmp_path: Path) -> None:
+def test_trace_append_list_orders_by_sequence_for_live_replay_parity(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     try:
         workspace = store.upsert_workspace(str(tmp_path))
@@ -230,12 +230,12 @@ def test_trace_append_list_orders_by_time_and_sequence(tmp_path: Path) -> None:
 
         response = store.list_trace_events({"taskId": task["id"]})
 
-        assert [event["id"] for event in response["traceEvents"]] == [first["id"], second["id"], third["id"]]
-        assert response["traceEvents"][1]["sessionId"] == session["id"]
-        assert response["traceEvents"][1]["type"] == "tool.started"
-        assert response["traceEvents"][1]["relatedId"] == "call_1"
-        assert response["traceEvents"][1]["visibility"] == "trace"
-        assert response["traceEvents"][1]["payload"] == {"toolName": "list_dir"}
+        assert [event["id"] for event in response["traceEvents"]] == [third["id"], first["id"], second["id"]]
+        assert response["traceEvents"][2]["sessionId"] == session["id"]
+        assert response["traceEvents"][2]["type"] == "tool.started"
+        assert response["traceEvents"][2]["relatedId"] == "call_1"
+        assert response["traceEvents"][2]["visibility"] == "trace"
+        assert response["traceEvents"][2]["payload"] == {"toolName": "list_dir"}
     finally:
         store.close()
 
@@ -404,6 +404,39 @@ def test_trace_list_rpc(runtime_harness: Any) -> None:
 
     assert "result" in response, response
     assert response["result"]["traceEvents"][0]["id"] == event["id"]
+
+
+def test_trace_replay_uses_sequence_order_when_timestamps_arrive_out_of_order(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="Trace ordering")
+        task = store.create_task(session_id=session["id"], task_type="chat", goal="trace ordering", plan=[])
+
+        first = store.append_trace_event(
+            task_id=task["id"],
+            session_id=session["id"],
+            event_type="content_start",
+            source="assistant",
+            payload={"blockType": "tool_use", "toolName": "search_files"},
+            created_at=200,
+        )
+        second = store.append_trace_event(
+            task_id=task["id"],
+            session_id=session["id"],
+            event_type="tool_use_complete",
+            source="tool",
+            payload={"toolName": "search_files", "toolUseId": "call_1"},
+            created_at=100,
+        )
+
+        replayed = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        recovered = store.events_after(session["id"], 0)["events"]
+
+        assert [event["id"] for event in replayed] == [first["id"], second["id"]]
+        assert [event["id"] for event in recovered] == [first["id"], second["id"]]
+    finally:
+        store.close()
 
 
 def test_trace_replay_keeps_chat_compat_message_delta_flat_frames_for_adapter_history(tmp_path: Path) -> None:

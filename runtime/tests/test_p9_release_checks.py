@@ -213,8 +213,8 @@ class TestEventCompatAssistantToken:
             assert replay is not None
             assert event["seq"] == replay["sequence"]
 
-    def test_assistant_progress_panel_events_do_not_emit_flat_chat_messages(self, tmp_path: Any) -> None:
-        """Root progress panels survive refresh as panel events, not flat chat protocol."""
+    def test_task_planning_progress_panel_events_do_not_emit_flat_chat_messages(self, tmp_path: Any) -> None:
+        """Task progress panels survive refresh as panel events, not flat chat protocol."""
         runtime = _make_runtime(tmp_path)
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir()
@@ -228,17 +228,23 @@ class TestEventCompatAssistantToken:
             status="running",
         )
 
-        runtime.orchestrator._publish_assistant_progress(
+        runtime.orchestrator._publish(
             session_id=session["id"],
             task=task,
-            text="Inspecting repo",
-            phase="inspect",
+            event_type="task.planning.progress",
+            payload={
+                "summary": "Inspecting repo",
+                "phase": "inspect",
+                "mode": "planning",
+                "status": "running",
+            },
+            visibility="panel",
         )
 
         raw_events = runtime.store.events_after(session["id"], 0)["events"]
-        progress_event = next(event for event in raw_events if event["type"] == "assistant_progress")
+        progress_event = next(event for event in raw_events if event["type"] == "task.planning.progress")
         assert progress_event["visibility"] == "panel"
-        assert progress_event["payload"]["_bridge"]["persistTraceMirror"] is True
+        assert "_chatCompat" not in progress_event["payload"]
         assert "yuanbao" not in progress_event
         assert "hahaCc" not in progress_event
 
@@ -689,8 +695,8 @@ class TestEventCompatAssistantToken:
         assert chat_result.payload["content"]["stdout"]["tail"].endswith("end")
         assert chat_result.payload["content"]["fullResultRef"]["commandLogId"] == "cmd_big"
 
-    def test_provider_request_emits_chat_thinking_status(self, tmp_path: Any) -> None:
-        """Provider requests emit a haha-cc style thinking status before output."""
+    def test_provider_request_emits_trace_only_thinking_status(self, tmp_path: Any) -> None:
+        """Provider requests emit runtime status for trace, not flat chat thinking."""
         runtime = _make_runtime(tmp_path)
         collected: list[RuntimeEvent] = []
         runtime.event_bus.subscribe(collected.append)
@@ -709,10 +715,13 @@ class TestEventCompatAssistantToken:
         assert status_events[0].payload["state"] == "thinking"
         assert status_events[0].payload["verb"] == "model"
         assert status_events[0].payload["step"] == 2
-        assert status_events[0].payload["_chatCompat"] is True
+        assert status_events[0].visibility == "trace"
+        assert status_events[0].payload["_bridge"]["suppressRealtimeFlat"] is True
+        assert status_events[0].payload["_bridge"]["suppressChatReplay"] is True
+        assert runtime.event_bus.as_payload(status_events[0]).get("yuanbao") is None
 
     def test_task_lifecycle_emits_ordered_status_updates(self, tmp_path: Any) -> None:
-        """Root lifecycle stays panel-only while tools/permissions/message update chat status."""
+        """Root lifecycle stays panel-only while runtime status stays out of flat chat."""
         runtime = _make_runtime(tmp_path)
         collected: list[RuntimeEvent] = []
         runtime.event_bus.subscribe(collected.append)
@@ -757,7 +766,10 @@ class TestEventCompatAssistantToken:
         ]
         assert status_events[0].payload["verb"] == "read_file"
         assert status_events[1].payload["verb"] == "write_file"
-        assert all(event.payload["_chatCompat"] is True for event in status_events)
+        assert all(event.visibility == "trace" for event in status_events)
+        assert all(event.payload["_bridge"]["suppressRealtimeFlat"] is True for event in status_events)
+        assert all(event.payload["_bridge"]["suppressChatReplay"] is True for event in status_events)
+        assert all(runtime.event_bus.as_payload(event).get("yuanbao") is None for event in status_events)
         assert next(event for event in collected if event.type == "task.started").visibility == "panel"
         assert next(event for event in collected if event.type == "task.completed").visibility == "panel"
         assert next(event for event in collected if event.type == "tool.started").visibility == "trace"
@@ -886,8 +898,8 @@ class TestEventCompatAssistantToken:
         for event_type, _payload, visibility in cases:
             assert raw_events[event_type].visibility == visibility
 
-    def test_approval_resolved_emits_chat_idle_status(self, tmp_path: Any) -> None:
-        """Approval resolution clears chat thinking state for pending permission blocks."""
+    def test_approval_resolved_emits_trace_only_idle_status(self, tmp_path: Any) -> None:
+        """Approval resolution records runtime idle status without a flat chat frame."""
         runtime = _make_runtime(tmp_path)
         collected: list[RuntimeEvent] = []
         runtime.event_bus.subscribe(collected.append)
@@ -903,7 +915,10 @@ class TestEventCompatAssistantToken:
         status_events = [event for event in collected if event.type == "status"]
         assert len(status_events) == 1
         assert status_events[0].payload["state"] == "idle"
-        assert status_events[0].payload["_chatCompat"] is True
+        assert status_events[0].visibility == "trace"
+        assert status_events[0].payload["_bridge"]["suppressRealtimeFlat"] is True
+        assert status_events[0].payload["_bridge"]["suppressChatReplay"] is True
+        assert runtime.event_bus.as_payload(status_events[0]).get("yuanbao") is None
 
     def test_approval_resolved_emits_resolved_permission_request(self, tmp_path: Any) -> None:
         """Non-computer approvals resolve through chat-compat permission_request too."""

@@ -316,7 +316,7 @@ class TestOptInAdvisorRouting:
         assert result.metadata["advisor_candidate"]["scenario"] == "multi_step_task"
         assert "overplanned" in result.reasoning
 
-    def test_explicit_planning_signal_keeps_advisor_multi_step_when_enabled(self) -> None:
+    def test_explicit_planning_signal_keeps_advisor_multi_step_as_model_tools_when_enabled(self) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
                 '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"}, '
@@ -333,6 +333,30 @@ class TestOptInAdvisorRouting:
 
         assert result.scenario == Scenario.MULTI_STEP_TASK
         assert result.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
+        assert result.enable_planning is False
+        assert result.metadata["orchestrationMode"] == "model_tools"
+        assert result.metadata["runtime"] == "react_tool_loop"
+
+    def test_legacy_plan_execute_requires_explicit_advisor_flag(self) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute", '
+                '"legacyPlanExecution": true}, '
+                '"confidence": 0.95, "rationale": "legacy planner explicitly requested"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route(
+            "Plan and build a technical blog website with index.html, styles.css, README.md, "
+            "then break down the work into phases.",
+            ADVISOR_ON_CONTEXT,
+        )
+
+        assert result.scenario == Scenario.MULTI_STEP_TASK
+        assert result.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
+        assert result.enable_planning is True
+        assert result.metadata["legacyPlanExecution"] is True
 
 
 class TestRoutingProfiles:

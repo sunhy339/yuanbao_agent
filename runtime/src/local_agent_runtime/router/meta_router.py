@@ -405,8 +405,35 @@ class MetaRouter:
         }
         if (
             (planning_strategy or planning_scenario)
-            and not self._has_planning_or_delegation_signal(goal)
+            and not self._legacy_planner_route_enabled(llm_result)
         ):
+            if self._has_planning_or_delegation_signal(goal):
+                guarded = self._build_model_tool_orchestration_decision(
+                    scenario=(
+                        llm_result.scenario
+                        if llm_result.scenario in {
+                            Scenario.MULTI_STEP_TASK,
+                            Scenario.SUPERVISED_TASK,
+                            Scenario.SWARM_TASK,
+                        }
+                        else Scenario.MULTI_STEP_TASK
+                    ),
+                    confidence=max(rule_result.confidence, llm_result.confidence),
+                    reasoning=(
+                        "advisor-planning-as-model-tools: "
+                        f"{llm_result.reasoning}"
+                    ),
+                )
+                guarded.strategy = llm_result.strategy
+                guarded.metadata["advisor_candidate"] = {
+                    "scenario": llm_result.scenario.value,
+                    "strategy": llm_result.strategy.value,
+                    "confidence": llm_result.confidence,
+                    "reasoning": llm_result.reasoning,
+                }
+                guarded.metadata["rule_candidate"] = dict(llm_result.metadata.get("rule_candidate") or {})
+                self._attach_intent_hints(guarded, rule_result)
+                return guarded
             fallback_scenario = rule_result.scenario
             if fallback_scenario in {
                 Scenario.MULTI_STEP_TASK,
@@ -452,6 +479,21 @@ class MetaRouter:
             guarded.metadata["rule_candidate"] = dict(llm_result.metadata.get("rule_candidate") or {})
             return guarded
         return llm_result
+
+    @staticmethod
+    def _legacy_planner_route_enabled(decision: RoutingDecision) -> bool:
+        metadata = decision.metadata if isinstance(decision.metadata, dict) else {}
+        for key in (
+            "legacyPlanner",
+            "legacy_planner",
+            "legacyPlanExecution",
+            "legacy_plan_execution",
+            "useLegacyPlanner",
+            "use_legacy_planner",
+        ):
+            if metadata.get(key) is True:
+                return True
+        return False
 
     @staticmethod
     def _is_read_only_doc_goal(goal: str) -> bool:
@@ -767,6 +809,16 @@ class MetaRouter:
             "decision_id": uuid.uuid4().hex[:12],
             "advisor_source": "decision_advisor",
         }
+        for key in (
+            "legacyPlanner",
+            "legacy_planner",
+            "legacyPlanExecution",
+            "legacy_plan_execution",
+            "useLegacyPlanner",
+            "use_legacy_planner",
+        ):
+            if payload.get(key) is True:
+                metadata[key] = True
         tool_continuation = self._advisor_tool_continuation_payload(payload)
         if tool_continuation:
             metadata["toolContinuation"] = tool_continuation

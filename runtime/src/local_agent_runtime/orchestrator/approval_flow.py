@@ -765,18 +765,6 @@ class ApprovalFlowMixin:
                     "approvalId": conclusion.get("approvalId"),
                 },
             )
-            publish_progress = getattr(self, "_publish_assistant_progress", None)
-            if callable(publish_progress):
-                publish_progress(
-                    session_id=runtime_task["sessionId"],
-                    task=runtime_task,
-                    text="继续补齐 completion review 要求的证据和后续动作。",
-                    phase="completion_review_continuation",
-                    payload={
-                        "gateStatus": gate_status,
-                        "approvalId": conclusion.get("approvalId"),
-                    },
-                )
             self._start_background_message(
                 session_id=runtime_task["sessionId"],
                 task=runtime_task,

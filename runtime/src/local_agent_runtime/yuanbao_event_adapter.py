@@ -14,7 +14,6 @@ _DIRECT_EVENT_TYPES = {
     "computer_use_permission_request",
     "message_complete",
     "thinking",
-    "status",
     "api_retry",
     "system_notification",
 }
@@ -27,34 +26,22 @@ _SYSTEM_NOTIFICATION_EVENT_TYPES = {
     "session_state_changed",
     "task_started",
     "task_summary",
-    "plan_update",
 }
 
 _PROGRESS_NOTIFICATION_EVENT_TYPES = {
-    "assistant_progress",
     "tool.progress",
     "tool.output",
     "command.output",
 }
 
 _TASK_PROGRESS_EVENT_TYPES = {
-    "assistant_progress",
     "tool.progress",
     "tool.output",
     "command.output",
     "task_summary",
-    "plan_update",
 }
 
 _TASK_STARTED_STATUSES = {"queued", "starting", "started", "running", "active", "in_progress"}
-_CHAT_STATUS_STATES = {
-    "idle",
-    "thinking",
-    "compacting",
-    "tool_executing",
-    "streaming",
-    "permission_pending",
-}
 _SYSTEM_NOTIFICATION_SUBTYPES = {
     "init",
     "compact_summary",
@@ -90,7 +77,6 @@ _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
     "computer_use_permission_request": {"type", "requestId", "request"},
     "message_complete": {"type", "usage"},
     "thinking": {"type", "text"},
-    "status": {"type", "state", "verb", "elapsed", "tokens"},
     "api_retry": {
         "type",
         "attempt",
@@ -120,7 +106,6 @@ _SERVER_MESSAGE_REQUIRED_FIELDS: dict[str, set[str]] = {
     "computer_use_permission_request": {"type", "requestId", "request"},
     "message_complete": {"type", "usage"},
     "thinking": {"type", "text"},
-    "status": {"type", "state"},
     "api_retry": {"type", "attempt", "maxRetries", "retryDelayMs", "errorStatus"},
     "error": {"type", "message", "code"},
     "system_notification": {"type", "subtype"},
@@ -336,8 +321,6 @@ def _server_message_shape(message: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(shaped[key], str) and not shaped[key]:
             return None
     if event_type == "content_delta" and "text" not in shaped and "toolInput" not in shaped:
-        return None
-    if event_type == "status" and shaped.get("state") not in _CHAT_STATUS_STATES:
         return None
     return shaped
 

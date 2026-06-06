@@ -1,9 +1,7 @@
 import { useEffect, useRef } from "react";
 import type {
   AgentEventEnvelope,
-  AssistantProgressPayload,
   ChatMessageCompletePayload,
-  ChatStatusPayload,
   CommandLogRecord,
   CommandLifecyclePayload,
   CommandOutputPayload,
@@ -24,11 +22,7 @@ import type {
   TraceEventRecord,
 } from "@shared";
 import { RuntimeClient } from "../lib/runtimeClient";
-import {
-  formatAssistantFailureContent,
-  isOperationalAssistantDelta,
-  summarizeOperationalAssistantDelta,
-} from "../state/chatMessages";
+import { formatAssistantFailureContent } from "../state/chatMessages";
 import {
   appendAssistantToken,
   completeAssistantMessage,
@@ -41,7 +35,6 @@ import {
   appendOrUpdateAssistantToolInputDelta,
   appendOrUpdateAssistantToolOutputDelta,
   appendAssistantToolResultMessage,
-  appendAssistantProgressMessage,
   appendSpecialEventMessage,
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdatePermissionRequestMessage,
@@ -142,8 +135,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
   function queueAssistantToken(event: AgentEventEnvelope) {
     const payload = event.payload as any;
     const delta = payload.delta ?? "";
-    const displayDelta = isOperationalAssistantDelta(delta) ? summarizeOperationalAssistantDelta(delta) : delta;
-    if (!displayDelta) return;
+    if (!delta) return;
     pendingAssistantTokenEventsRef.current.push(event);
     if (assistantTokenFlushTimerRef.current !== null) return;
     assistantTokenFlushTimerRef.current = setTimeout(() => {
@@ -177,6 +169,19 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     return Boolean(payload && typeof payload === "object" && (payload as { _chatCompat?: unknown })._chatCompat === true);
   }
 
+  function bridgeMetadata(payload: unknown): Record<string, unknown> {
+    if (!payload || typeof payload !== "object") return {};
+    const bridge = (payload as { _bridge?: unknown })._bridge;
+    return bridge && typeof bridge === "object" && !Array.isArray(bridge)
+      ? bridge as Record<string, unknown>
+      : {};
+  }
+
+  function suppressesChatRendering(payload: unknown): boolean {
+    const bridge = bridgeMetadata(payload);
+    return bridge.suppressChatReplay === true || bridge.suppressRealtimeFlat === true;
+  }
+
   const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
   const INTERNAL_APPROVAL_KINDS = new Set(["completion_review"]);
 
@@ -195,23 +200,6 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     const result = (payload as { result?: unknown }).result;
     if (!result || typeof result !== "object") return false;
     return String((result as { status?: unknown }).status ?? "").toLowerCase() === "approval_required";
-  }
-
-  function appendOperationalAssistantProgress(event: AgentEventEnvelope, delta: string): boolean {
-    const text = summarizeOperationalAssistantDelta(delta)?.trim();
-    if (!text) {
-      return false;
-    }
-    setChatMessages((current) =>
-      appendAssistantProgressMessage(current, {
-        sessionId: event.sessionId,
-        taskId: event.taskId,
-        content: text,
-        now: event.ts,
-        eventId: event.eventId,
-      }),
-    );
-    return true;
   }
 
   function readPayloadText(payload: unknown, keys: string[]): string {
@@ -416,9 +404,16 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         return next;
       }
       return [...current, trace].sort((left, right) => {
+        const leftSeq = left.sequence;
+        const rightSeq = right.sequence;
+        if (leftSeq != null && rightSeq != null && leftSeq !== rightSeq) {
+          return leftSeq - rightSeq;
+        }
+        if (leftSeq != null && rightSeq == null) return -1;
+        if (leftSeq == null && rightSeq != null) return 1;
         const timeDiff = (left.createdAt ?? 0) - (right.createdAt ?? 0);
         if (timeDiff !== 0) return timeDiff;
-        return (left.sequence ?? 0) - (right.sequence ?? 0);
+        return left.id.localeCompare(right.id);
       }).slice(-TRACE_CACHE_LIMIT);
     });
   }
@@ -522,6 +517,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               }),
             );
           } else if (payload.blockType === "text") {
+            return;
             setChatMessages((current) =>
               appendOrUpdateAssistantThinkingMessage(current, {
                 sessionId: event.sessionId,
@@ -543,23 +539,19 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const payload = event.payload as ContentDeltaPayload;
           if (typeof payload.text === "string" && payload.text) {
             const text = payload.text;
-            if (isOperationalAssistantDelta(text)) {
-              appendOperationalAssistantProgress(event, text);
-            } else if (text) {
-              const messageId =
-                typeof payload.messageId === "string" && payload.messageId
-                  ? payload.messageId
-                  : `assistant_${event.taskId}`;
-              setChatMessages((current) =>
-                appendOrUpdateAssistantMessageDelta(current, {
-                  messageId,
-                  sessionId: event.sessionId,
-                  taskId: event.taskId,
-                  delta: text,
-                  now: event.ts,
-                }),
-              );
-            }
+            const messageId =
+              typeof payload.messageId === "string" && payload.messageId
+                ? payload.messageId
+                : `assistant_${event.taskId}`;
+            setChatMessages((current) =>
+              appendOrUpdateAssistantMessageDelta(current, {
+                messageId,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                delta: text,
+                now: event.ts,
+              }),
+            );
           }
           if (typeof payload.toolInput === "string" && payload.toolInput) {
             const toolUseId =
@@ -953,28 +945,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           return;
         }
 
-        if (event.type === "assistant_progress") {
-          if (!isChatVisibleEvent(event)) {
-            return;
-          }
-          const payload = event.payload as AssistantProgressPayload;
-          const text = readPayloadText(payload, ["text", "summary", "message", "title"]);
-          if (!text) {
-            return;
-          }
-          const metadata = event.payload && typeof event.payload === "object"
-            ? (event.payload as Record<string, unknown>)
-            : null;
-          setChatMessages((current) =>
-            appendAssistantProgressMessage(current, {
-              sessionId: event.sessionId,
-              taskId: event.taskId,
-              content: text,
-              now: event.ts,
-              eventId: event.eventId,
-              metadata,
-            }),
-          );
+        if ((event as { type?: string }).type === "assistant_progress") {
           return;
         }
 
@@ -1001,37 +972,11 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (event.type === "status") {
-          if (!isChatVisibleEvent(event)) {
-            return;
-          }
-          const payload = event.payload as ChatStatusPayload;
-          if (payload.state === "idle") {
-            setChatMessages((current) =>
-              removeAssistantThinkingMessage(current, {
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-                now: event.ts,
-              }),
-            );
-            return;
-          }
-          if (["thinking", "tool_executing", "streaming"].includes(String(payload.state))) {
-            setChatMessages((current) =>
-              appendOrUpdateAssistantThinkingMessage(current, {
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-                state: payload.state,
-                verb: payload.verb,
-                transient: true,
-                now: event.ts,
-              }),
-            );
-          }
           return;
         }
 
         if (event.type === "thinking") {
-          if (!isChatVisibleEvent(event)) {
+          if (!isChatVisibleEvent(event) || suppressesChatRendering(event.payload)) {
             return;
           }
           const payload = event.payload as { text?: unknown; source?: unknown };
@@ -1222,10 +1167,6 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const payload = event.payload as MessageDeltaPayload;
           const delta = payload.delta ?? "";
-          if (isOperationalAssistantDelta(delta)) {
-            appendOperationalAssistantProgress(event, delta);
-            return;
-          }
           const displayDelta = delta;
           if (!displayDelta) {
             return;

@@ -43,6 +43,7 @@ def _force_orchestrator_route(
             enable_planning=enable_planning,
             enable_reflection=enable_reflection,
             reasoning="forced explicit orchestration route for flow test",
+            metadata={"legacyPlanExecution": True} if enable_planning else {},
         ),
     )
 
@@ -1400,6 +1401,7 @@ def test_root_task_message_receives_planning_subtask_progress(
             confidence=0.99,
             enable_planning=True,
             reasoning="force DAG path for progress visibility",
+            metadata={"legacyPlanExecution": True},
         ),
     )
     monkeypatch.setattr(
@@ -1533,6 +1535,7 @@ def test_plan_execute_recovers_failed_verification_subtask_with_parent_check(
             enable_planning=True,
             enable_reflection=True,
             reasoning="forced plan_execute for test",
+            metadata={"legacyPlanExecution": True},
         ),
     )
 
@@ -1716,6 +1719,7 @@ def test_plan_execute_repairs_failed_verification_subtask_before_recovery(
             enable_planning=True,
             enable_reflection=True,
             reasoning="forced plan_execute for repair recovery test",
+            metadata={"legacyPlanExecution": True},
         ),
     )
 
@@ -1874,6 +1878,7 @@ def test_plan_execute_recovers_failed_subtask_from_root_completion_evidence(
             enable_planning=True,
             enable_reflection=True,
             reasoning="forced plan_execute for test",
+            metadata={"legacyPlanExecution": True},
         ),
     )
 
@@ -2576,7 +2581,8 @@ def test_background_task_preserves_routing_fields(
         assert workflow["automation"]["controls"]["pause"] is True
         assert workflow["automation"]["controls"]["continueAfterBudgetExhaustion"] == "requires_user_action"
         assert workflow["automation"]["convergencePolicy"]["advisorKind"] == "budget_convergence"
-        assert workflow["budget"]["maxSteps"] == routing["max_steps"]
+        assert workflow["budget"]["routingMaxStepsHint"] == routing["max_steps"]
+        assert workflow["budget"]["maxSteps"] >= 1
         assert workflow["budget"]["childTaskTimeoutMs"] >= 1
         assert workflow["budget"]["commandTimeoutMs"] >= 1
         assert workflow["budget"]["pressure"] in {"normal", "watch", "critical"}
@@ -2626,8 +2632,8 @@ def test_doc_expert_prompt_records_workflow_budget_from_routing(runtime_harness:
     assert candidate["skill_id"] == "doc_writer"
     assert routing["max_steps"] >= 35
     workflow = routing["mainWorkflow"]
-    assert workflow["budget"]["maxSteps"] == routing["max_steps"]
-    assert workflow["budget"]["maxSteps"] >= 35
+    assert workflow["budget"]["routingMaxStepsHint"] == routing["max_steps"]
+    assert workflow["budget"]["maxSteps"] >= 1
 
 
 def test_planning_provider_context_respects_configured_short_timeout(runtime_harness: Any) -> None:
@@ -2689,7 +2695,8 @@ def test_queued_task_records_main_workflow_state(runtime_harness: Any, tmp_path:
     workflow = queued["routing"]["mainWorkflow"]
     assert workflow["userTakeover"]["mode"] == "queued"
     assert workflow["workspaceSnapshot"]["workspaceId"] == workspace["id"]
-    assert workflow["budget"]["maxSteps"] == queued["routing"]["max_steps"]
+    assert workflow["budget"]["routingMaxStepsHint"] == queued["routing"]["max_steps"]
+    assert workflow["budget"]["maxSteps"] >= 1
 
 
 def test_supplement_records_user_takeover_state(runtime_harness: Any, tmp_path: Path) -> None:

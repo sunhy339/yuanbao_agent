@@ -802,13 +802,17 @@ def test_react_turn_bridges_explicit_thought_summary_to_thinking(tmp_path: Any) 
     assert thinking_events[0]["payload"]["source"] == "non_stream_thought_summary"
     assert thinking_events[0]["payload"]["messageId"]
     assert thinking_events[0]["visibility"] == "chat"
-    progress_phases = [
-        event["payload"].get("phase")
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+    assert any(
+        event["type"] == "tool_use_complete"
+        and event["payload"].get("toolName") == "search_files"
         for event in runtime.events
-        if event["type"] == "assistant_progress"
-    ]
-    assert "locate_sources" in progress_phases
-    assert "merge_findings" in progress_phases
+    )
+    assert any(
+        event["type"] == "tool_result"
+        and event["payload"].get("toolName") == "search_files"
+        for event in runtime.events
+    )
 
 
 def test_child_provider_turn_does_not_publish_chat_progress(tmp_path: Any) -> None:
@@ -838,7 +842,7 @@ def test_child_provider_turn_does_not_publish_chat_progress(tmp_path: Any) -> No
     assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
 
 
-def test_high_value_tool_started_bridges_progress(tmp_path: Any) -> None:
+def test_high_value_tool_started_bridges_tool_lifecycle_without_synthetic_progress(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -861,18 +865,21 @@ def test_high_value_tool_started_bridges_progress(tmp_path: Any) -> None:
         },
     )
 
-    progress_events = [
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+    tool_start = next(
         event for event in runtime.events
-        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_execution"
-    ]
-    assert progress_events
-    assert progress_events[-1]["visibility"] == "panel"
-    assert progress_events[-1]["payload"]["text"] == "准备运行命令：npm test"
-    assert progress_events[-1]["payload"]["toolName"] == "run_command"
-    assert progress_events[-1]["payload"]["toolUseId"] == "call_command"
+        if event["type"] == "content_start" and event["payload"].get("toolUseId") == "call_command"
+    )
+    tool_complete = next(
+        event for event in runtime.events
+        if event["type"] == "tool_use_complete" and event["payload"].get("toolUseId") == "call_command"
+    )
+    assert tool_start["payload"]["blockType"] == "tool_use"
+    assert tool_complete["payload"]["toolName"] == "run_command"
+    assert tool_complete["payload"]["input"] == {"command": "npm test"}
 
 
-def test_tool_started_bridges_semantic_phase_progress_once(tmp_path: Any) -> None:
+def test_tool_started_keeps_semantic_metadata_on_tool_lifecycle_without_progress(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -902,17 +909,17 @@ def test_tool_started_bridges_semantic_phase_progress_once(tmp_path: Any) -> Non
             },
         )
 
-    phase_events = [
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+    tool_events = [
         event for event in runtime.events
-        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_phase"
+        if event["type"] == "tool_use_complete"
     ]
-    assert [event["payload"]["toolSemanticParentLabel"] for event in phase_events] == ["Command", "File change"]
-    assert [event["payload"]["toolSemanticParentId"] for event in phase_events] == [
+    assert [event["payload"]["toolSemanticParentLabel"] for event in tool_events] == ["Command", "Command", "File change"]
+    assert [event["payload"]["toolSemanticParentId"] for event in tool_events] == [
+        "group:tgrp_1:phase:command",
         "group:tgrp_1:phase:command",
         "group:tgrp_1:phase:file_change",
     ]
-    assert all(event["payload"]["_chatCompat"] is True for event in phase_events)
-    assert all(event["visibility"] == "panel" for event in phase_events)
 
 
 def test_low_value_tool_started_does_not_bridge_semantic_phase_progress(tmp_path: Any) -> None:
@@ -1062,7 +1069,7 @@ def test_low_value_tool_started_stays_quiet(tmp_path: Any) -> None:
     ]
 
 
-def test_high_value_tool_completed_bridges_progress(tmp_path: Any) -> None:
+def test_high_value_tool_completed_bridges_tool_result_without_synthetic_progress(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -1086,20 +1093,17 @@ def test_high_value_tool_completed_bridges_progress(tmp_path: Any) -> None:
         },
     )
 
-    progress_events = [
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+    tool_result = next(
         event for event in runtime.events
-        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_completed"
-    ]
-    assert progress_events
-    assert progress_events[-1]["visibility"] == "panel"
-    assert progress_events[-1]["payload"]["text"] == "命令已完成：exit 0: 12 passed"
-    assert progress_events[-1]["payload"]["status"] == "completed"
-    assert progress_events[-1]["payload"]["toolName"] == "run_command"
-    assert progress_events[-1]["payload"]["toolUseId"] == "call_command"
-    assert progress_events[-1]["payload"]["resultSummary"] == "exit 0: 12 passed"
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_command"
+    )
+    assert tool_result["payload"]["toolName"] == "run_command"
+    assert tool_result["payload"]["isError"] is False
+    assert tool_result["payload"]["resultSummary"] == "exit 0: 12 passed"
 
 
-def test_background_run_command_completed_payload_bridges_running_progress(tmp_path: Any) -> None:
+def test_background_run_command_completed_payload_bridges_tool_result_without_progress(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -1123,14 +1127,14 @@ def test_background_run_command_completed_payload_bridges_running_progress(tmp_p
         },
     )
 
-    progress_events = [
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+    tool_result = next(
         event for event in runtime.events
-        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_running"
-    ]
-    assert progress_events
-    assert progress_events[-1]["visibility"] == "panel"
-    assert progress_events[-1]["payload"]["text"] == "命令已在后台运行：npm run dev"
-    assert progress_events[-1]["payload"]["status"] == "running"
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_command"
+    )
+    assert tool_result["payload"]["toolName"] == "run_command"
+    assert tool_result["payload"]["isError"] is False
+    assert tool_result["payload"]["resultSummary"] == "running"
 
 
 def test_low_value_tool_completed_stays_quiet(tmp_path: Any) -> None:
@@ -1163,7 +1167,7 @@ def test_low_value_tool_completed_stays_quiet(tmp_path: Any) -> None:
     ]
 
 
-def test_failed_tool_bridges_progress_even_for_low_value_tool(tmp_path: Any) -> None:
+def test_failed_tool_bridges_tool_result_without_synthetic_progress(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -1187,17 +1191,14 @@ def test_failed_tool_bridges_progress_even_for_low_value_tool(tmp_path: Any) -> 
         },
     )
 
-    progress_events = [
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+    tool_result = next(
         event for event in runtime.events
-        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_failed"
-    ]
-    assert progress_events
-    assert progress_events[-1]["visibility"] == "panel"
-    assert progress_events[-1]["payload"]["text"] == "读取文件失败：missing.ts does not exist"
-    assert progress_events[-1]["payload"]["status"] == "failed"
-    assert progress_events[-1]["payload"]["isError"] is True
-    assert progress_events[-1]["payload"]["toolName"] == "read_file"
-    assert progress_events[-1]["payload"]["toolUseId"] == "call_read"
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_read"
+    )
+    assert tool_result["payload"]["toolName"] == "read_file"
+    assert tool_result["payload"]["isError"] is True
+    assert tool_result["payload"]["resultSummary"] == "missing.ts does not exist"
 
 
 def test_command_output_bridges_tool_output_delta(tmp_path: Any) -> None:
@@ -1806,14 +1807,7 @@ def test_unavailable_tool_call_is_blocked_instead_of_executed(tmp_path: Any) -> 
         and event["payload"].get("toolUseId") == "call_task_unavailable"
     )
     assert compat_tool_start["toolCategory"] == "tool"
-    progress_texts = [
-        str(event["payload"].get("text") or event["payload"].get("summary") or "")
-        for event in runtime.events
-        if event["type"] == "assistant_progress"
-        and event["payload"].get("toolUseId") == "call_task_unavailable"
-    ]
-    assert any("工具本轮不可用" in text for text in progress_texts)
-    assert not any("子任务" in text for text in progress_texts)
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
     event_types = [event["type"] for event in runtime.events]
     assert "collab.task.created" not in event_types
 
@@ -1943,22 +1937,10 @@ def test_swarm_execution_emits_single_visible_planning_progress(tmp_path: Any) -
         context={},
     )
 
-    thinking_events = [
-        event for event in runtime.events
-        if event["type"] == "thinking" and event["taskId"] == task["id"]
-    ]
     progress_events = [
         event for event in runtime.events
-        if event["type"] == "assistant_progress" and event["taskId"] == task["id"]
+        if event["type"] == "task.planning.progress" and event["taskId"] == task["id"]
     ]
-    assert [event["payload"]["phase"] for event in thinking_events] == [
-        "planning_started",
-        "planning_decomposed",
-        "subtasks_started",
-        "synthesis_started",
-        "planning_completed",
-    ]
-    assert all(event["visibility"] == "trace" for event in thinking_events)
     assert [event["payload"]["phase"] for event in progress_events] == [
         "planning_started",
         "planning_decomposed",
@@ -1966,20 +1948,22 @@ def test_swarm_execution_emits_single_visible_planning_progress(tmp_path: Any) -
         "synthesis_started",
         "planning_completed",
     ]
-    assert all(event["visibility"] == "chat" for event in progress_events)
+    assert all(event["visibility"] == "panel" for event in progress_events)
     assert all(event["payload"]["mode"] == "swarm" for event in progress_events)
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
 
     persisted = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
-    persisted_thinking = [event for event in persisted if event["type"] == "thinking"]
-    assert [event["payload"]["phase"] for event in persisted_thinking] == [
+    assert not [event for event in persisted if event["type"] == "thinking"]
+    persisted_progress = [event for event in persisted if event["type"] == "task.planning.progress"]
+    assert [event["payload"]["phase"] for event in persisted_progress] == [
         "planning_started",
         "planning_decomposed",
         "subtasks_started",
         "synthesis_started",
         "planning_completed",
     ]
-    assert persisted_thinking[0]["payload"]["_bridge"]["suppressRealtimeFlat"] is True
-    assert "hahaCc" not in persisted_thinking[0]
+    assert all(event["visibility"] == "panel" for event in persisted_progress)
+    assert "hahaCc" not in persisted_progress[0]
 
 
 def test_supervisor_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
@@ -6477,14 +6461,7 @@ def test_react_loop_exit_plan_mode_without_plan_mode_returns_tool_error(tmp_path
     assert tool_result["payload"]["toolName"] == "exit_plan_mode"
     assert tool_result["payload"]["isError"] is True
     assert tool_result["payload"]["resultSummary"] == "Plan approval was not requested because plan mode is not active."
-    progress_texts = [
-        str(event["payload"].get("text") or event["payload"].get("summary") or "")
-        for event in runtime.events
-        if event["type"] == "assistant_progress"
-        and event["payload"].get("toolUseId") == "call_exit_without_plan"
-    ]
-    assert any("计划模式未激活" in text for text in progress_texts)
-    assert not any("计划审批" in text and "准备" in text for text in progress_texts)
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
 
 
 def test_react_loop_plan_mode_blocks_same_batch_write_tool(tmp_path: Any) -> None:
@@ -6519,14 +6496,7 @@ def test_react_loop_plan_mode_blocks_same_batch_write_tool(tmp_path: Any) -> Non
         and event["payload"].get("isError") is True
         for event in runtime.events
     )
-    progress_texts = [
-        str(event["payload"].get("text") or event["payload"].get("summary") or "")
-        for event in runtime.events
-        if event["type"] == "assistant_progress"
-        and event["payload"].get("toolUseId") == "call_write"
-    ]
-    assert any("计划模式已拦截工具" in text for text in progress_texts)
-    assert not any("准备写入文件" in text for text in progress_texts)
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
 
 
 def test_react_loop_persists_pending_state_when_approval_is_required(tmp_path: Any) -> None:
@@ -7022,11 +6992,14 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
     event_types = [event["type"] for event in runtime.events]
     assert "tool.completed" in event_types
     assert "task.budget.exhausted" in event_types
-    progress_events = [event for event in runtime.events if event["type"] == "assistant_progress"]
-    assert any(event["payload"].get("phase") == "budget_exhausted" for event in progress_events)
-    budget_progress = next(event for event in progress_events if event["payload"].get("phase") == "budget_exhausted")
-    assert budget_progress["payload"]["text"] == "已达到步骤预算，正在整理当前进展"
+    budget_progress = next(
+        event for event in runtime.events
+        if event["type"] == "task.budget.progress"
+        and event["payload"].get("phase") == "budget_exhausted"
+    )
+    assert budget_progress["payload"]["summary"] == "已达到步骤预算，正在整理当前进展"
     assert budget_progress["payload"]["recommendedAction"] == "review_partial"
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
     assert runtime.store.get_pending_react_state(task["id"]) is not None
     assert any(event["type"] == "ask_user_question" for event in runtime.events)
 
@@ -7140,11 +7113,12 @@ def test_react_loop_records_budget_pressure_before_exhaustion(tmp_path: Any) -> 
     assert pressure_events[-1]["payload"]["pressure"] == "critical"
     progress_events = [
         event for event in runtime.events
-        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "budget_pressure"
+        if event["type"] == "task.budget.progress" and event["payload"].get("phase") == "budget_pressure"
     ]
     assert progress_events
-    assert progress_events[-1]["payload"]["text"] == "步骤预算接近上限，正在收束当前任务"
+    assert progress_events[-1]["payload"]["summary"] == "步骤预算接近上限，正在收束当前任务"
     assert progress_events[-1]["payload"]["pressure"] == "critical"
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
 
 
 def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -> None:
@@ -7225,9 +7199,13 @@ def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -
     assert workflow["convergence"]["proposalRecordId"] == proposals[0]["id"]
     event_types = [event["type"] for event in runtime.events]
     assert "agent.decision.budget_convergence" in event_types
-    progress_events = [event for event in runtime.events if event["type"] == "assistant_progress"]
-    budget_progress = next(event for event in progress_events if event["payload"].get("phase") == "budget_exhausted")
+    budget_progress = next(
+        event for event in runtime.events
+        if event["type"] == "task.budget.progress"
+        and event["payload"].get("phase") == "budget_exhausted"
+    )
     assert budget_progress["payload"]["recommendedAction"] == "review_partial"
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
     question_event = next(event for event in runtime.events if event["type"] == "ask_user_question")
     assert question_event["payload"]["question"] == "Review alpha.txt before granting more steps."
     assert question_event["payload"]["resumePolicy"] == "requires_user_budget_update"

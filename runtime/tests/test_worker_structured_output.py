@@ -201,7 +201,7 @@ class TestStructuredResultBuild:
 
 
 class TestCompletionHardGate:
-    def test_write_task_summary_only_records_internal_gate_without_user_approval(self, tmp_path: Any) -> None:
+    def test_write_task_summary_only_completes_without_internal_review_by_default(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         captured_events: list[Any] = []
         rt.event_bus.subscribe(captured_events.append)
@@ -225,8 +225,7 @@ class TestCompletionHardGate:
         )
 
         assert result["status"] == "completed"
-        assert result["structuredResult"]["completionGate"]["status"] == "needs_user_review"
-        assert result["structuredResult"]["completionGate"]["internal"] is True
+        assert "completionGate" not in result["structuredResult"]
         assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "summary_only"
         approvals = store._conn.execute(
             "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
@@ -237,17 +236,14 @@ class TestCompletionHardGate:
             event for event in captured_events
             if event.type == "task.waiting_approval" and event.payload.get("internalGate") == "completion_review"
         ]
-        internal_event = next(
+        assert not [
             event for event in captured_events
             if event.type == "agent.decision.completion"
             and event.payload.get("internal") is True
             and event.payload.get("decision") == "needs_user_review"
-        )
-        assert internal_event.visibility == "trace"
-        assert internal_event.payload["_bridge"]["suppressRealtimeFlat"] is True
-        assert internal_event.payload["_bridge"]["suppressChatReplay"] is True
+        ]
 
-    def test_no_approval_mode_still_fails_summary_only_write_task(self, tmp_path: Any) -> None:
+    def test_explicit_summary_only_review_fails_when_approval_mode_none(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -267,6 +263,7 @@ class TestCompletionHardGate:
             context={
                 "routing": {"scenario": "code_edit"},
                 "config": {"policy": {"approvalMode": "none"}},
+                "_require_summary_only_completion_review": True,
             },
             skip_reflection=True,
         )
@@ -382,7 +379,10 @@ class TestCompletionHardGate:
             session_id=session["id"],
             task=task,
             summary="I changed the implementation.",
-            context={"routing": {"scenario": "code_edit"}},
+            context={
+                "routing": {"scenario": "code_edit"},
+                "_require_summary_only_completion_review": True,
+            },
             skip_reflection=True,
         )
 
@@ -627,6 +627,7 @@ class TestCompletionHardGate:
             context={
                 "routing": {"scenario": "code_edit"},
                 "config": {"policy": {"approvalMode": "none"}},
+                "_require_summary_only_completion_review": True,
             },
             skip_reflection=True,
         )
@@ -2113,7 +2114,7 @@ class TestCompletionHardGate:
         })["proposals"][0]
         assert proposal["source"]["completionAudit"]["approvalCounts"]["approved"] == 0
 
-    def test_swarm_task_summary_only_records_internal_gate(self, tmp_path: Any) -> None:
+    def test_swarm_task_summary_only_completes_without_internal_gate_by_default(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -2135,10 +2136,7 @@ class TestCompletionHardGate:
         )
 
         assert result["status"] == "completed"
-        gate = result["structuredResult"]["completionGate"]
-        assert gate["status"] == "needs_user_review"
-        assert gate["internal"] is True
-        assert "summary" in gate["reason"].lower()
+        assert "completionGate" not in result["structuredResult"]
 
     def test_summarizer_child_summary_only_can_complete_without_write_or_verification_evidence(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

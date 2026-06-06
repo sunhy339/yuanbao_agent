@@ -698,18 +698,6 @@ class TaskLifecycleMixin:
                     "internalGate": "completion_review",
                 },
             )
-            publish_progress = getattr(self, "_publish_assistant_progress", None)
-            if callable(publish_progress):
-                publish_progress(
-                    session_id=runtime_task["sessionId"],
-                    task=runtime_task,
-                    text="继续补齐当前任务缺少的证据或后续动作。",
-                    phase="completion_gate_continuation",
-                    payload={
-                        "gateStatus": gate_status,
-                        "internalGate": "completion_review",
-                    },
-                )
             self._start_background_message(
                 session_id=runtime_task["sessionId"],
                 task=runtime_task,
@@ -937,19 +925,24 @@ class TaskLifecycleMixin:
             }
         if completion_evidence.get("evidenceLevel") != "summary_only":
             return {"action": "complete", "reason": "Runtime evidence is present."}
-        if reviews_disabled:
-            return self._completion_reviews_disabled_failure(
-                "Write-oriented task produced only a summary without verification."
-            )
+        if self._summary_only_completion_review_required(context):
+            if reviews_disabled:
+                return self._completion_reviews_disabled_failure(
+                    "Write-oriented task produced only a summary without verification."
+                )
+            return {
+                "action": "review",
+                "decision": "needs_user_review",
+                "gateStatus": "needs_user_review",
+                "risk": "summary-only completion for write-oriented task",
+                "reason": (
+                    "Write-oriented task produced only a natural-language summary. "
+                    "Verification or user review is required before marking it completed."
+                ),
+            }
         return {
-            "action": "review",
-            "decision": "needs_user_review",
-            "gateStatus": "needs_user_review",
-            "risk": "summary-only completion for write-oriented task",
-            "reason": (
-                "Write-oriented task produced only a natural-language summary. "
-                "Verification or user review is required before marking it completed."
-            ),
+            "action": "complete",
+            "reason": "Model loop completed without an explicit completion evidence requirement.",
         }
 
     def _completion_reviews_disabled_failure(self, reason: str) -> dict[str, str]:
@@ -1278,6 +1271,29 @@ class TaskLifecycleMixin:
         policy = config.get("policy") if isinstance(config, dict) else {}
         mode = str(policy.get("approvalMode") or "").strip().lower() if isinstance(policy, dict) else ""
         return mode in {"none", "never", "off"}
+
+    def _summary_only_completion_review_required(self, context: dict[str, Any]) -> bool:
+        if context.get("_require_summary_only_completion_review") is True:
+            return True
+        config = context.get("config") if isinstance(context, dict) else {}
+        if not isinstance(config, dict):
+            return False
+        for section_name in ("advisor", "policy"):
+            section = config.get(section_name)
+            if not isinstance(section, dict):
+                continue
+            for key in (
+                "requireSummaryOnlyCompletionReview",
+                "requireSummaryOnlyReview",
+                "completionReviewOnSummaryOnly",
+                "require_summary_only_completion_review",
+            ):
+                value = section.get(key)
+                if isinstance(value, bool):
+                    return value
+                if value is not None:
+                    return str(value).strip().casefold() in {"1", "true", "yes", "on", "always"}
+        return False
 
     def _completion_tool_failure_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
         counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
@@ -4391,9 +4407,35 @@ class TaskLifecycleMixin:
             return True
         if not self._is_write_or_verification_task(task=task, context=context):
             return True
+        advisor_config = self._advisor_config(context)
+        if not self._completion_advisor_enabled(advisor_config, context, advisor_configured=True):
+            return True
         if context.get("_child_worker") is True or task.get("role", "root") != "root":
-            return not bool(self._advisor_config(context).get("enableChildCompletionAdvisor"))
+            return not bool(advisor_config.get("enableChildCompletionAdvisor"))
         return False
+
+    @staticmethod
+    def _completion_advisor_enabled(
+        advisor_config: dict[str, Any],
+        context: dict[str, Any],
+        *,
+        advisor_configured: bool = False,
+    ) -> bool:
+        if context.get("_enable_completion_advisor") is True:
+            return True
+        for key in (
+            "enableCompletionAdvisor",
+            "completionAdvisorEnabled",
+            "enableCompletionReviewAdvisor",
+            "enable_completion_advisor",
+            "completion_advisor_enabled",
+        ):
+            value = advisor_config.get(key)
+            if isinstance(value, bool):
+                return value
+            if value is not None:
+                return str(value).strip().casefold() not in {"0", "false", "no", "off", "never"}
+        return advisor_configured
 
     def _build_completion_evidence(
         self,

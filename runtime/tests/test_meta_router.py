@@ -225,7 +225,7 @@ class TestOptionalSemanticRouting:
         assert decision.enable_planning is False
         assert decision.metadata["advisor_candidate"]["strategy"] == "plan_execute"
 
-    def test_advisor_explicit_plan_request_can_use_plan_execute_when_enabled(self) -> None:
+    def test_advisor_explicit_plan_request_uses_model_tool_orchestration_by_default(self) -> None:
         class PlanningAdvisor:
             def advise(self, kind: str, _input_context: dict) -> SimpleNamespace:
                 assert kind == "routing_strategy"
@@ -249,7 +249,41 @@ class TestOptionalSemanticRouting:
 
         assert decision.scenario == Scenario.MULTI_STEP_TASK
         assert decision.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
+        assert decision.enable_planning is False
+        assert decision.metadata["orchestrationMode"] == "model_tools"
+        assert decision.metadata["runtime"] == "react_tool_loop"
+        assert decision.metadata["advisor_candidate"]["strategy"] == "plan_execute"
+
+    def test_advisor_can_request_legacy_plan_execute_with_explicit_flag(self) -> None:
+        class PlanningAdvisor:
+            def advise(self, kind: str, _input_context: dict) -> SimpleNamespace:
+                assert kind == "routing_strategy"
+                return SimpleNamespace(
+                    accepted=True,
+                    payload={
+                        "scenario": "multi_step_task",
+                        "strategy": "plan_execute",
+                        "legacyPlanExecution": True,
+                    },
+                    rationale="The caller explicitly enabled legacy planner execution.",
+                    source="llm",
+                    fallback_reason=None,
+                    proposal_id="proposal_route",
+                    confidence=0.9,
+                    validation_reasons=[],
+                )
+
+        router = MetaRouter(decision_advisor=PlanningAdvisor())
+
+        decision = router.route(
+            "plan and break down a refactor across all modules",
+            {"config": {"advisor": {"routingStrategyUseForHighConfidence": True}}},
+        )
+
+        assert decision.scenario == Scenario.MULTI_STEP_TASK
+        assert decision.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
         assert decision.enable_planning is True
+        assert decision.metadata["legacyPlanExecution"] is True
 
 
 class TestTokenizer:

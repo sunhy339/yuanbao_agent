@@ -410,6 +410,18 @@ def test_special_chat_events_map_to_haha_cc_system_notifications() -> None:
         "message": "ready",
         "data": {"state": "ready"},
     }
+    assert (
+        to_haha_cc_server_message(
+            _event(
+                "plan_update",
+                {
+                    "summary": "Ready to dispatch agents",
+                    "plan": [{"id": "inspect", "title": "Inspect workflow", "status": "active"}],
+                },
+            )
+        )
+        is None
+    )
     assert to_haha_cc_server_message(
         _event("system_notification", {"summary": "Switched provider", "phase": "provider_preflight", "model": "fallback"})
     ) == {
@@ -420,13 +432,11 @@ def test_special_chat_events_map_to_haha_cc_system_notifications() -> None:
     }
 
 
-def test_progress_events_map_to_haha_cc_task_progress_notifications() -> None:
-    assert to_haha_cc_server_message(_event("assistant_progress", {"summary": "Inspecting repo"})) == {
-        "type": "system_notification",
-        "subtype": "task_progress",
-        "message": "Inspecting repo",
-        "data": {"summary": "Inspecting repo"},
-    }
+def test_backend_assistant_progress_is_not_a_haha_cc_server_message() -> None:
+    assert to_haha_cc_server_message(_event("assistant_progress", {"summary": "Inspecting repo"})) is None
+
+
+def test_tool_progress_events_map_to_haha_cc_task_progress_notifications() -> None:
     assert to_haha_cc_server_message(_event("tool.output", {"toolName": "run_command", "chunk": "npm ok"})) == {
         "type": "system_notification",
         "subtype": "task_progress",

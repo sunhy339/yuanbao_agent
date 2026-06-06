@@ -54,25 +54,15 @@ class MessageExecutionMixin:
         }
         if isinstance(payload, dict):
             event_payload.update({key: value for key, value in payload.items() if value is not None})
-        event_payload["_bridge"] = {
-            "persistTraceMirror": True,
-            "suppressRealtimeFlat": True,
-        }
         self._publish(
             session_id=session_id,
             task=task,
-            event_type="thinking",
-            payload=event_payload,
-            visibility="trace",
-        )
-        self._publish_assistant_progress(
-            session_id=session_id,
-            task=task,
-            text=text,
-            phase=phase,
-            status=status,
-            payload={"mode": mode, "persistTrace": True, **(payload or {})},
-            visibility="chat",
+            event_type="task.planning.progress",
+            payload={
+                **event_payload,
+                "status": status,
+            },
+            visibility="panel",
         )
 
     def _publish_root_subtask_progress(
@@ -331,7 +321,7 @@ class MessageExecutionMixin:
         routing = context.get("routing", {})
         strategy = routing.get("strategy", "react_standard")
         logger.info("Executing strategy=%s for task=%s", strategy, task["id"])
-        if routing.get("enable_planning"):
+        if routing.get("enable_planning") and self._legacy_planner_execution_enabled(routing, context):
             orch_mode = self._resolve_orchestration_mode(strategy)
             if orch_mode == OrchestrationMode.SUPERVISOR:
                 result = self._execute_with_supervisor(
@@ -457,6 +447,32 @@ class MessageExecutionMixin:
                     structured_result={"failureRecovery": failure_recovery},
                 )
             }
+
+    @staticmethod
+    def _legacy_planner_execution_enabled(routing: dict[str, Any], context: dict[str, Any]) -> bool:
+        """Return True only for explicitly requested legacy planner execution.
+
+        The default product flow follows the haha-cc shape: the model decides
+        whether to create tasks/agents through tools. The legacy decomposer,
+        supervisor, and swarm executors are kept for explicit compatibility and
+        provider preflight split recovery, but route hints alone must not enter
+        fixed orchestration.
+        """
+        if routing.get("providerPreflightSplit") is True:
+            return True
+        for key in (
+            "legacyPlanner",
+            "legacy_planner",
+            "legacyPlanExecution",
+            "legacy_plan_execution",
+            "useLegacyPlanner",
+            "use_legacy_planner",
+        ):
+            if routing.get(key) is True:
+                return True
+        if context.get("_legacy_planner_execution") is True:
+            return True
+        return False
 
     def _execute_react_fast(
         self,

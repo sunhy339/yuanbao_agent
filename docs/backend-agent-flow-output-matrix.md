@@ -6,7 +6,7 @@ This document is the working contract for Yuanbao backend flow, frontend present
 
 | Layer | Purpose | Event examples | UI target | Failure risk if wrong |
 | --- | --- | --- | --- | --- |
-| Chat protocol | User-visible transcript and streaming blocks | `content_start`, `content_delta`, `tool_use_complete`, `tool_result`, `permission_request`, `thinking`, `status`, `message_complete`, `error` | Main chat | Duplicate text, raw JSON, missing tool blocks, duplicate finalization |
+| Chat protocol | User-visible transcript and streaming blocks | `content_start`, `content_delta`, `tool_use_complete`, `tool_result`, `permission_request`, provider `thinking`, `message_complete`, `error` | Main chat | Duplicate text, raw JSON, missing tool blocks, duplicate finalization |
 | Message lifecycle | Durable user/assistant bubbles | `message.created`, `message.completed`, `message.failed` | Main chat message store | Lost messages, failed bubble not updated, wrong session replay |
 | Task/panel state | Root task, approvals, plan, subtask state | `task.started`, `task.completed`, `task.failed`, `task.planning.*`, `approval.*`, `goal_event`, `memory_event` | Runtime panel / clean activity | Internal JSON appears in chat, approval cards look like raw data |
 | Tool/command diagnostics | Raw tool arguments/results and command lifecycle | `tool.started`, `tool.completed`, `command.output`, `command.completed` | Trace plus folded runtime worklog | Tool output duplicates when both raw and compat render |
@@ -17,10 +17,10 @@ This document is the working contract for Yuanbao backend flow, frontend present
 
 | Input or state | Backend route | Expected chat output | Expected panel/trace output | Common failure points |
 | --- | --- | --- | --- | --- |
-| Simple greeting or answer | `send_message` -> routing -> `react_fast` or standard ReAct | `message.created`, optional `thinking/status`, streamed `content_delta`, `message_complete` | `task.started/completed` panel; routing/provider trace | Over-planning tiny questions; provider transient failure creating many memory/goal errors |
-| Read-only analysis | Standard ReAct with read tools | Progress `thinking/status`; tool blocks for search/read; final text | Raw read/search tool events in trace; task state in panel | Tools not shown in realtime if compat bridge is absent; history replay differs if raw is hidden but compat is not persisted |
+| Simple greeting or answer | `send_message` -> standard model-first ReAct | `message.created`, optional provider `thinking`, streamed `content_delta`, `message_complete` | `status`, `task.started/completed`, routing/provider trace | Over-planning tiny questions; provider transient failure creating many memory/goal errors |
+| Read-only analysis | Standard ReAct with read tools selected by the model | Provider `thinking` if available; tool blocks for search/read; final text | Raw read/search tool events in trace; task state in panel | Tools not shown in realtime if compat bridge is absent; history replay differs if raw is hidden but compat is not persisted |
 | Write/edit task | Standard ReAct with write and verification tools | Tool blocks, permission cards if policy requires, final text or failure bubble | Task changed files, command logs, completion evidence, approvals | Completion review asks for semantic evidence after work is enough; final failure duplicated by `message.failed` and `task.failed` |
-| Plan mode entered by model | ReAct tool `enter_plan_mode` | Planning/thinking progress; no raw plan JSON in main text | Plan state and plan approval in panel | Plan approval body rendered as JSON instead of structured subtask cards |
+| Plan mode entered by model | ReAct tool `enter_plan_mode` | Provider thinking/text only; no raw plan JSON in main text | Plan state and plan approval in structured panel | Plan approval body rendered as JSON instead of structured subtask cards |
 | Exit plan mode approval | `exit_plan_mode` pauses task and stores pending ReAct state | `permission_request`; `status(permission_pending)` | `approval.requested`, `task.waiting_approval` panel | User answer treated as a new goal; approval can be clicked more than once; resumed answer shown as user-sent message |
 | Strict plan approval | `_execute_with_planning` creates `plan` approval before subtasks | Permission card, then resumed progress | `task.planning.started/decomposed`, approval panel | After approval, no heartbeat while backend is resuming; plan details displayed as raw JSON |
 | Swarm / supervisor multi-agent | Routing strategy `plan_swarm` or `plan_supervise` | Compact planning/thinking, then final synthesis | `task.planning.*`, `collab.*`, child results, team/task updates | Fixed generic subtasks, child names like ids, missing live child task cards, late history shows many child messages |
@@ -40,14 +40,15 @@ Root events that may drive chat compatibility:
 - Text and message lifecycle: `assistant.token`, `message.delta`, `message.created`, `message.completed`, `message.failed`.
 - Tool/command/approval bridge sources: `tool.*`, `command.*`, `approval.requested`, `approval.resolved`.
 - Task lifecycle bridge sources: `task.started`, `task.updated`, `task.completed`, `task.failed`, `task.cancelled`.
-- Direct chat protocol frames: `content_*`, `tool_*`, `permission_request`, `thinking`, `status`, `message_complete`, `plan_update`.
+- Direct chat protocol frames: `content_*`, `tool_*`, `permission_request`, provider `thinking`, `message_complete`.
 
 Root raw events that should not be direct chat:
 
 - `agent.decision.*`, `task.routing.*`, `provider.*`, `runtime.error`, `mcp.*` -> trace.
-- `task.created`, `task.started`, `task.updated`, `task.completed`, `task.failed`, `task.cancelled`, `approval.*`, `goal_event`, `memory_event`, `task.planning.*` -> panel.
+- `status`, `assistant_progress`, `task.created`, `task.started`, `task.updated`, `task.completed`, `task.failed`, `task.cancelled`, `approval.*`, `goal_event`, `memory_event`, `task.planning.*` -> trace/panel, never flat chat.
 - `tool.*` and `command.*` raw lifecycle -> trace; their derived `content_start/tool_use_complete/tool_result/content_delta` frames are chat.
 - `goal_event` and `memory_event` are panel/state events only. They must not be projected as flat `system_notification` chat messages, because they are internal task bookkeeping rather than assistant output.
+- `plan_update` is a structured panel event. It may be replayed by the clean UI as a plan/subtask panel, but it must not become flat `system_notification`.
 
 Failure finalization rule:
 
@@ -116,7 +117,7 @@ Follow-up corrections still needed:
 - Normal assistant text `content_delta` still does not persist as trace because durable assistant messages replay the text. This avoids duplicate final text after reload.
 - Raw `tool.*` lifecycle stays `trace` and is not the primary chat replay source. Frontend replay restores tool rows from flat `content_start(tool_use)` -> `tool_use_complete` -> `tool_result` frames.
 - Raw `message.completed` remains an internal message lifecycle event and suppresses realtime/replay flat projection. The visible flat finalization is `message_complete`, so external adapters do not receive duplicate finalize/flush events.
-- `thinking` is finalized before visible tool/command rows in both realtime subscription and trace replay. A new provider thinking segment after a tool result stays after that tool instead of merging into the earlier segment.
+- `thinking` is finalized before visible tool/command rows in both realtime subscription and trace replay. A new provider thinking segment after a tool result stays after that tool instead of merging into the earlier segment. Backend `status` and `assistant_progress` are not rendered as thinking.
 - Structured `plan_update` payloads are no longer filtered as low-signal startup noise when they contain `plan`, `tasks`, or `subtasks`. This keeps plan/swarm panels visible during live display and session recovery.
 - Team/member snapshots with flat `members` are projected as agent task rows, hiding raw member ids as metadata and avoiding duplicated `currentTask` title/summary text.
 - Added focused contracts for repeated replay idempotency: many thinking/flat-tool/progress cycles can be replayed multiple times, including out-of-order input, without duplicate visible ids or missing final text.
@@ -143,8 +144,8 @@ The current text-stream contract is now:
 Real Responses streaming probe with `gpt-5.4-mini` covered five cases:
 
 - Simple Chinese greeting and simple English reply: one provider turn, zero
-  tool calls, `status -> content_start(text) -> content_delta* ->
-  message_complete -> status(idle)`.
+  tool calls, flat output limited to `content_start(text) -> content_delta* ->
+  message_complete`; runtime `status` stayed trace-only.
 - README summary: model-selected `list_dir/search_files/read_file`, no forced
   git/verify, no `ask_user_question`.
 - Read-only optimization plan: model-selected read tools only, no write or
@@ -166,8 +167,31 @@ Observed trace-only internals:
 Remaining watch items:
 
 - The tested provider did not emit true token-level reasoning events, so
-  `thinking` remains provider-dependent. Backend `assistant_progress` must stay
-  visually separate from provider `thinking`.
+  `thinking` remains provider-dependent. Production backend no longer emits
+  synthetic `assistant_progress`; Yuanbao-only progress must use typed
+  panel/status events and stay out of the main chat/replay stream.
 - Long desktop plan/swarm/team sessions still need visual pressure testing
   after the single-stream fix, especially for duplicate panels and raw JSON in
   approval details.
+
+## 2026-06-06 Flat Protocol Boundary Fix
+
+After the real Responses probe, the `events.after` serialization path was
+checked directly because the frontend consumes serialized envelopes, not only
+raw `trace_events.payload_json`.
+
+The current verified flat output is:
+
+- Simple answers: `content_start`, `content_delta`, `message_complete`.
+- Read-only tool use: `content_start(tool_use)`, `tool_use_complete`,
+  `tool_result`, final text, `message_complete`.
+- Write approval: same tool frames, then exactly one `permission_request`.
+- No flat `status`.
+- No flat `system_notification` derived from `plan_update`.
+- No chat/panel raw leaks for `advisorRequestedEvidence`,
+  `completionEvidence`, `providerRequest`, or policy diagnostics.
+
+`plan_update` remains a structured chat-visible event for the clean frontend
+panel. The adapter intentionally returns no Yuanbao/haha-cc flat message for
+it, matching the reference principle that model/tool trajectory frames are not
+mixed with backend panel state.

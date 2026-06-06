@@ -1396,6 +1396,34 @@ describe("chatMessages", () => {
     ]);
   });
 
+  it("does not attach assistant text deltas to provider thinking messages", () => {
+    const withThinking = appendOrUpdateAssistantThinkingMessage([], {
+      eventId: "evt_think_1",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      text: "I will inspect the project first.",
+      source: "provider_reasoning_delta",
+      now: 1,
+    });
+
+    const next = appendOrUpdateAssistantMessageDelta(withThinking, {
+      messageId: "msg_backend_assistant",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      delta: "Final answer token",
+      now: 2,
+    });
+
+    expect(next).toHaveLength(2);
+    expect(next.map((message) => message.id)).toEqual([
+      "assistant_thinking:evt_think_1",
+      "msg_backend_assistant",
+    ]);
+    expect(next[0].metadata?.kind).toBe("assistant_thinking");
+    expect(next[1].metadata?.kind).toBeUndefined();
+    expect(next[1].content).toBe("Final answer token");
+  });
+
   it("creates a completed assistant message when message.completed arrives before local state exists", () => {
     const next = appendOrUpdateAssistantMessageCompletion([], {
       messageId: "msg_backend_assistant",

@@ -23,23 +23,19 @@ _CHAT_COMPAT_EVENT_TYPES = {
     "content_start",
     "content_delta",
     "thinking",
-    "assistant_progress",
     "tool_use_complete",
     "tool_result",
     "permission_request",
     "message_complete",
-    "status",
     "plan_update",
 }
 
 _RECOVERABLE_CHAT_COMPAT_EVENT_TYPES = {
-    "assistant_progress",
     "computer_use_permission_request",
     "content_start",
     "message_complete",
     "permission_request",
     "plan_update",
-    "status",
     "thinking",
     "tool_result",
     "tool_use_complete",
@@ -231,23 +227,6 @@ _VISIBLE_PAYLOAD_STRING_LIMIT = 1000
 _VISIBLE_PAYLOAD_PREVIEW_LIMIT = 240
 _VISIBLE_PAYLOAD_LIST_LIMIT = 20
 _VISIBLE_PAYLOAD_MAX_DEPTH = 4
-_LOW_VALUE_TOOL_PROGRESS_NAMES = {
-    "code_search",
-    "git_diff",
-    "git_status",
-    "list_dir",
-    "list_directory",
-    "memory.recall",
-    "read_file",
-    "scratchpad.read",
-    "search_files",
-}
-_LOW_VALUE_TOOL_PROGRESS_PHASES = {
-    "context_read",
-    "git",
-    "memory",
-    "search",
-}
 _INTERNAL_VISIBLE_PAYLOAD_KEYS = {
     "approvalId",
     "approval_id",
@@ -666,7 +645,7 @@ class PublishingMixin:
         state: str,
         verb: Any = None,
         payload: dict[str, Any] | None = None,
-        visibility: str = "chat",
+        visibility: str = "trace",
         force: bool = False,
     ) -> None:
         if task.get("role", "root") != "root":
@@ -700,12 +679,18 @@ class PublishingMixin:
             return
         if cache_key:
             fingerprint_cache[cache_key] = fingerprint
-        self._publish_chat_compat_event(
+        bridge = status_payload.get("_bridge")
+        status_payload["_bridge"] = {
+            **(bridge if isinstance(bridge, dict) else {}),
+            "suppressRealtimeFlat": True,
+            "suppressChatReplay": True,
+        }
+        self._publish_event_raw(
             session_id=session_id,
             task=task,
             event_type="status",
             payload=status_payload,
-            visibility=visibility,
+            visibility="trace",
         )
 
     def _mark_tool_output_delta_seen(self, task_id: str, tool_use_id: Any, stream: Any, text: Any) -> bool:
@@ -854,135 +839,6 @@ class PublishingMixin:
             event_payload["completedSteps"] = len(completed_steps)
         return event_payload
 
-    def _publish_assistant_progress(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        text: str,
-        phase: str,
-        status: str = "running",
-        payload: dict[str, Any] | None = None,
-        visibility: str = "panel",
-    ) -> None:
-        if task.get("role", "root") != "root":
-            return
-        step_value = payload.get("step") if isinstance(payload, dict) else None
-        display_text = text
-        if phase == "provider_request" and step_value not in (None, ""):
-            display_text = f"{text}（第 {step_value} 轮）"
-        summary = self._compact_chat_event_text(text)
-        display_summary = self._compact_chat_event_text(display_text)
-        if not summary:
-            return
-        progress_payload: dict[str, Any] = {
-            "text": display_summary or summary,
-            "summary": summary,
-            "phase": phase,
-            "status": status,
-        }
-        if isinstance(payload, dict):
-            for key in (
-                "step",
-                "model",
-                "operation",
-                "stream",
-                "pressure",
-                "consumedSteps",
-                "remainingSteps",
-                "maxSteps",
-                "recommendedAction",
-                "toolName",
-                "toolUseId",
-                "target",
-                "inputSummary",
-                "resultSummary",
-                "resultPreview",
-                "durationMs",
-                "toolCategory",
-                "toolPhaseId",
-                "toolPhaseLabel",
-                "toolSemanticParentId",
-                "toolSemanticParentLabel",
-                "reason",
-                "parentToolUseId",
-                "toolNames",
-                "stage",
-                "mode",
-                "isError",
-            ):
-                if payload.get(key) is not None:
-                    progress_payload[key] = payload.get(key)
-        self._publish_chat_compat_event(
-            session_id=session_id,
-            task=task,
-            event_type="assistant_progress",
-            payload=progress_payload,
-            visibility=visibility,
-            persist_trace=bool(payload.get("persistTrace")) if isinstance(payload, dict) else False,
-        )
-
-    @staticmethod
-    def _tool_batch_metadata_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        metadata: dict[str, Any] = {}
-        tool_group_id = payload.get("toolGroupId")
-        if isinstance(tool_group_id, str) and tool_group_id.strip():
-            metadata["toolGroupId"] = tool_group_id
-        for key in ("toolIndex", "toolTotal"):
-            value = payload.get(key)
-            if isinstance(value, int):
-                metadata[key] = value
-        for key in ("toolOperationId", "toolOperationLabel"):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                metadata[key] = value.strip()
-        return metadata
-
-    def _tool_started_progress_text(self, payload: dict[str, Any]) -> str | None:
-        tool_name = str(payload.get("toolName") or "").strip()
-        block_summary = str(payload.get("inputSummary") or "").strip().lower()
-        if block_summary == "blocked by tool policy":
-            target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
-            return f"工具本轮不可用：{target}" if target else "工具本轮不可用"
-        if block_summary == "blocked by plan mode":
-            target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
-            return f"计划模式已拦截工具：{target}" if target else "计划模式已拦截工具"
-        if block_summary == "exit_plan_mode outside plan mode":
-            return "计划模式未激活，不能提交计划审批"
-        quiet_tools = {
-            *_LOW_VALUE_TOOL_PROGRESS_NAMES,
-            "git_status",
-            "list_dir",
-            "list_directory",
-            "read_file",
-            "scratchpad.read",
-        }
-        if tool_name in quiet_tools:
-            return None
-        labels = {
-            "run_command": "准备运行命令",
-            "apply_patch": "准备应用改动",
-            "code_search": "准备搜索代码",
-            "git_diff": "准备读取 Git 差异",
-            "git_status": "准备检查 Git 状态",
-            "list_dir": "准备列出目录",
-            "list_directory": "准备列出目录",
-            "read_file": "准备读取文件",
-            "search_files": "准备搜索文件",
-            "write_file": "准备写入文件",
-            "agent": "准备启动子任务",
-            "task": "准备启动子任务",
-            "computer_use": "准备进行桌面操作",
-        }
-        label = labels.get(tool_name)
-        if label is None:
-            return None
-        target = self._compact_chat_event_text(
-            payload.get("inputSummary") or payload.get("target") or "",
-            limit=120,
-        )
-        return f"{label}：{target}" if target else label
-
     def _tool_started_output_delta_text(self, payload: dict[str, Any]) -> str:
         tool_name = str(payload.get("toolName") or "").strip()
         executor_progress_tools = {
@@ -1037,168 +893,6 @@ class PublishingMixin:
         )
         text = f"{label}：{detail}" if detail else label
         return f"{text}\n"
-
-    def _publish_tool_started_progress(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        payload: dict[str, Any],
-        visibility: str,
-    ) -> None:
-        text = self._tool_started_progress_text(payload)
-        if not text:
-            return
-        self._publish_assistant_progress(
-            session_id=session_id,
-            task=task,
-            text=text,
-            phase="tool_execution",
-            payload={
-                "toolName": payload.get("toolName"),
-                "toolUseId": payload.get("toolCallId"),
-                "target": payload.get("target"),
-                "inputSummary": payload.get("inputSummary"),
-                "toolCategory": payload.get("toolCategory"),
-                "toolPhaseId": payload.get("toolPhaseId"),
-                "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                "toolSemanticParentId": payload.get("toolSemanticParentId"),
-                "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-            },
-            visibility=visibility,
-        )
-
-    def _maybe_publish_tool_phase_progress(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        payload: dict[str, Any],
-        visibility: str,
-    ) -> None:
-        tool_name = str(payload.get("toolName") or "").strip()
-        tool_phase_id = str(payload.get("toolPhaseId") or "").strip()
-        tool_category = str(payload.get("toolCategory") or "").strip()
-        if (
-            tool_name in _LOW_VALUE_TOOL_PROGRESS_NAMES
-            or tool_phase_id in _LOW_VALUE_TOOL_PROGRESS_PHASES
-            or tool_category in _LOW_VALUE_TOOL_PROGRESS_PHASES
-        ):
-            return
-        semantic_parent_id = str(payload.get("toolSemanticParentId") or "").strip()
-        if not semantic_parent_id:
-            return
-        task_id = str(task.get("id") or "")
-        cache_key = f"{task_id}:{semantic_parent_id}"
-        seen = getattr(self, "_chat_tool_phase_progress_seen", None)
-        if not isinstance(seen, set):
-            seen = set()
-            setattr(self, "_chat_tool_phase_progress_seen", seen)
-        if cache_key in seen:
-            return
-        seen.add(cache_key)
-        label = str(payload.get("toolSemanticParentLabel") or payload.get("toolPhaseLabel") or "工具阶段").strip() or "工具阶段"
-        self._publish_assistant_progress(
-            session_id=session_id,
-            task=task,
-            text=f"进入{label}阶段",
-            phase="tool_phase",
-            payload={
-                "toolName": payload.get("toolName"),
-                "toolUseId": payload.get("toolCallId"),
-                "target": payload.get("target"),
-                "inputSummary": payload.get("inputSummary"),
-                "toolCategory": payload.get("toolCategory"),
-                "toolPhaseId": payload.get("toolPhaseId"),
-                "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                "toolSemanticParentId": semantic_parent_id,
-                "toolSemanticParentLabel": label,
-            },
-            visibility=visibility,
-        )
-
-    def _tool_result_progress_detail(self, payload: dict[str, Any]) -> str:
-        for key in ("resultSummary", "reason", "recoveryHint"):
-            detail = self._compact_chat_event_text(payload.get(key) or "", limit=140)
-            if detail:
-                return detail
-        result = payload.get("result")
-        if isinstance(result, dict):
-            for key in ("summary", "error", "message", "stderr", "stdout"):
-                detail = self._compact_chat_event_text(result.get(key) or "", limit=140)
-                if detail:
-                    return detail
-        return ""
-
-    @staticmethod
-    def _is_background_running_command_result(payload: dict[str, Any]) -> bool:
-        if str(payload.get("toolName") or "").strip() != "run_command":
-            return False
-        result = payload.get("result")
-        if not isinstance(result, dict):
-            return False
-        return result.get("background") is True or str(result.get("status") or "").strip().lower() == "running"
-
-    def _tool_result_progress_text(self, event_type: str, payload: dict[str, Any]) -> str | None:
-        tool_name = str(payload.get("toolName") or "").strip()
-        detail = self._tool_result_progress_detail(payload)
-        if event_type == "tool.completed":
-            if self._is_background_running_command_result(payload):
-                command = self._compact_chat_event_text(
-                    payload.get("inputSummary") or payload.get("target") or detail,
-                    limit=140,
-                )
-                return f"命令已在后台运行：{command}" if command else "命令已在后台运行"
-            labels = {
-                "run_command": "命令已完成",
-                "apply_patch": "改动已应用",
-                "write_file": "文件已写入",
-                "agent": "子任务已完成",
-                "task": "子任务已完成",
-                "computer_use": "桌面操作已完成",
-            }
-            label = labels.get(tool_name)
-            if label is None:
-                return None
-            return f"{label}：{detail}" if detail else label
-        if event_type == "tool.blocked":
-            result = payload.get("result")
-            if isinstance(result, dict) and str(result.get("failureKind") or "") == "tool_not_available":
-                target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
-                label = f"工具本轮不可用：{target}" if target else "工具本轮不可用"
-                return f"{label}（已按策略拦截）"
-            if isinstance(result, dict):
-                error_text = str(result.get("error") or "")
-                summary_text = str(result.get("summary") or "")
-                if "Plan mode allows only" in error_text or summary_text == "Tool blocked by plan mode.":
-                    target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
-                    label = f"计划模式已拦截工具：{target}" if target else "计划模式已拦截工具"
-                    return f"{label}：{detail}" if detail else label
-                if "plan mode is not active" in error_text or "plan mode is not active" in summary_text:
-                    return f"计划模式未激活：{detail}" if detail else "计划模式未激活"
-            labels = {
-                "run_command": "命令被阻止",
-                "apply_patch": "改动被阻止",
-                "write_file": "写入文件被阻止",
-                "agent": "子任务被阻止",
-                "task": "子任务被阻止",
-                "computer_use": "桌面操作被阻止",
-            }
-            label = labels.get(tool_name, "工具被阻止")
-            return f"{label}：{detail}" if detail else label
-        labels = {
-            "run_command": "命令执行失败",
-            "apply_patch": "应用改动失败",
-            "write_file": "写入文件失败",
-            "read_file": "读取文件失败",
-            "list_files": "列出文件失败",
-            "search_files": "搜索文件失败",
-            "agent": "子任务失败",
-            "task": "子任务失败",
-            "computer_use": "桌面操作失败",
-        }
-        label = labels.get(tool_name, "工具执行失败")
-        return f"{label}：{detail}" if detail else label
 
     def _tool_result_output_delta_text(self, payload: dict[str, Any]) -> str:
         result = payload.get("result")
@@ -1287,61 +981,6 @@ class PublishingMixin:
         if prefix and target:
             return f"{prefix}: {target}"
         return prefix or detail or target
-
-    def _publish_tool_result_progress(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        event_type: str,
-        payload: dict[str, Any],
-        visibility: str,
-    ) -> None:
-        text = self._tool_result_progress_text(event_type, payload)
-        if not text:
-            return
-        if event_type == "tool.completed":
-            if self._is_background_running_command_result(payload):
-                phase = "tool_running"
-                status = "running"
-            else:
-                phase = "tool_completed"
-                status = "completed"
-            is_error = False
-        elif event_type == "tool.blocked":
-            phase = "tool_blocked"
-            status = "blocked"
-            is_error = True
-        else:
-            phase = "tool_failed"
-            status = "failed"
-            is_error = True
-        self._publish_assistant_progress(
-            session_id=session_id,
-            task=task,
-            text=text,
-            phase=phase,
-            status=status,
-            payload={
-                "toolName": payload.get("toolName"),
-                "toolUseId": payload.get("toolCallId"),
-                "target": payload.get("target"),
-                "inputSummary": payload.get("inputSummary"),
-                "resultSummary": payload.get("resultSummary"),
-                "resultPreview": payload.get("resultPreview"),
-                "durationMs": payload.get("durationMs"),
-                "toolCategory": payload.get("toolCategory"),
-                "toolPhaseId": payload.get("toolPhaseId"),
-                "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                "toolSemanticParentId": payload.get("toolSemanticParentId"),
-                "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-                "reason": payload.get("reason"),
-                "parentToolUseId": payload.get("parentToolUseId"),
-                **self._tool_batch_metadata_from_payload(payload),
-                "isError": is_error,
-            },
-            visibility=visibility,
-        )
 
     def _publish_chat_compat_for_event(
         self,
@@ -1485,18 +1124,6 @@ class PublishingMixin:
                 verb=str(tool_name or "tool"),
                 payload=payload,
                 visibility=effective_visibility,
-            )
-            self._maybe_publish_tool_phase_progress(
-                session_id=session_id,
-                task=task,
-                payload=payload,
-                visibility="panel",
-            )
-            self._publish_tool_started_progress(
-                session_id=session_id,
-                task=task,
-                payload=payload,
-                visibility="panel",
             )
             return
 
@@ -1665,13 +1292,6 @@ class PublishingMixin:
                     **({"parentToolUseId": payload.get("parentToolUseId")} if payload.get("parentToolUseId") else {}),
                 },
                 visibility=effective_visibility,
-            )
-            self._publish_tool_result_progress(
-                session_id=session_id,
-                task=task,
-                event_type=event_type,
-                payload=payload,
-                visibility="panel",
             )
             return
 
@@ -2057,8 +1677,6 @@ class PublishingMixin:
         - "trace": diagnostics and provider/runtime internals
         """
         task_role = task.get("role", "root")
-        if event_type == "assistant_progress":
-            return "panel" if task_role == "root" else "trace"
         if event_type in _CHAT_COMPAT_EVENT_TYPES:
             return "chat" if task_role == "root" else "trace"
         if event_type.startswith("provider."):

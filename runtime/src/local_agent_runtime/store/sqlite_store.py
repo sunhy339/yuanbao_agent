@@ -31,10 +31,6 @@ def _suppresses_flat_bridge(payload: dict[str, Any]) -> bool:
     return isinstance(bridge, dict) and bridge.get("suppressChatReplay") is True
 
 
-def _suppresses_flat_message_for_visibility(event_type: str, visibility: str) -> bool:
-    return event_type == "assistant_progress" and visibility != "chat"
-
-
 class _LockedCursor:
     def __init__(
         self,
@@ -505,7 +501,6 @@ class SQLiteStore(
             record["visibility"] != "trace"
             and isinstance(payload, dict)
             and not _suppresses_flat_bridge(payload)
-            and not _suppresses_flat_message_for_visibility(record["type"], record["visibility"])
         ):
             yuanbao = to_yuanbao_server_message(
                 RuntimeEvent(

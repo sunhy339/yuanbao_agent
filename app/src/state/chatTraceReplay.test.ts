@@ -187,7 +187,7 @@ describe("chat trace replay", () => {
     expect(String(tool?.metadata?.resultText).match(/one line/g)).toHaveLength(1);
   });
 
-  it("keeps thinking, progress, tool, and final message order stable across replay passes", () => {
+  it("keeps provider thinking, tool, and final message order stable across replay passes", () => {
     const traces = [
       trace("evt_think_1", "thinking", {
         text: "I will inspect the project first. ",
@@ -218,17 +218,16 @@ describe("chat trace replay", () => {
     expect(visible.map((message) => message.id)).toEqual([
       "assistant_thinking:evt_think_1",
       "tool_activity:tool_read",
-      "assistant_progress:evt_progress",
       "assistant_thinking:evt_think_2",
       "assistant_1",
     ]);
     expect(visible.map((message) => message.metadata?.kind ?? "assistant_text")).toEqual([
       "assistant_thinking",
       "tool_activity",
-      "assistant_progress",
       "assistant_thinking",
       "assistant_text",
     ]);
+    expect(visible.some((message) => message.metadata?.kind === "assistant_progress")).toBe(false);
     expect(visible.find((message) => message.id === "assistant_1")?.content).toBe("下面是下一步优化路线图。");
     expect(visible.filter((message) => message.id === "assistant_1")).toHaveLength(1);
   });
@@ -265,7 +264,7 @@ describe("chat trace replay", () => {
     expect(visible[0]?.streaming).toBe(false);
   });
 
-  it("keeps replay idempotent under repeated thinking/tool/progress cycles", () => {
+  it("keeps replay idempotent under repeated thinking/tool cycles", () => {
     const traces: TraceEventRecord[] = [];
     let sequence = 1;
     for (let index = 0; index < 12; index += 1) {
@@ -297,7 +296,6 @@ describe("chat trace replay", () => {
       ...Array.from({ length: 12 }).flatMap((_, index) => [
         `assistant_thinking:evt_think_${index}`,
         `tool_activity:tool_${index}`,
-        `assistant_progress:evt_progress_${index}`,
       ]),
       "assistant_final",
     ]);
@@ -359,7 +357,7 @@ describe("chat trace replay", () => {
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
-  it("does not replay bridge-suppressed chat mirrors from persisted traces", () => {
+  it("does not replay backend progress chat mirrors from persisted traces", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       trace("evt_backend_thinking", "thinking", {
         text: "Planning phase status",
@@ -381,7 +379,22 @@ describe("chat trace replay", () => {
 
     const visible = getVisibleChatMessages(replayed, "sess_1");
 
-    expect(visible.map((message) => message.content)).toEqual(["Visible progress update"]);
+    expect(visible).toEqual([]);
+  });
+
+  it("does not replay runtime status events as assistant thinking", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_status_thinking", "status", {
+        state: "thinking",
+        verb: "model",
+      }, 1, "chat"),
+      trace("evt_status_streaming", "status", {
+        state: "streaming",
+        verb: "model",
+      }, 2, "chat"),
+    ]);
+
+    expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
   it("does not replay control-flow tools as normal chat tool rows", () => {
@@ -526,7 +539,6 @@ describe("chat trace replay", () => {
 
     expect(visible.map((message) => message.id)).toEqual([
       "tool_use:root_tool",
-      "assistant_progress:evt_child_progress",
     ]);
   });
 });

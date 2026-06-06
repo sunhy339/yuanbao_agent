@@ -25,6 +25,27 @@ interface ReplaceSessionMessagesOptions {
   preserveOtherTaskMessages?: boolean;
 }
 
+function isAssistantTextStreamTarget(message: ChatMessageView): boolean {
+  const kind = message.metadata?.kind;
+  return (
+    kind == null ||
+    kind === "assistant_text" ||
+    message.placeholder === true ||
+    message.id.startsWith("assistant_pending_")
+  );
+}
+
+function asAssistantTextMessage(message: ChatMessageView): ChatMessageView {
+  if (!message.metadata?.kind || message.metadata.kind === "assistant_text") {
+    return message;
+  }
+  const { kind: _kind, ...metadata } = message.metadata;
+  return {
+    ...message,
+    metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+  };
+}
+
 export function messageRecordToChatMessage(record: MessageRecord): ChatMessageView | null {
   if (record.role !== "user" && record.role !== "assistant") {
     return null;
@@ -567,8 +588,9 @@ export function appendOrUpdateAssistantMessageDelta(
     payload.messageId,
     (msg) => {
       updatedExisting = true;
+      const textMessage = asAssistantTextMessage(msg);
       return {
-        ...msg,
+        ...textMessage,
         taskId: payload.taskId ?? msg.taskId,
         content: msg.placeholder
           ? payload.delta.trimStart()
@@ -1788,8 +1810,9 @@ export function appendOrUpdateAssistantMessageCompletion(
         streamingContent === "\u601d\u8003\u4e2d..." ||
         streamingContent.length < 5;
       const content = resolveAssistantCompletionContent(streamingContent, completedContent, isPlaceholder);
+      const textMessage = asAssistantTextMessage(msg);
       return {
-        ...msg,
+        ...textMessage,
         taskId: payload.taskId ?? msg.taskId,
         content,
         updatedAt: payload.now,
@@ -1867,6 +1890,9 @@ function findAttachableAssistantMessageIndex(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant" || message.sessionId !== options.sessionId || message.streaming !== true) {
+      continue;
+    }
+    if (!isAssistantTextStreamTarget(message)) {
       continue;
     }
     if (

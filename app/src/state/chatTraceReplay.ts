@@ -1,7 +1,5 @@
 import type {
   AgentEventEnvelope,
-  AssistantProgressPayload,
-  ChatStatusPayload,
   CommandLifecyclePayload,
   CommandOutputPayload,
   ContentDeltaPayload,
@@ -14,7 +12,6 @@ import type {
   TraceEventRecord,
 } from "@shared";
 import {
-  appendAssistantProgressMessage,
   appendAssistantToolResultMessage,
   closeAssistantThinkingForToolBoundary,
   appendOrUpdateAssistantThinkingMessage,
@@ -31,7 +28,6 @@ import {
   resolvePermissionRequestMessage,
   resolveSpecialApprovalMessage,
   stopStreamingMessagesForTask,
-  summarizeOperationalAssistantDelta,
   appendOrUpdateAssistantMessageDelta,
   type ChatMessageView,
 } from "./chatMessages";
@@ -302,16 +298,17 @@ function replayTraceEvent(
     const payload = event.payload as ContentDeltaPayload;
     let next = current;
     if (typeof payload.text === "string" && payload.text) {
-      const progressText = summarizeOperationalAssistantDelta(payload.text)?.trim();
-      if (progressText) {
-        next = appendAssistantProgressMessage(next, {
-          sessionId: event.sessionId,
-          taskId: event.taskId,
-          content: progressText,
-          now: event.ts,
-          eventId: event.eventId,
-        });
-      }
+      const messageId =
+        typeof payload.messageId === "string" && payload.messageId.trim()
+          ? payload.messageId
+          : `assistant_${event.taskId}`;
+      next = appendOrUpdateAssistantMessageDelta(next, {
+        messageId,
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        delta: payload.text,
+        now: event.ts,
+      });
     }
     if (typeof payload.toolInput === "string" && payload.toolInput) {
       const toolUseId = typeof payload.toolUseId === "string" && payload.toolUseId ? payload.toolUseId : `pending_${event.taskId}`;
@@ -679,18 +676,8 @@ function replayTraceEvent(
     });
   }
 
-  if (event.type === "assistant_progress") {
-    const payload = event.payload as AssistantProgressPayload;
-    const text = readPayloadText(payload, ["text", "summary", "message", "title"]);
-    if (!text) return current;
-    return appendAssistantProgressMessage(current, {
-      sessionId: event.sessionId,
-      taskId: event.taskId,
-      content: text,
-      now: event.ts,
-      eventId: event.eventId,
-      metadata: event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : null,
-    });
+  if ((event as { type?: string }).type === "assistant_progress") {
+    return current;
   }
 
   if (event.type === "message.delta") {
@@ -701,16 +688,6 @@ function replayTraceEvent(
     };
     const delta = readPayloadChunk(payload, ["delta", "text"]);
     if (!delta) return current;
-    const progressText = summarizeOperationalAssistantDelta(delta)?.trim();
-    if (progressText) {
-      return appendAssistantProgressMessage(current, {
-        sessionId: event.sessionId,
-        taskId: event.taskId,
-        content: progressText,
-        now: event.ts,
-        eventId: event.eventId,
-      });
-    }
     const messageId =
       typeof payload.messageId === "string" && payload.messageId.trim()
         ? payload.messageId
@@ -725,25 +702,6 @@ function replayTraceEvent(
   }
 
   if (event.type === "status") {
-    const payload = event.payload as ChatStatusPayload;
-    if (payload.state === "idle") {
-      return removeAssistantThinkingMessage(current, {
-        sessionId: event.sessionId,
-        taskId: event.taskId,
-        now: event.ts,
-      });
-    }
-    if (["thinking", "tool_executing", "streaming"].includes(String(payload.state))) {
-      return appendOrUpdateAssistantThinkingMessage(current, {
-        sessionId: event.sessionId,
-        taskId: event.taskId,
-        eventId: event.eventId,
-        state: payload.state,
-        verb: payload.verb,
-        transient: true,
-        now: event.ts,
-      });
-    }
     return current;
   }
 

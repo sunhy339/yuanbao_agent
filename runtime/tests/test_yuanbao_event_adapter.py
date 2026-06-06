@@ -55,11 +55,8 @@ def test_yuanbao_adapter_rejects_missing_required_fields() -> None:
     )
 
 
-def test_yuanbao_adapter_rejects_unknown_status_states() -> None:
-    assert to_yuanbao_server_message(_event("status", {"state": "thinking", "phase": "private"})) == {
-        "type": "status",
-        "state": "thinking",
-    }
+def test_yuanbao_adapter_keeps_runtime_status_out_of_flat_chat_protocol() -> None:
+    assert to_yuanbao_server_message(_event("status", {"state": "thinking", "phase": "private"})) is None
     assert to_yuanbao_server_message(_event("status", {"state": "retrying_provider"})) is None
 
 
@@ -214,6 +211,18 @@ def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> N
         "message": "Task started",
         "data": {"summary": "Task started"},
     }
+    assert (
+        to_yuanbao_server_message(
+            _event(
+                "plan_update",
+                {
+                    "summary": "Ready to dispatch agents",
+                    "plan": [{"id": "inspect", "title": "Inspect workflow", "status": "active"}],
+                },
+            )
+        )
+        is None
+    )
     assert to_yuanbao_server_message(
         _event(
             "system_notification",
@@ -245,15 +254,13 @@ def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> N
     }
 
 
-def test_yuanbao_adapter_maps_progress_events_to_task_progress_notifications() -> None:
+def test_yuanbao_adapter_does_not_map_backend_assistant_progress_to_flat_output() -> None:
     assert to_yuanbao_server_message(
         _event("assistant_progress", {"summary": "Reading files", "phase": "inspect"})
-    ) == {
-        "type": "system_notification",
-        "subtype": "task_progress",
-        "message": "Reading files",
-        "data": {"summary": "Reading files", "phase": "inspect"},
-    }
+    ) is None
+
+
+def test_yuanbao_adapter_maps_tool_progress_events_to_task_progress_notifications() -> None:
     assert to_yuanbao_server_message(
         _event("tool.progress", {"toolName": "read_file", "message": "Read package.json"})
     ) == {
@@ -326,7 +333,6 @@ def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
 
     assert flat_messages == [
         {"type": "connected", "sessionId": "sess_1"},
-        {"type": "status", "state": "thinking", "verb": "plan"},
         {"type": "content_start", "blockType": "text"},
         {"type": "content_delta", "text": "Hi"},
         {
@@ -364,7 +370,6 @@ def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
         to_yuanbao_server_message(_event("computer_use_permission_request", {"requestId": "approval_2", "request": {"action": "click"}})),
         to_yuanbao_server_message(_event("message_complete", {"usage": {"inputTokens": 1, "outputTokens": 2}})),
         to_yuanbao_server_message(_event("thinking", {"text": "plan"})),
-        to_yuanbao_server_message(_event("status", {"state": "streaming"})),
         to_yuanbao_server_message(_event("api_retry", {"attempt": 1, "maxRetries": 3, "retryDelayMs": 250, "errorStatus": 429})),
         to_yuanbao_server_message(_event("message.failed", {"content": "failed", "errorCode": "MODEL_ERROR"})),
         to_yuanbao_server_message(_event("system_notification", {"summary": "notice"})),
@@ -386,7 +391,6 @@ def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
         "computer_use_permission_request",
         "message_complete",
         "thinking",
-        "status",
         "api_retry",
         "error",
         "system_notification",

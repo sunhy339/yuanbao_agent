@@ -40,7 +40,6 @@ export type AgentEventType =
   | "provider.request"
   | "provider.response"
   | "assistant.token"
-  | "assistant_progress"
   | "assistant.message.completed"
   | "content_start"
   | "content_delta"
@@ -258,48 +257,7 @@ export interface ThinkingPayload {
     | "provider_reasoning_delta"
     | "provider_reasoning_summary"
     | "non_stream_thought_summary"
-    | "synthetic_progress"
-    | "status"
     | string;
-}
-
-export interface AssistantProgressPayload {
-  text?: string;
-  summary?: string;
-  message?: string;
-  title?: string;
-  phase?: string;
-  status?: string;
-  step?: number | string;
-  model?: string;
-  source?: string;
-  operation?: string;
-  stream?: string;
-  pressure?: string;
-  consumedSteps?: number;
-  remainingSteps?: number;
-  maxSteps?: number;
-  recommendedAction?: string;
-  toolName?: string;
-  toolUseId?: Identifier;
-  target?: string;
-  inputSummary?: string;
-  resultSummary?: string;
-  durationMs?: number;
-  toolGroupId?: Identifier;
-  toolIndex?: number;
-  toolTotal?: number;
-  toolOperationId?: Identifier;
-  toolOperationLabel?: string;
-  toolCategory?: string;
-  toolPhaseId?: string;
-  toolPhaseLabel?: string;
-  toolSemanticParentId?: string;
-  toolSemanticParentLabel?: string;
-  reason?: string;
-  parentToolUseId?: Identifier;
-  isError?: boolean;
-  resultPreview?: Array<{ label: string; value: string }>;
 }
 
 export interface ToolUseCompletePayload {

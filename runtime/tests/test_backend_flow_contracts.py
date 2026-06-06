@@ -181,6 +181,7 @@ def _force_route(runtime: SimpleNamespace, *, scenario: Scenario, strategy: Exec
             ExecutionStrategy.PLAN_SWARM,
         },
         reasoning="forced backend flow contract",
+        metadata={"legacyPlanExecution": True},
     )
 
 
@@ -227,11 +228,7 @@ def test_document_style_prompt_does_not_invent_workspace_probe_or_review(tmp_pat
     assert "task.planning.started" not in types
     assert "approval.requested" not in types
     assert "completion_review" not in types
-    assert not [
-        event for event in runtime.events
-        if event["type"] == "assistant_progress"
-        and event["payload"].get("phase") == "workspace_evidence_required"
-    ]
+    assert "assistant_progress" not in types
     assert len(provider.calls) == 1
 
 
@@ -692,7 +689,6 @@ def test_terminal_cancel_absorbs_late_visible_runtime_events(tmp_path: Path) -> 
                 "summary": "late review",
             },
         ),
-        ("assistant_progress", {"summary": "late progress"}),
     ]:
         runtime.orchestrator._publish(
             session_id=session["id"],
@@ -1043,21 +1039,12 @@ def test_planning_progress_is_visible_but_synthetic_thinking_stays_trace_only(tm
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "Use multiple agents to inspect flow"})
 
     assert response["result"]["task"]["status"] == "completed"
-    planning_thinking = [
+    planning_progress = [
         event
         for event in runtime.events
-        if event["type"] == "thinking"
-        and str(event["payload"].get("source") or "").startswith("swarm_")
-    ]
-    assert planning_thinking
-    assert {event["visibility"] for event in planning_thinking} == {"trace"}
-    assert all(event["payload"].get("_bridge", {}).get("suppressRealtimeFlat") is True for event in planning_thinking)
-
-    visible_progress = [
-        event
-        for event in runtime.events
-        if event["type"] == "assistant_progress"
+        if event["type"] == "task.planning.progress"
         and event["payload"].get("mode") == "swarm"
     ]
-    assert visible_progress
-    assert {event["visibility"] for event in visible_progress} == {"chat"}
+    assert planning_progress
+    assert {event["visibility"] for event in planning_progress} == {"panel"}
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]

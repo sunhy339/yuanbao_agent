@@ -125,12 +125,6 @@ class TestEventVisibilityInference:
         assert self._invoke("provider.request") == "trace"
         assert self._invoke("provider.stream.finish") == "trace"
 
-    def test_assistant_progress_root_is_panel(self):
-        assert self._invoke("assistant_progress", role="root") == "panel"
-
-    def test_assistant_progress_child_is_trace(self):
-        assert self._invoke("assistant_progress", role="worker") == "trace"
-
     # Collab events → panel
     def test_collab_started_is_panel(self):
         assert self._invoke("collab.started") == "panel"
@@ -287,18 +281,18 @@ class TestEventBusVisibility:
         assert payload["yuanbao"] == {"type": "content_delta", "text": "hello"}
         assert payload["hahaCc"] == payload["yuanbao"]
 
-    def test_payload_suppresses_panel_assistant_progress_flat_message(self):
+    def test_payload_keeps_legacy_assistant_progress_internal(self):
         from local_agent_runtime.event_bus import EventBus
         bus = EventBus()
         event = type("E", (), {
             "event_id": "e3p", "session_id": "s1", "task_id": "t1",
             "type": "assistant_progress", "ts": 0, "seq": 0,
             "payload": {"summary": "Internal panel progress"},
-            "visibility": "panel",
+            "visibility": "trace",
         })()
         payload = bus.as_payload(event)
         assert payload["type"] == "assistant_progress"
-        assert payload["visibility"] == "panel"
+        assert payload["visibility"] == "trace"
         assert "yuanbao" not in payload
         assert "hahaCc" not in payload
 

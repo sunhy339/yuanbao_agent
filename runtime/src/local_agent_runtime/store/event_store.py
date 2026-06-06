@@ -240,7 +240,7 @@ class EventStoreMixin:
             SELECT *
             FROM trace_events
             WHERE task_id = ?
-            ORDER BY created_at ASC, sequence ASC
+            ORDER BY sequence ASC
             LIMIT ?
             """,
             (task_id, limit),
@@ -272,7 +272,7 @@ class EventStoreMixin:
         args.append(limit)
 
         rows = self._conn.execute(
-            f"SELECT * FROM trace_events WHERE {' AND '.join(conditions)} ORDER BY created_at ASC, sequence ASC LIMIT ?",
+            f"SELECT * FROM trace_events WHERE {' AND '.join(conditions)} ORDER BY sequence ASC LIMIT ?",
             args,
         ).fetchall()
         return {"decisions": [self._serialize_trace_event(dict(row)) for row in rows]}

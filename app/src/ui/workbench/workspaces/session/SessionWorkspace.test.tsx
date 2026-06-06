@@ -964,7 +964,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("assistant.token")).not.toBeInTheDocument();
     expect(screen.queryByText("provider.request")).not.toBeInTheDocument();
     expect(screen.queryByText("task.started")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /trace Runtime Error 失败/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /trace 运行异常 失败/i })).toBeInTheDocument();
     expect(screen.getByText("Command process exited unexpectedly.")).toBeInTheDocument();
     expect(screen.queryByText(/baseUrl/)).not.toBeInTheDocument();
     expect(screen.queryByText(/estimatedInputTokens/)).not.toBeInTheDocument();
@@ -1467,7 +1467,7 @@ describe("SessionWorkspace", () => {
       expect.stringContaining("Command failed with exit 1."),
     );
 
-    await user.click(screen.getByRole("button", { name: /trace Runtime Error 失败/i }));
+    await user.click(screen.getByRole("button", { name: /trace 运行异常 失败/i }));
     await user.click(screen.getByRole("button", { name: "复制详情" }));
 
     expect(onCopyRuntimeText).toHaveBeenCalledWith(
@@ -2234,7 +2234,7 @@ describe("SessionWorkspace", () => {
     );
 
     const evidence = screen.getByLabelText("Completion evidence");
-    expect(within(evidence).getByText("needs_verification")).toBeInTheDocument();
+    expect(within(evidence).getByText("Code files changed without targeted verification.")).toBeInTheDocument();
     expect(within(evidence).getAllByText("verified").length).toBeGreaterThan(0);
     expect(within(evidence).getByText("files")).toBeInTheDocument();
     expect(within(evidence).getByText("2")).toBeInTheDocument();
@@ -2325,7 +2325,8 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("2 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
     expect(within(digest).getByText("2 项验证")).toBeInTheDocument();
-    expect(screen.getByText("needs_acceptance_review")).toBeInTheDocument();
+    expect(screen.queryByText("needs_acceptance_review")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Readable artifact copy needs review.").length).toBeGreaterThan(0);
     expect(screen.getAllByText("failed: Static frontend asset reachable: index.html -> app.js").length).toBeGreaterThan(0);
     expect(screen.getByText("Completion review approved by user.")).toBeInTheDocument();
     expect(screen.queryByText("模型异常")).not.toBeInTheDocument();
@@ -2442,7 +2443,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("诊断过滤")).not.toBeInTheDocument();
     expect(screen.queryByText("collab.task.created")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /trace Runtime Error 失败/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /trace 运行异常 失败/i })).toBeInTheDocument();
   });
 
   it("does not expose raw child task fields in the compact collaboration surface", () => {

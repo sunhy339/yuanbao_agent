@@ -653,15 +653,6 @@ class ProviderTurnMixin:
                     "step": provider_context.get("step"),
                 },
             )
-            publish_progress = getattr(self, "_publish_assistant_progress", None)
-            if callable(publish_progress):
-                publish_progress(
-                    session_id=session_id,
-                    task=task,
-                    text="正在请求模型",
-                    phase="provider_request",
-                    payload=self._provider_trace_payload(provider_context),
-                )
         if not self._should_stream_provider(provider_context):
             return self._request_non_streaming_provider_response(
                 session_id=session_id,
@@ -800,16 +791,15 @@ class ProviderTurnMixin:
                                 stream_state["started"] = True
                         arguments_delta = event.get("arguments_delta")
                         if isinstance(arguments_delta, str) and arguments_delta:
-                            self._publish(
-                                session_id=session_id,
+                            self._append_provider_trace(
                                 task=task,
-                                event_type="content_delta",
+                                event_type="provider.stream.tool_call_delta",
                                 payload={
                                     "toolUseId": stream_state.get("toolUseId"),
                                     "toolName": stream_state.get("toolName"),
                                     **({"parentToolUseId": stream_state.get("parentToolUseId")} if stream_state.get("parentToolUseId") else {}),
                                     **stream_metadata,
-                                    "toolInput": arguments_delta,
+                                    "argumentsDeltaChars": len(arguments_delta),
                                 },
                             )
                 logger.info(

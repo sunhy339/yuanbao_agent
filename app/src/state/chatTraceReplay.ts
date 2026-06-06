@@ -32,6 +32,7 @@ import {
   resolveSpecialApprovalMessage,
   stopStreamingMessagesForTask,
   summarizeOperationalAssistantDelta,
+  appendOrUpdateAssistantMessageDelta,
   type ChatMessageView,
 } from "./chatMessages";
 
@@ -689,6 +690,37 @@ function replayTraceEvent(
       now: event.ts,
       eventId: event.eventId,
       metadata: event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : null,
+    });
+  }
+
+  if (event.type === "message.delta") {
+    const payload = event.payload as {
+      messageId?: unknown;
+      delta?: unknown;
+      text?: unknown;
+    };
+    const delta = readPayloadChunk(payload, ["delta", "text"]);
+    if (!delta) return current;
+    const progressText = summarizeOperationalAssistantDelta(delta)?.trim();
+    if (progressText) {
+      return appendAssistantProgressMessage(current, {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        content: progressText,
+        now: event.ts,
+        eventId: event.eventId,
+      });
+    }
+    const messageId =
+      typeof payload.messageId === "string" && payload.messageId.trim()
+        ? payload.messageId
+        : `assistant_${event.taskId}`;
+    return appendOrUpdateAssistantMessageDelta(current, {
+      messageId,
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      delta,
+      now: event.ts,
     });
   }
 

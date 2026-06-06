@@ -32,6 +32,35 @@ _CHAT_COMPAT_EVENT_TYPES = {
     "plan_update",
 }
 
+_RECOVERABLE_CHAT_COMPAT_EVENT_TYPES = {
+    "assistant_progress",
+    "computer_use_permission_request",
+    "content_start",
+    "message_complete",
+    "permission_request",
+    "plan_update",
+    "status",
+    "thinking",
+    "tool_result",
+    "tool_use_complete",
+}
+
+
+def _should_persist_chat_compat_trace_mirror(
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+    visibility: str,
+) -> bool:
+    if visibility not in {"chat", "panel"}:
+        return False
+    if event_type in _RECOVERABLE_CHAT_COMPAT_EVENT_TYPES:
+        return True
+    if event_type == "content_delta":
+        return any(isinstance(payload.get(key), str) and payload.get(key) for key in ("toolInput", "toolOutput"))
+    return False
+
+
 _VISIBLE_TOOL_PAYLOAD_EVENT_TYPES = {
     "tool.started",
     "tool.completed",
@@ -148,16 +177,20 @@ _TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled", "canceled"}
 _TERMINAL_TASK_ALLOWED_EVENTS = {
     "completed": {
         "agent.decision.completion",
-        "approval.resolved",
         "memory_event",
         "message.completed",
+        "approval.requested",
+        "approval.resolved",
+        "computer_use_permission_request",
+        "computer_use_permission",
         "session.updated",
         "task.completed",
+        "task.loop_failure.recovered",
+        "task.planning.recovered",
         "task.reflection.completed",
     },
     "failed": {
         "agent.decision.completion",
-        "approval.resolved",
         "memory_event",
         "message.failed",
         "session.updated",
@@ -198,6 +231,43 @@ _VISIBLE_PAYLOAD_STRING_LIMIT = 1000
 _VISIBLE_PAYLOAD_PREVIEW_LIMIT = 240
 _VISIBLE_PAYLOAD_LIST_LIMIT = 20
 _VISIBLE_PAYLOAD_MAX_DEPTH = 4
+_LOW_VALUE_TOOL_PROGRESS_NAMES = {
+    "code_search",
+    "git_diff",
+    "git_status",
+    "list_dir",
+    "list_directory",
+    "memory.recall",
+    "read_file",
+    "scratchpad.read",
+    "search_files",
+}
+_LOW_VALUE_TOOL_PROGRESS_PHASES = {
+    "context_read",
+    "git",
+    "memory",
+    "search",
+}
+_INTERNAL_VISIBLE_PAYLOAD_KEYS = {
+    "approvalId",
+    "approval_id",
+    "sessionId",
+    "session_id",
+    "taskId",
+    "task_id",
+    "toolGroupId",
+    "tool_group_id",
+    "toolIndex",
+    "tool_index",
+    "toolOperationId",
+    "tool_operation_id",
+    "toolOperationLabel",
+    "tool_operation_label",
+    "toolTotal",
+    "tool_total",
+    "workspaceRoot",
+    "workspace_root",
+}
 
 
 class PublishingMixin:
@@ -342,16 +412,62 @@ class PublishingMixin:
         payload: dict[str, Any],
         visibility: str,
     ) -> dict[str, Any]:
+        if visibility in {"chat", "panel"} and event_type in {
+            "task.started",
+            "task.completed",
+            "task.failed",
+            "task.cancelled",
+        }:
+            return cls._visible_task_lifecycle_payload(event_type, payload)
         if event_type not in _VISIBLE_TOOL_PAYLOAD_EVENT_TYPES:
             return payload
         safe_payload = dict(payload)
         for key in ("arguments", "result"):
             if key == "result" and event_type in {"tool.completed", "tool.failed", "tool.blocked"}:
+                value = safe_payload.get(key)
+                if isinstance(value, dict) and (
+                    str(value.get("status") or "").strip().lower() == "approval_required"
+                    or isinstance(value.get("approval"), dict)
+                ):
+                    preview = safe_payload.get("resultPreview")
+                    safe_payload[key] = _frontend_visible_tool_result(
+                        str(safe_payload.get("toolName") or ""),
+                        value,
+                        str(safe_payload.get("target") or ""),
+                        summary=str(safe_payload.get("resultSummary") or ""),
+                        preview=preview if isinstance(preview, list) else None,
+                    )
                 continue
             value = safe_payload.get(key)
             if isinstance(value, (dict, list, str)):
                 safe_payload[key] = cls._sanitize_visible_payload_value(key, value)
         return safe_payload
+
+    @classmethod
+    def _visible_task_lifecycle_payload(cls, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {
+            "status": payload.get("status") or event_type.removeprefix("task."),
+        }
+        for key in (
+            "goal",
+            "currentStep",
+            "summary",
+            "resultSummary",
+            "detail",
+            "errorCode",
+            "businessErrorCode",
+            "retryable",
+            "changedFiles",
+            "commands",
+            "verification",
+        ):
+            value = payload.get(key)
+            if value in (None, "", [], {}):
+                continue
+            safe[key] = cls._sanitize_visible_payload_value(key, value)
+        if "summary" not in safe and isinstance(payload.get("message"), str) and payload.get("message").strip():
+            safe["summary"] = cls._sanitize_visible_payload_value("summary", payload["message"])
+        return safe
 
     @classmethod
     def _sanitize_visible_payload_value(cls, key: str, value: Any, *, depth: int = 0) -> Any:
@@ -375,6 +491,7 @@ class PublishingMixin:
             return {
                 str(child_key): cls._sanitize_visible_payload_value(str(child_key), child_value, depth=depth + 1)
                 for child_key, child_value in value.items()
+                if str(child_key) not in _INTERNAL_VISIBLE_PAYLOAD_KEYS
             }
         if isinstance(value, list):
             if depth >= _VISIBLE_PAYLOAD_MAX_DEPTH:
@@ -399,6 +516,8 @@ class PublishingMixin:
 
     @staticmethod
     def _raw_runtime_event_visibility(event_type: str, effective_visibility: str, explicit_visibility: str | None) -> str:
+        if explicit_visibility is None and event_type == "assistant.token":
+            return "trace"
         if explicit_visibility is None and event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES:
             return "trace"
         if explicit_visibility is None and event_type in _RAW_PANEL_MIRROR_EVENT_TYPES:
@@ -422,11 +541,14 @@ class PublishingMixin:
         *,
         task: dict[str, Any],
         event_type: str,
+        payload: dict[str, Any],
         effective_visibility: str,
     ) -> bool:
         status = self._latest_terminal_task_status(task)
         if status is None:
             return False
+        if event_type == "approval.resolved":
+            return not (payload.get("ignored") is True or payload.get("deferred") is True)
         allowed = _TERMINAL_TASK_ALLOWED_EVENTS.get(status, set())
         if event_type in allowed:
             return False
@@ -441,6 +563,15 @@ class PublishingMixin:
         return True
 
     def _goal_event_payload_for_task_event(self, event_type: str, task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+        if event_type == "task.failed":
+            failure_task = dict(task)
+            if payload.get("errorCode"):
+                failure_task["errorCode"] = payload.get("errorCode")
+            if isinstance(payload.get("structuredResult"), dict):
+                failure_task["structuredResult"] = payload["structuredResult"]
+            is_provider_failure = getattr(self, "_is_provider_runtime_failure", None)
+            if callable(is_provider_failure) and is_provider_failure(failure_task):
+                return None
         mapping = {
             "task.started": ("目标已开始", "started", "running"),
             "task.completed": ("目标已完成", "completed", "completed"),
@@ -501,10 +632,24 @@ class PublishingMixin:
     ) -> None:
         compat_payload = dict(payload)
         compat_payload["_chatCompat"] = True
+        if _should_persist_chat_compat_trace_mirror(
+            event_type=event_type,
+            payload=compat_payload,
+            visibility=visibility,
+        ):
+            persist_trace = True
         if persist_trace:
-            compat_payload["_bridge"] = {"persistTraceMirror": True}
+            bridge = compat_payload.get("_bridge")
+            compat_payload["_bridge"] = {
+                **(bridge if isinstance(bridge, dict) else {}),
+                "persistTraceMirror": True,
+            }
         else:
-            compat_payload["_bridge"] = {"skipTraceMirror": True}
+            bridge = compat_payload.get("_bridge")
+            compat_payload["_bridge"] = {
+                **(bridge if isinstance(bridge, dict) else {}),
+                "skipTraceMirror": True,
+            }
         self._publish_event_raw(
             session_id=session_id,
             task=task,
@@ -678,7 +823,7 @@ class PublishingMixin:
             or current_step
         )
         has_plan = isinstance(plan, list) and bool(plan)
-        if not has_plan and not summary:
+        if not has_plan:
             return None
         status = str(payload.get("status") or task.get("status") or "running")
         title = "计划更新"
@@ -761,13 +906,8 @@ class PublishingMixin:
                 "toolSemanticParentLabel",
                 "reason",
                 "parentToolUseId",
-                "toolGroupId",
                 "toolNames",
                 "stage",
-                "toolIndex",
-                "toolTotal",
-                "toolOperationId",
-                "toolOperationLabel",
                 "mode",
                 "isError",
             ):
@@ -800,7 +940,17 @@ class PublishingMixin:
 
     def _tool_started_progress_text(self, payload: dict[str, Any]) -> str | None:
         tool_name = str(payload.get("toolName") or "").strip()
+        block_summary = str(payload.get("inputSummary") or "").strip().lower()
+        if block_summary == "blocked by tool policy":
+            target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
+            return f"工具本轮不可用：{target}" if target else "工具本轮不可用"
+        if block_summary == "blocked by plan mode":
+            target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
+            return f"计划模式已拦截工具：{target}" if target else "计划模式已拦截工具"
+        if block_summary == "exit_plan_mode outside plan mode":
+            return "计划模式未激活，不能提交计划审批"
         quiet_tools = {
+            *_LOW_VALUE_TOOL_PROGRESS_NAMES,
             "git_status",
             "list_dir",
             "list_directory",
@@ -835,6 +985,29 @@ class PublishingMixin:
 
     def _tool_started_output_delta_text(self, payload: dict[str, Any]) -> str:
         tool_name = str(payload.get("toolName") or "").strip()
+        executor_progress_tools = {
+            "apply_patch",
+            "browser",
+            "code_search",
+            "computer_use",
+            "git_diff",
+            "git_status",
+            "list_dir",
+            "list_directory",
+            "memory.recall",
+            "memory.remember",
+            "notebook",
+            "read_file",
+            "run_command",
+            "scratchpad.read",
+            "scratchpad.write",
+            "search_files",
+            "task",
+            "web_fetch",
+            "write_file",
+        }
+        if tool_name in executor_progress_tools or tool_name.startswith("mcp__"):
+            return ""
         labels = {
             "code_search": "正在搜索代码",
             "git_diff": "正在读取 Git 差异",
@@ -854,6 +1027,8 @@ class PublishingMixin:
         label = labels.get(tool_name)
         if label is None and tool_name.startswith("mcp__"):
             label = "正在调用 MCP 工具"
+        if label is None and tool_name:
+            label = "正在调用工具"
         if label is None:
             return ""
         detail = self._compact_chat_event_text(
@@ -889,7 +1064,6 @@ class PublishingMixin:
                 "toolPhaseLabel": payload.get("toolPhaseLabel"),
                 "toolSemanticParentId": payload.get("toolSemanticParentId"),
                 "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-                **self._tool_batch_metadata_from_payload(payload),
             },
             visibility=visibility,
         )
@@ -902,6 +1076,15 @@ class PublishingMixin:
         payload: dict[str, Any],
         visibility: str,
     ) -> None:
+        tool_name = str(payload.get("toolName") or "").strip()
+        tool_phase_id = str(payload.get("toolPhaseId") or "").strip()
+        tool_category = str(payload.get("toolCategory") or "").strip()
+        if (
+            tool_name in _LOW_VALUE_TOOL_PROGRESS_NAMES
+            or tool_phase_id in _LOW_VALUE_TOOL_PROGRESS_PHASES
+            or tool_category in _LOW_VALUE_TOOL_PROGRESS_PHASES
+        ):
+            return
         semantic_parent_id = str(payload.get("toolSemanticParentId") or "").strip()
         if not semantic_parent_id:
             return
@@ -930,7 +1113,6 @@ class PublishingMixin:
                 "toolPhaseLabel": payload.get("toolPhaseLabel"),
                 "toolSemanticParentId": semantic_parent_id,
                 "toolSemanticParentLabel": label,
-                **self._tool_batch_metadata_from_payload(payload),
             },
             visibility=visibility,
         )
@@ -980,6 +1162,20 @@ class PublishingMixin:
                 return None
             return f"{label}：{detail}" if detail else label
         if event_type == "tool.blocked":
+            result = payload.get("result")
+            if isinstance(result, dict) and str(result.get("failureKind") or "") == "tool_not_available":
+                target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
+                label = f"工具本轮不可用：{target}" if target else "工具本轮不可用"
+                return f"{label}（已按策略拦截）"
+            if isinstance(result, dict):
+                error_text = str(result.get("error") or "")
+                summary_text = str(result.get("summary") or "")
+                if "Plan mode allows only" in error_text or summary_text == "Tool blocked by plan mode.":
+                    target = self._compact_chat_event_text(payload.get("target") or tool_name, limit=120)
+                    label = f"计划模式已拦截工具：{target}" if target else "计划模式已拦截工具"
+                    return f"{label}：{detail}" if detail else label
+                if "plan mode is not active" in error_text or "plan mode is not active" in summary_text:
+                    return f"计划模式未激活：{detail}" if detail else "计划模式未激活"
             labels = {
                 "run_command": "命令被阻止",
                 "apply_patch": "改动被阻止",
@@ -1163,16 +1359,7 @@ class PublishingMixin:
 
         active_msg_id = task.get("activeAssistantMessageId")
 
-        if event_type == "task.started":
-            self._publish_chat_status(
-                session_id=session_id,
-                task=task,
-                state="thinking",
-                verb="task",
-                payload=payload,
-                visibility=effective_visibility,
-            )
-        elif event_type in {"task.completed", "task.failed", "task.cancelled"}:
+        if event_type in {"task.completed", "task.failed", "task.cancelled"}:
             self._publish_chat_status(
                 session_id=session_id,
                 task=task,
@@ -1218,17 +1405,6 @@ class PublishingMixin:
                     },
                     visibility=effective_visibility,
                 )
-            self._publish_chat_compat_event(
-                session_id=session_id,
-                task=task,
-                event_type="content_delta",
-                payload={
-                    "messageId": active_msg_id,
-                    "text": delta,
-                    "step": payload.get("step"),
-                },
-                visibility=effective_visibility,
-            )
             return
 
         if event_type == "tool.started":
@@ -1236,7 +1412,6 @@ class PublishingMixin:
             tool_name = payload.get("toolName")
             arguments = payload.get("arguments")
             parent_tool_use_id = payload.get("parentToolUseId")
-            tool_batch_metadata = self._tool_batch_metadata_from_payload(payload)
             if not self._chat_tool_start_seen(task=task, tool_use_id=tool_call_id):
                 self._publish_chat_compat_event(
                     session_id=session_id,
@@ -1254,7 +1429,6 @@ class PublishingMixin:
                         **({"toolPhaseLabel": payload.get("toolPhaseLabel")} if payload.get("toolPhaseLabel") else {}),
                         **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
                         **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
-                        **tool_batch_metadata,
                     },
                     visibility=effective_visibility,
                 )
@@ -1275,7 +1449,6 @@ class PublishingMixin:
                         **({"toolPhaseLabel": payload.get("toolPhaseLabel")} if payload.get("toolPhaseLabel") else {}),
                         **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
                         **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
-                        **tool_batch_metadata,
                     },
                     visibility=effective_visibility,
                 )
@@ -1300,7 +1473,6 @@ class PublishingMixin:
                         "toolPhaseLabel": payload.get("toolPhaseLabel"),
                         "toolSemanticParentId": payload.get("toolSemanticParentId"),
                         "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-                        **tool_batch_metadata,
                         "toolOutput": output_delta,
                         "outputStream": "activity",
                     },
@@ -1349,7 +1521,6 @@ class PublishingMixin:
                     "toolPhaseLabel": payload.get("toolPhaseLabel"),
                     "toolSemanticParentId": payload.get("toolSemanticParentId"),
                     "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-                    **self._tool_batch_metadata_from_payload(payload),
                     "toolOutput": visible_chunk,
                     "outputStream": payload.get("stream") or "stdout",
                 },
@@ -1390,7 +1561,6 @@ class PublishingMixin:
                     "toolPhaseLabel": payload.get("toolPhaseLabel"),
                     "toolSemanticParentId": payload.get("toolSemanticParentId"),
                     "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-                    **self._tool_batch_metadata_from_payload(payload),
                     "toolOutput": chunk,
                     "outputStream": stream,
                 },
@@ -1402,7 +1572,6 @@ class PublishingMixin:
             tool_call_id = payload.get("toolCallId")
             if not tool_call_id:
                 return
-            tool_batch_metadata = self._tool_batch_metadata_from_payload(payload)
             activity_deltas = self._tool_result_activity_delta_texts(payload)
             if activity_deltas and payload.get("toolName") != "run_command":
                 for activity_delta in activity_deltas:
@@ -1423,7 +1592,6 @@ class PublishingMixin:
                             "toolPhaseLabel": payload.get("toolPhaseLabel"),
                             "toolSemanticParentId": payload.get("toolSemanticParentId"),
                             "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-                            **tool_batch_metadata,
                             "toolOutput": activity_delta,
                             "outputStream": "activity",
                     },
@@ -1464,7 +1632,6 @@ class PublishingMixin:
                         "toolPhaseLabel": payload.get("toolPhaseLabel"),
                         "toolSemanticParentId": payload.get("toolSemanticParentId"),
                         "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
-                        **tool_batch_metadata,
                         "toolOutput": output_delta,
                         "outputStream": "result_preview",
                     },
@@ -1496,7 +1663,6 @@ class PublishingMixin:
                     **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
                     **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
                     **({"parentToolUseId": payload.get("parentToolUseId")} if payload.get("parentToolUseId") else {}),
-                    **tool_batch_metadata,
                 },
                 visibility=effective_visibility,
             )
@@ -1921,7 +2087,29 @@ class PublishingMixin:
         if event_type in _CHAT_COMPAT_EVENT_TYPES:
             payload = dict(payload)
             payload.setdefault("_chatCompat", True)
-            payload.setdefault("_bridge", {"skipTraceMirror": True})
+            effective_visibility_for_bridge = visibility or self._infer_event_visibility(event_type, task)
+            if _should_persist_chat_compat_trace_mirror(
+                event_type=event_type,
+                payload=payload,
+                visibility=effective_visibility_for_bridge,
+            ):
+                payload.setdefault("_bridge", {"persistTraceMirror": True})
+            else:
+                payload.setdefault("_bridge", {"skipTraceMirror": True})
+        elif event_type == "message.completed":
+            payload = dict(payload)
+            bridge = payload.get("_bridge")
+            if isinstance(bridge, dict):
+                payload["_bridge"] = {
+                    **bridge,
+                    "suppressChatReplay": True,
+                    "suppressRealtimeFlat": True,
+                }
+            else:
+                payload["_bridge"] = {
+                    "suppressChatReplay": True,
+                    "suppressRealtimeFlat": True,
+                }
         if event_type.startswith("task."):
             payload = dict(payload)
             payload.setdefault("goal", task.get("goal"))
@@ -1932,6 +2120,7 @@ class PublishingMixin:
         if self._should_drop_event_after_terminal_task(
             task=task,
             event_type=event_type,
+            payload=payload,
             effective_visibility=effective_visibility,
         ):
             return
@@ -1944,26 +2133,15 @@ class PublishingMixin:
             event_type=event_type,
             payload=payload,
         )
-        # Enrich streaming token events with messageId and emit unified message.delta
+        token_delta_payload: dict[str, Any] | None = None
         if event_type == "assistant.token":
             payload = dict(payload)
             active_msg_id = task.get("activeAssistantMessageId")
             if active_msg_id:
                 payload["messageId"] = active_msg_id
             payload["_chatCompat"] = True
-            # Emit the new unified event name alongside the legacy one
-            delta_payload = {**payload}
-            delta_payload.setdefault("messageId", active_msg_id or "")
-            delta_event = RuntimeEvent(
-                event_id=self._store.new_id("evt"),
-                session_id=session_id,
-                task_id=task["id"],
-                type="message.delta",
-                ts=self._store.now(),
-                payload=delta_payload,
-                visibility=effective_visibility,
-            )
-            self._event_bus.publish(delta_event)
+            token_delta_payload = {**payload}
+            token_delta_payload.setdefault("messageId", active_msg_id or "")
         self._publish_chat_compat_for_event(
             session_id=session_id,
             task=task,
@@ -1971,6 +2149,17 @@ class PublishingMixin:
             payload=payload,
             effective_visibility=effective_visibility,
         )
+        if token_delta_payload is not None:
+            delta_event = RuntimeEvent(
+                event_id=self._store.new_id("evt"),
+                session_id=session_id,
+                task_id=task["id"],
+                type="message.delta",
+                ts=self._store.now(),
+                payload=token_delta_payload,
+                visibility=effective_visibility,
+            )
+            self._event_bus.publish(delta_event)
         raw_visibility = self._raw_runtime_event_visibility(event_type, effective_visibility, visibility)
         event = RuntimeEvent(
             event_id=self._store.new_id("evt"),

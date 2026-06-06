@@ -1,28 +1,19 @@
-"""Tests for DecisionAdvisor-wired MetaRouter routing + proposal record creation.
+"""Tests for opt-in DecisionAdvisor routing and proposal records.
 
-Covers:
-  1. MetaRouter with DecisionAdvisor returns routing from LLM advisory.
-  2. MetaRouter falls back to rules when advisor rejects or has no provider.
-  3. Advisor payload with scenario, strategy, or skill_id conversion.
-  4. Orchestrator creates proposal records for routing decisions.
-  5. Existing MetaRouter(provider=None) pattern unaffected.
-  6. agent.decision.routing_strategy event is published.
+Default message routing is model-first ReAct. DecisionAdvisor remains available
+as an explicit routing-advisor mode, but it must not silently rewrite ordinary
+turns into fixed scenarios, skills, workspace evidence gates, or planners.
 """
+
 from __future__ import annotations
 
 import json
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
-from local_agent_runtime.policy.decision_advisor import (
-    AdviceResult,
-    DecisionAdvisor,
-    get_decision_kind,
-)
+from local_agent_runtime.policy.decision_advisor import DecisionAdvisor, get_decision_kind
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.router import MetaRouter, RoutingDecision
 from local_agent_runtime.router.types import ExecutionStrategy, Scenario
@@ -33,15 +24,19 @@ from local_agent_runtime.tools import build_builtin_tools
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 FAKE_PROVIDER_CONFIG = {
     "mode": "mock",
     "apiKey": "sk-test",
     "baseUrl": "https://fake.local/v1",
     "model": "test-model",
+}
+
+ADVISOR_ON_CONTEXT = {
+    "config": {
+        "advisor": {
+            "routingStrategyUseForHighConfidence": True,
+        },
+    },
 }
 
 
@@ -69,10 +64,14 @@ class CapturingProvider:
         return self.response
 
 
-def _make_store(tmp_path: Any) -> SQLiteStore:
+def _make_store(tmp_path: Any, *, advisor_enabled: bool = False) -> SQLiteStore:
     import pathlib
+
     store = SQLiteStore(str(pathlib.Path(str(tmp_path)) / "test.sqlite3"))
-    store.update_config({"config": {"provider": FAKE_PROVIDER_CONFIG}})
+    config: dict[str, Any] = {"provider": FAKE_PROVIDER_CONFIG}
+    if advisor_enabled:
+        config["advisor"] = {"routingStrategyUseForHighConfidence": True}
+    store.update_config({"config": config})
     return store
 
 
@@ -80,8 +79,10 @@ def _make_orchestrator(
     tmp_path: Any,
     provider: Any,
     meta_router: MetaRouter | None = None,
+    *,
+    advisor_enabled: bool = False,
 ) -> tuple[Orchestrator, SQLiteStore, list[dict[str, Any]]]:
-    store = _make_store(tmp_path)
+    store = _make_store(tmp_path, advisor_enabled=advisor_enabled)
     event_bus = EventBus()
     config = store.get_config({})["config"]
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
@@ -102,14 +103,86 @@ def _make_orchestrator(
     return orchestrator, store, events
 
 
-# ---------------------------------------------------------------------------
-# Test: MetaRouter with DecisionAdvisor — accepted routing
-# ---------------------------------------------------------------------------
+def _assert_model_first(result: RoutingDecision) -> None:
+    assert result.scenario == Scenario.FREE_FORM
+    assert result.strategy == ExecutionStrategy.REACT_STANDARD
+    assert result.skill_id is None
+    assert result.enable_planning is False
+    assert result.reasoning.startswith("model-first-default:")
 
-class TestAdvisorRoutingAccepted:
-    """When DecisionAdvisor accepts a routing proposal, MetaRouter uses it."""
 
-    def test_advisor_returns_code_edit_scenario(self) -> None:
+class TestDefaultAdvisorBoundary:
+    """Advisor exists, but normal routing still stays model-first."""
+
+    def test_advisor_is_not_called_by_default(self) -> None:
+        provider = FakeAdvisorProvider(
+            '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
+            '"confidence": 0.92, "rationale": "file edit task"}'
+        )
+        advisor = DecisionAdvisor(provider=provider)
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("configure the settings module")
+
+        _assert_model_first(result)
+        assert router.last_advice is None
+        assert provider.contexts == []
+        assert result.metadata["intentHints"]["ruleCandidate"]["scenario"] == Scenario.FREE_FORM.value
+
+    def test_high_confidence_rule_is_hint_not_skill_route_by_default(self) -> None:
+        provider = FakeAdvisorProvider(
+            '{"proposal": {"scenario": "debug", "strategy": "skill_based"}, '
+            '"confidence": 0.99, "rationale": "debug intent confirmed"}'
+        )
+        advisor = DecisionAdvisor(provider=provider)
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("debug the error")
+
+        _assert_model_first(result)
+        assert provider.contexts == []
+        assert router.last_advice is None
+        candidate = result.metadata["intentHints"]["ruleCandidate"]
+        assert candidate["scenario"] == Scenario.DEBUG.value
+        assert candidate["skill_id"] == "debugger"
+
+    def test_read_only_doc_goal_is_hint_not_doc_write_by_default(self) -> None:
+        provider = FakeAdvisorProvider(
+            '{"proposal": {"scenario": "doc_write", "strategy": "skill_based"}, '
+            '"confidence": 0.96, "rationale": "README mentioned"}'
+        )
+        advisor = DecisionAdvisor(provider=provider)
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("Read README.md and summarize it in one sentence")
+
+        _assert_model_first(result)
+        assert provider.contexts == []
+        assert router.last_advice is None
+        candidate = result.metadata["intentHints"]["ruleCandidate"]
+        assert candidate["scenario"] == Scenario.CODE_SEARCH.value
+
+    def test_greeting_still_uses_minimal_fast_path(self) -> None:
+        provider = FakeAdvisorProvider(
+            '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
+            '"confidence": 0.99, "rationale": "bad overroute"}'
+        )
+        advisor = DecisionAdvisor(provider=provider)
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("\u4f60\u597d")
+
+        assert result.scenario == Scenario.SIMPLE_QUERY
+        assert result.strategy == ExecutionStrategy.REACT_FAST
+        assert "greeting-only" in result.reasoning
+        assert provider.contexts == []
+        assert router.last_advice is None
+
+
+class TestOptInAdvisorRouting:
+    """When explicitly enabled, DecisionAdvisor can still advise routing."""
+
+    def test_advisor_returns_code_edit_scenario_when_enabled(self) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
                 '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
@@ -117,16 +190,17 @@ class TestAdvisorRoutingAccepted:
             )
         )
         router = MetaRouter(provider=None, decision_advisor=advisor)
-        # Use a goal that doesn't match any high-confidence keyword
-        result = router.route("configure the settings module")
+
+        result = router.route("configure the settings module", ADVISOR_ON_CONTEXT)
+
         assert result.scenario == Scenario.CODE_EDIT
-        assert result.confidence == 0.7  # advisor-accepted default
+        assert result.confidence == 0.7
         assert "advisor-match" in result.reasoning
         assert router.last_advice is not None
         assert router.last_advice.accepted is True
         assert router.last_advice.source == "llm"
 
-    def test_advisor_returns_strategy(self) -> None:
+    def test_advisor_returns_strategy_when_enabled(self) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
                 '{"proposal": {"strategy": "react_reflect"}, '
@@ -134,11 +208,13 @@ class TestAdvisorRoutingAccepted:
             )
         )
         router = MetaRouter(provider=None, decision_advisor=advisor)
-        result = router.route("analyze the architecture thoroughly")
+
+        result = router.route("analyze the architecture thoroughly", ADVISOR_ON_CONTEXT)
+
         assert result.strategy == ExecutionStrategy.REACT_WITH_REFLECTION
         assert result.confidence == 0.7
 
-    def test_advisor_returns_skill_id(self) -> None:
+    def test_advisor_returns_skill_id_when_enabled(self) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
                 '{"proposal": {"scenario": "code_edit", "strategy": "react_standard", "skill_id": "edit_skill"}, '
@@ -146,10 +222,12 @@ class TestAdvisorRoutingAccepted:
             )
         )
         router = MetaRouter(provider=None, decision_advisor=advisor)
-        result = router.route("adjust the main configuration")
+
+        result = router.route("adjust the main configuration", ADVISOR_ON_CONTEXT)
+
         assert result.skill_id == "edit_skill"
 
-    def test_advisor_returns_tool_continuation_policy(self, tmp_path: Any) -> None:
+    def test_advisor_returns_tool_continuation_policy_when_enabled(self, tmp_path: Any) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
                 '{"proposal": {"scenario": "code_edit", "strategy": "react_standard", '
@@ -161,7 +239,10 @@ class TestAdvisorRoutingAccepted:
         )
         router = MetaRouter(provider=None, decision_advisor=advisor)
 
-        result = router.route("Delegate one implementation slice, then integrate the returned changes")
+        result = router.route(
+            "Delegate one implementation slice, then integrate the returned changes",
+            ADVISOR_ON_CONTEXT,
+        )
 
         assert result.scenario == Scenario.CODE_EDIT
         assert result.strategy == ExecutionStrategy.REACT_STANDARD
@@ -173,7 +254,91 @@ class TestAdvisorRoutingAccepted:
         assert routing_dict["toolContinuation"]["source"] == "decision_advisor"
         assert routing_dict["toolContinuation"]["allowToolsAfterTaskResults"] is True
 
-    def test_plan_strategy_defaults_to_synthesis_after_child_results(self, tmp_path: Any) -> None:
+    def test_advisor_workspace_evidence_payload_is_ignored_for_model_first_routing(self, tmp_path: Any) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "doc_write", "strategy": "react_standard", '
+                '"workspace_evidence_required": {"required": true, '
+                '"required_tools": ["read_file", "search_files"], '
+                '"reason": "answer must be grounded in repository docs"}}, '
+                '"confidence": 0.86, "rationale": "project progress requires workspace evidence"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("summarize the current project progress", ADVISOR_ON_CONTEXT)
+
+        assert result.scenario == Scenario.DOC_WRITE
+        assert "workspaceEvidenceRequired" not in result.metadata
+        assert "workspace_evidence_required" not in result.metadata
+        orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock(), meta_router=router)
+        routing_dict = orchestrator._routing_dict_from_decision(result)
+        assert "workspaceEvidenceRequired" not in routing_dict.get("profile", {})
+        assert "workspace_evidence_required" not in routing_dict.get("profile", {})
+
+    def test_malformed_advisor_response_falls_back_to_model_first_when_enabled(self) -> None:
+        advisor = DecisionAdvisor(provider=FakeAdvisorProvider("not json at all"))
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("something ambiguous", ADVISOR_ON_CONTEXT)
+
+        _assert_model_first(result)
+        assert router.last_advice is not None
+        assert router.last_advice.accepted is False
+
+    def test_advisor_without_provider_falls_back_to_model_first_when_enabled(self) -> None:
+        advisor = DecisionAdvisor(provider=None)
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("something random xyz", ADVISOR_ON_CONTEXT)
+
+        _assert_model_first(result)
+        assert router.last_advice is not None
+        assert router.last_advice.source == "rule_fallback"
+
+    def test_overplanned_simple_artifact_generation_is_guarded_when_enabled(self) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"}, '
+                '"confidence": 0.95, "rationale": "multiple files and verification"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route(
+            "Generate a technical blog website with index.html, styles.css, and README.md. "
+            "Run a lightweight check after creating the files.",
+            ADVISOR_ON_CONTEXT,
+        )
+
+        assert result.scenario == Scenario.CODE_EDIT
+        assert result.strategy == ExecutionStrategy.REACT_STANDARD
+        assert result.metadata["advisor_candidate"]["scenario"] == "multi_step_task"
+        assert "overplanned" in result.reasoning
+
+    def test_explicit_planning_signal_keeps_advisor_multi_step_when_enabled(self) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"}, '
+                '"confidence": 0.95, "rationale": "user requested planning and phases"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route(
+            "Plan and build a technical blog website with index.html, styles.css, README.md, "
+            "then break down the work into phases.",
+            ADVISOR_ON_CONTEXT,
+        )
+
+        assert result.scenario == Scenario.MULTI_STEP_TASK
+        assert result.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
+
+
+class TestRoutingProfiles:
+    """Workspace evidence stays explicit; plan defaults keep model-directed continuation."""
+
+    def test_plan_strategy_defaults_to_non_recursive_continuation_after_child_results(self, tmp_path: Any) -> None:
         result = RoutingDecision(
             scenario=Scenario.SWARM_TASK,
             strategy=ExecutionStrategy.PLAN_SWARM,
@@ -189,218 +354,21 @@ class TestAdvisorRoutingAccepted:
         routing_dict = orchestrator._routing_dict_from_decision(result)
 
         assert routing_dict["toolContinuation"] == {
-            "allowToolsAfterTaskResults": False,
+            "allowToolsAfterTaskResults": True,
             "allowMoreSubtasksAfterTaskResults": False,
-            "maxTaskToolCalls": 1,
-            "source": "strategy_default_synthesis",
+            "source": "strategy_default_post_task_continuation",
         }
-
-    def test_advisor_returns_workspace_evidence_contract(self, tmp_path: Any) -> None:
-        advisor = DecisionAdvisor(
-            provider=FakeAdvisorProvider(
-                '{"proposal": {"scenario": "doc_write", "strategy": "react_standard", '
-                '"workspace_evidence_required": {"required": true, '
-                '"required_tools": ["read_file", "search_files"], '
-                '"reason": "answer must be grounded in repository docs"}}, '
-                '"confidence": 0.86, "rationale": "project progress requires workspace evidence"}'
-            )
-        )
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-
-        result = router.route("summarize the current project progress")
-
-        assert result.scenario == Scenario.DOC_WRITE
-        assert result.metadata["workspaceEvidenceRequired"]["required"] is True
-        orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock(), meta_router=router)
-        routing_dict = orchestrator._routing_dict_from_decision(result)
-        contract = routing_dict["profile"]["workspaceEvidenceRequired"]
-        assert contract["required"] is True
-        assert contract["requiredTools"] == ["read_file", "search_files"]
-        assert contract["source"] == "decision_advisor"
 
     def test_workspace_grounded_query_does_not_get_implicit_evidence_contract(self, tmp_path: Any) -> None:
         router = MetaRouter(provider=None)
 
-        result = router.route("当前项目任务清单")
+        result = router.route("current project task list")
 
         orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock(), meta_router=router)
-        routing_dict = orchestrator._routing_dict_from_decision(result, context={"goal": "当前项目任务清单"})
+        routing_dict = orchestrator._routing_dict_from_decision(result, context={"goal": "current project task list"})
         profile = routing_dict.get("profile", {})
         assert "workspaceEvidenceRequired" not in profile
 
-    def test_current_progress_query_does_not_get_implicit_evidence_contract(self, tmp_path: Any) -> None:
-        router = MetaRouter(provider=None)
-
-        result = router.route("检查一下当前的进展吧")
-
-        orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock(), meta_router=router)
-        routing_dict = orchestrator._routing_dict_from_decision(result, context={"goal": "检查一下当前的进展吧"})
-        profile = routing_dict.get("profile", {})
-        assert "workspaceEvidenceRequired" not in profile
-
-
-# ---------------------------------------------------------------------------
-# Test: MetaRouter with DecisionAdvisor — rejected / fallback
-# ---------------------------------------------------------------------------
-
-class TestAdvisorRoutingFallback:
-    """When DecisionAdvisor rejects, MetaRouter falls back to rules."""
-
-    def test_advisor_malformed_response_falls_back(self) -> None:
-        advisor = DecisionAdvisor(
-            provider=FakeAdvisorProvider("not json at all")
-        )
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-        result = router.route("something ambiguous")
-        # Should fall back to rule-based routing (FREE_FORM since no keyword match)
-        assert result.scenario == Scenario.FREE_FORM
-        assert router.last_advice is not None
-        assert router.last_advice.accepted is False
-
-    def test_advisor_no_provider_falls_back(self) -> None:
-        advisor = DecisionAdvisor(provider=None)
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-        result = router.route("something random xyz")
-        assert result.scenario == Scenario.FREE_FORM
-        assert router.last_advice is not None
-        assert router.last_advice.source == "rule_fallback"
-
-    def test_high_confidence_rule_still_consults_advisor_by_default(self) -> None:
-        """High-confidence rules become advisor context instead of bypassing LLM."""
-        advisor = DecisionAdvisor(
-            provider=FakeAdvisorProvider(
-                '{"proposal": {"scenario": "debug", "strategy": "skill_based"}, '
-                '"confidence": 0.99, "rationale": "debug intent confirmed"}'
-            )
-        )
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-        result = router.route("debug the error")
-
-        assert result.scenario == Scenario.DEBUG
-        assert "advisor-match" in result.reasoning
-        assert result.metadata["rule_candidate"]["scenario"] == "debug"
-        assert router.last_advice is not None
-        assert router.last_advice.accepted is True
-
-    def test_greeting_only_rule_skips_advisor_to_keep_minimal_context(self) -> None:
-        advisor = DecisionAdvisor(
-            provider=FakeAdvisorProvider(
-                '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
-                '"confidence": 0.99, "rationale": "bad overroute"}'
-            )
-        )
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-
-        result = router.route("\u4f60\u597d")
-
-        assert result.scenario == Scenario.SIMPLE_QUERY
-        assert result.strategy == ExecutionStrategy.REACT_FAST
-        assert "greeting-only" in result.reasoning
-        assert router.last_advice is None
-
-    def test_high_confidence_rule_can_skip_advisor_by_config(self) -> None:
-        """A config flag preserves the old low-cost high-confidence rule path."""
-        advisor = DecisionAdvisor(
-            provider=FakeAdvisorProvider(
-                '{"proposal": {"scenario": "debug", "strategy": "skill_based"}, '
-                '"confidence": 0.99, "rationale": "should not be used"}'
-            )
-        )
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-
-        result = router.route(
-            "debug the error",
-            {"config": {"advisor": {"routingStrategyUseForHighConfidence": False}}},
-        )
-
-        assert result.scenario == Scenario.DEBUG
-        assert "rule-match" in result.reasoning
-        assert router.last_advice is None
-
-    def test_mixed_doc_and_frontend_signals_defer_to_advisor(self) -> None:
-        provider = FakeAdvisorProvider(
-            '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
-            '"confidence": 0.93, "rationale": "static website task with README as supporting docs"}'
-        )
-        advisor = DecisionAdvisor(provider=provider)
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-
-        result = router.route(
-            "Generate a technical blog website with index.html, styles.css, and README.md. "
-            "Run a lightweight check after creating the files."
-        )
-
-        assert result.scenario == Scenario.CODE_EDIT
-        assert result.skill_id is None
-        assert "advisor-match" in result.reasoning
-        assert result.metadata["rule_candidate"]["scenario"] in {"doc_write", "code_edit"}
-        assert router.last_advice is not None
-        assert router.last_advice.accepted is True
-        assert provider.contexts
-        prompt_context = "\n\n".join(message["content"] for message in provider.contexts[0]["messages"])
-        assert "rule_candidate" in prompt_context
-        assert "Do not choose multi_step_task just because" in prompt_context
-        assert "explicitly requires multi-agent work" in prompt_context
-
-    def test_advisor_overplanned_simple_artifact_generation_is_guarded(self) -> None:
-        advisor = DecisionAdvisor(
-            provider=FakeAdvisorProvider(
-                '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"}, '
-                '"confidence": 0.95, "rationale": "multiple files and verification"}'
-            )
-        )
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-
-        result = router.route(
-            "Generate a technical blog website with index.html, styles.css, and README.md. "
-            "Run a lightweight check after creating the files."
-        )
-
-        assert result.scenario == Scenario.CODE_EDIT
-        assert result.strategy == ExecutionStrategy.REACT_STANDARD
-        assert result.metadata["advisor_candidate"]["scenario"] == "multi_step_task"
-        assert "overplanned" in result.reasoning
-
-    def test_explicit_planning_signal_keeps_advisor_multi_step(self) -> None:
-        advisor = DecisionAdvisor(
-            provider=FakeAdvisorProvider(
-                '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"}, '
-                '"confidence": 0.95, "rationale": "user requested planning and phases"}'
-            )
-        )
-        router = MetaRouter(provider=None, decision_advisor=advisor)
-
-        result = router.route(
-            "Plan and build a technical blog website with index.html, styles.css, README.md, "
-            "then break down the work into phases."
-        )
-
-        assert result.scenario == Scenario.MULTI_STEP_TASK
-        assert result.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
-
-
-# ---------------------------------------------------------------------------
-# Test: MetaRouter(provider=None) legacy pattern unaffected
-# ---------------------------------------------------------------------------
-
-class TestLegacyProviderNonePattern:
-    """MetaRouter(provider=None) without advisor still works as before."""
-
-    def test_no_provider_no_advisor_returns_rules(self) -> None:
-        router = MetaRouter(provider=None)
-        result = router.route("adjust the configuration module")
-        assert result.scenario == Scenario.FREE_FORM  # no keyword match
-        assert router.last_advice is None
-
-    def test_no_provider_no_advisor_free_form(self) -> None:
-        router = MetaRouter(provider=None)
-        result = router.route("something weird xyz")
-        assert result.scenario == Scenario.FREE_FORM
-
-
-# ---------------------------------------------------------------------------
-# Test: DecisionAdvisor routing_strategy registry entry
-# ---------------------------------------------------------------------------
 
 class TestRoutingStrategyRegistry:
     """Verify routing_strategy decision kind is properly registered."""
@@ -415,15 +383,10 @@ class TestRoutingStrategyRegistry:
         assert entry.trace_event == "agent.decision.routing_strategy"
 
 
-# ---------------------------------------------------------------------------
-# Test: Orchestrator creates proposal records
-# ---------------------------------------------------------------------------
-
 class TestOrchestratorProposalRecords:
-    """When Orchestrator routes via DecisionAdvisor, it creates proposal records."""
+    """Proposal records are created only when routing advisory is enabled."""
 
-    def test_routing_creates_proposal_record(self, tmp_path: Any) -> None:
-        # Advisor returns code_edit routing (must include "strategy" for validation)
+    def test_routing_creates_proposal_record_when_enabled(self, tmp_path: Any) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
                 '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
@@ -432,10 +395,8 @@ class TestOrchestratorProposalRecords:
         )
         router = MetaRouter(provider=None, decision_advisor=advisor)
 
-        # Provider returns tool call then final answer
         mock_provider = MagicMock()
         mock_provider.generate.side_effect = [
-            # ReAct loop: tool call
             {
                 "message": json.dumps({
                     "role": "assistant",
@@ -451,41 +412,33 @@ class TestOrchestratorProposalRecords:
                 }),
                 "usage": {"total_tokens": 50},
             },
-            # ReAct loop: final answer
             {
-                "message": json.dumps({
-                    "role": "assistant",
-                    "content": "Done.",
-                }),
+                "final": "Done.",
                 "usage": {"total_tokens": 60},
             },
         ]
         mock_provider.stream = MagicMock(side_effect=AttributeError("no stream"))
 
         orchestrator, store, events = _make_orchestrator(
-            tmp_path, mock_provider, meta_router=router,
+            tmp_path,
+            mock_provider,
+            meta_router=router,
+            advisor_enabled=True,
         )
         try:
-            # Create workspace + session using store direct API
-            import pathlib, subprocess
+            import pathlib
+            import subprocess
+
             ws = pathlib.Path(str(tmp_path)) / "workspace"
             ws.mkdir()
             subprocess.run(["git", "init", str(ws)], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(ws), "config", "user.email", "t@t.com"],
-                           check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(ws), "config", "user.name", "T"],
-                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(ws), "config", "user.email", "t@t.com"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(ws), "config", "user.name", "T"], check=True, capture_output=True)
             (ws / "config.txt").write_text("hello", encoding="utf-8")
 
             workspace = store.upsert_workspace(str(ws))
-            session = store.create_session(
-                workspace_id=workspace["id"], title="proposal-check",
-            )
+            session = store.create_session(workspace_id=workspace["id"], title="proposal-check")
 
-            # Send message (triggers routing via advisor)
-            # Use a goal that does NOT match any high-confidence keyword rules,
-            # so the advisor path is exercised.
-            from local_agent_runtime.rpc.server import JsonRpcServer
             rpc_bus = EventBus()
             server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=rpc_bus)
             envelope = {
@@ -497,28 +450,51 @@ class TestOrchestratorProposalRecords:
             response = server.handle_line(json.dumps(envelope))
             task_id = response["result"]["task"]["id"]
 
-            # Check proposal record was created
-            proposals = store.list_proposals({
-                "sessionId": session["id"],
-                "taskId": task_id,
-            })
-            assert len(proposals.get("proposals", [])) >= 1
+            proposals = store.list_proposals({"sessionId": session["id"], "taskId": task_id})
             routing_proposal = next(
-                (p for p in proposals["proposals"] if p["kind"] == "routing_strategy"),
+                (p for p in proposals.get("proposals", []) if p["kind"] == "routing_strategy"),
                 None,
             )
             assert routing_proposal is not None
             assert routing_proposal["status"] == "accepted"
             assert routing_proposal["proposal"]["scenario"] == "code_edit"
 
-            # Check agent.decision event was published
-            decision_events = [
-                e for e in events
-                if e.get("type") == "agent.decision.routing_strategy"
-            ]
-            assert len(decision_events) >= 1
+            decision_events = [e for e in events if e.get("type") == "agent.decision.routing_strategy"]
+            assert decision_events
             assert decision_events[0]["payload"]["outcome"] == "accepted"
             assert decision_events[0]["payload"]["scenario"] == "code_edit"
+        finally:
+            store.close()
+
+    def test_no_routing_proposal_record_by_default(self, tmp_path: Any) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
+                '"confidence": 0.90, "rationale": "file edit task"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+        provider = CapturingProvider({"final": "Done."})
+        orchestrator, store, events = _make_orchestrator(tmp_path, provider=provider, meta_router=router)
+        try:
+            workspace_root = tmp_path / "workspace"
+            workspace_root.mkdir(exist_ok=True)
+            workspace = store.upsert_workspace(str(workspace_root))
+            session = store.create_session(workspace_id=workspace["id"], title="proposal-default")
+            server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=EventBus())
+
+            response = server.handle_line(json.dumps({
+                "jsonrpc": "2.0",
+                "id": "req_default",
+                "method": "message.send",
+                "params": {"sessionId": session["id"], "content": "adjust the main configuration"},
+            }))
+            task_id = response["result"]["task"]["id"]
+
+            assert provider.calls
+            proposals = store.list_proposals({"sessionId": session["id"], "taskId": task_id})
+            assert proposals["proposals"] == []
+            assert not [e for e in events if e.get("type") == "agent.decision.routing_strategy"]
         finally:
             store.close()
 
@@ -527,14 +503,10 @@ class TestOrchestratorProposalRecords:
             '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
             '"confidence": 0.99, "rationale": "bad overroute"}'
         )
-        advisor = DecisionAdvisor(
-            provider=advisor_provider
-        )
+        advisor = DecisionAdvisor(provider=advisor_provider)
         router = MetaRouter(provider=None, decision_advisor=advisor)
         provider = CapturingProvider({"final": "hello"})
-        orchestrator, store, _events = _make_orchestrator(
-            tmp_path, provider=provider, meta_router=router,
-        )
+        orchestrator, store, _events = _make_orchestrator(tmp_path, provider=provider, meta_router=router)
         try:
             workspace_root = tmp_path / "workspace"
             workspace_root.mkdir(exist_ok=True)
@@ -544,18 +516,15 @@ class TestOrchestratorProposalRecords:
             )
             workspace = store.upsert_workspace(str(workspace_root))
             session = store.create_session(workspace_id=workspace["id"], title="advisor greeting")
-            rpc_bus = EventBus()
-            server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=rpc_bus)
-            envelope = {
+            server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=EventBus())
+
+            response = server.handle_line(json.dumps({
                 "jsonrpc": "2.0",
                 "id": "req_greeting",
                 "method": "message.send",
                 "params": {"sessionId": session["id"], "content": "\u4f60\u597d"},
-            }
+            }))
 
-            response = server.handle_line(json.dumps(envelope))
-
-            assert "result" in response, response
             task = response["result"]["task"]
             assert task["routing"]["contextMode"] == "minimal"
             assert provider.calls
@@ -570,7 +539,7 @@ class TestOrchestratorProposalRecords:
         finally:
             store.close()
 
-    def test_rejected_routing_proposal_records_advisor_payload(self, tmp_path: Any) -> None:
+    def test_rejected_routing_proposal_records_advisor_payload_when_enabled(self, tmp_path: Any) -> None:
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
                 '{"proposal": {"scenario": "code_edit", "strategy": "teleport"}, '
@@ -578,9 +547,12 @@ class TestOrchestratorProposalRecords:
             )
         )
         router = MetaRouter(provider=None, decision_advisor=advisor)
-        routing = router.route("adjust the main configuration")
+        routing = router.route("adjust the main configuration", ADVISOR_ON_CONTEXT)
         orchestrator, store, _events = _make_orchestrator(
-            tmp_path, provider=MagicMock(), meta_router=router,
+            tmp_path,
+            provider=MagicMock(),
+            meta_router=router,
+            advisor_enabled=True,
         )
         try:
             workspace = store.upsert_workspace(str(tmp_path))
@@ -601,10 +573,7 @@ class TestOrchestratorProposalRecords:
                 routing_dict=routing_dict,
             )
 
-            proposals = store.list_proposals({
-                "taskId": task["id"],
-                "kind": "routing_strategy",
-            })["proposals"]
+            proposals = store.list_proposals({"taskId": task["id"], "kind": "routing_strategy"})["proposals"]
             assert len(proposals) == 1
             proposal = proposals[0]
             assert proposal["status"] == "rejected"

@@ -706,7 +706,7 @@ class TestFailedChildVisibleInReport:
 class TestEventVisibilityRouting:
     """P11: Event visibility routing - chat/panel/trace."""
 
-    def test_root_streaming_is_chat_visibility(self):
+    def test_root_assistant_token_derives_chat_text_but_raw_event_is_trace(self):
         store = _make_store()
         data = _setup_multi_agent_scenario(store)
 
@@ -714,6 +714,7 @@ class TestEventVisibilityRouting:
         task = {"id": data["parent_task"]["id"], "role": "root"}
         vis = Orchestrator._infer_event_visibility("assistant.token", task)
         assert vis == "chat"
+        assert Orchestrator._raw_runtime_event_visibility("assistant.token", vis, None) == "trace"
 
     def test_root_message_delta_is_chat(self):
         from local_agent_runtime.orchestrator.service import Orchestrator

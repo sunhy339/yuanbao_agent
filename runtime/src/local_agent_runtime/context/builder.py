@@ -56,6 +56,7 @@ DEFAULT_MAX_CONTEXT_TOKENS = 256000
 
 DEFAULT_TOOL_SCHEMAS = BUILTIN_TOOL_SCHEMAS
 CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question", "enter_plan_mode", "exit_plan_mode"})
+DEFAULT_CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question"})
 DEFAULT_CANONICAL_MEMORY_FILES = (
     "YUANBAO.md",
     "MEMORY.md",
@@ -108,6 +109,8 @@ class ContextBuilder(HistoryMixin):
 
     _DEFAULT_PROMPT_CACHE_POLICY = {
         "enabled": True,
+        "includeKeyFiles": False,
+        "includeStableWorkspaceContext": False,
         "targetFillRatio": 0.92,
         "maxStableContextTokens": 240000,
         "recentMessages": 256,
@@ -192,7 +195,7 @@ class ContextBuilder(HistoryMixin):
                 for t in tools:
                     if t.get("name", "").startswith(("memory.", "scratchpad.", "mcp__")):
                         whitelist.add(t["name"])
-                    if t.get("name") in CONTROL_FLOW_TOOL_NAMES:
+                    if t.get("name") in DEFAULT_CONTROL_FLOW_TOOL_NAMES:
                         whitelist.add(t["name"])
                 filtered_tool_names = [t.get("name", "") for t in tools if t.get("name") in whitelist]
                 tools = [t for t in tools if t.get("name") in whitelist]
@@ -203,7 +206,7 @@ class ContextBuilder(HistoryMixin):
                 for t in tools:
                     if t.get("name", "").startswith(("memory.", "scratchpad.")):
                         whitelist.add(t["name"])
-                    if t.get("name") in CONTROL_FLOW_TOOL_NAMES:
+                    if t.get("name") in DEFAULT_CONTROL_FLOW_TOOL_NAMES:
                         whitelist.add(t["name"])
                 filtered_tool_names = [t.get("name", "") for t in tools if t.get("name") in whitelist]
                 tools = [t for t in tools if t.get("name") in whitelist]
@@ -369,13 +372,15 @@ class ContextBuilder(HistoryMixin):
         project_memory = None if minimal else self._workspace_memory_section(workspace)
         if project_memory:
             sections.append(project_memory)
-        if not minimal:
+        if not minimal and cache_policy.get("includeKeyFiles") is True:
             sections.extend(self._key_file_sections(workspace["rootPath"], cache_policy=cache_policy))
-        stable_pack = None if minimal else self._stable_workspace_context_pack(
-            workspace["rootPath"],
-            cache_policy=cache_policy,
-            reserved_tokens=tool_schema_tokens + estimate_tokens(goal) + 2000,
-        )
+        stable_pack = None
+        if not minimal and cache_policy.get("includeStableWorkspaceContext") is True:
+            stable_pack = self._stable_workspace_context_pack(
+                workspace["rootPath"],
+                cache_policy=cache_policy,
+                reserved_tokens=tool_schema_tokens + estimate_tokens(goal) + 2000,
+            )
         if stable_pack is not None:
             sections.append(stable_pack)
         if role_text:
@@ -494,6 +499,8 @@ class ContextBuilder(HistoryMixin):
             "dynamicTailSections": [section.name for section in dynamic_context_sections],
             "promptCache": {
                 "enabled": bool(cache_policy.get("enabled")),
+                "includeKeyFiles": bool(cache_policy.get("includeKeyFiles")),
+                "includeStableWorkspaceContext": bool(cache_policy.get("includeStableWorkspaceContext")),
                 "targetFillRatio": cache_policy.get("targetFillRatio"),
                 "targetContextTokens": cache_policy.get("targetContextTokens"),
                 "maxStableContextTokens": cache_policy.get("maxStableContextTokens"),

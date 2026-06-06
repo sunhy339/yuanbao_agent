@@ -59,6 +59,8 @@ DEFAULT_CONFIG = {
         "maxContextTokens": 256000,
         "promptCache": {
             "enabled": True,
+            "includeKeyFiles": False,
+            "includeStableWorkspaceContext": False,
             "targetFillRatio": 0.92,
             "maxStableContextTokens": 240000,
             "recentMessages": 256,
@@ -92,6 +94,8 @@ DEFAULT_CONFIG = {
                 "maxContextTokens": 256000,
                 "promptCache": {
                     "enabled": True,
+                    "includeKeyFiles": False,
+                    "includeStableWorkspaceContext": False,
                     "targetFillRatio": 0.92,
                     "maxStableContextTokens": 240000,
                     "recentMessages": 256,

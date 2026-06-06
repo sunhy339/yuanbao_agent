@@ -673,6 +673,107 @@
   color: #fff;
 }
 
+.hc-runtime-child-tasks {
+  margin-bottom: 8px;
+  border: 1px solid var(--hc-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--hc-text);
+}
+
+.hc-runtime-child-tasks summary {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.hc-runtime-child-tasks summary::-webkit-details-marker {
+  display: none;
+}
+
+.hc-runtime-child-tasks summary strong {
+  font-size: 13px;
+}
+
+.hc-runtime-child-tasks summary span:not(.hc-runtime-child-dot),
+.hc-runtime-child-tasks summary em {
+  border: 1px solid var(--hc-line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--hc-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.hc-runtime-child-dot,
+.hc-runtime-child-state {
+  display: inline-flex;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #9aa7b5;
+}
+
+.hc-runtime-child-tasks ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  border-top: 1px solid var(--hc-line);
+  padding: 8px 10px 10px;
+  list-style: none;
+}
+
+.hc-runtime-child-tasks li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  color: var(--hc-muted);
+  font-size: 12px;
+}
+
+.hc-runtime-child-tasks li[data-state="completed"] .hc-runtime-child-state {
+  background: #24985a;
+}
+
+.hc-runtime-child-tasks li[data-state="active"] .hc-runtime-child-state,
+.hc-runtime-child-tasks li[data-state="pending"] .hc-runtime-child-state {
+  background: #c7781f;
+}
+
+.hc-runtime-child-tasks li[data-state="warning"] .hc-runtime-child-state {
+  background: #c7781f;
+}
+
+.hc-runtime-child-tasks li[data-state="failed"] .hc-runtime-child-state {
+  background: #c94a3c;
+}
+
+.hc-runtime-child-tasks li div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hc-runtime-child-tasks li strong {
+  overflow: hidden;
+  color: var(--hc-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-runtime-child-tasks li small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hc-composer-toolbar,
 .hc-toolbar-left,
 .hc-toolbar-right {

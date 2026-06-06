@@ -655,28 +655,6 @@ def validate_routing_strategy(payload: dict[str, Any]) -> list[str]:
             rationale = continuation.get("rationale")
             if rationale is not None and not isinstance(rationale, str):
                 reasons.append("tool_continuation.rationale must be a string when provided")
-    continuation = continuation if continuation is not None else camel_continuation
-    workspace_evidence = payload.get("workspace_evidence_required")
-    camel_workspace_evidence = payload.get("workspaceEvidenceRequired")
-    if workspace_evidence is not None and camel_workspace_evidence is not None:
-        reasons.append("Provide only one of workspace_evidence_required or workspaceEvidenceRequired")
-        return reasons
-    workspace_evidence = workspace_evidence if workspace_evidence is not None else camel_workspace_evidence
-    if workspace_evidence is None:
-        return reasons
-    if isinstance(workspace_evidence, bool):
-        return reasons
-    if not isinstance(workspace_evidence, dict):
-        reasons.append("workspace_evidence_required must be a boolean or object when provided")
-        return reasons
-    required = workspace_evidence.get("required")
-    if required is not None and not isinstance(required, bool):
-        reasons.append("workspace_evidence_required.required must be a boolean when provided")
-    required_tools = workspace_evidence.get("requiredTools")
-    if required_tools is None:
-        required_tools = workspace_evidence.get("required_tools")
-    if required_tools is not None and not isinstance(required_tools, list):
-        reasons.append("workspace_evidence_required.requiredTools must be a list when provided")
     return reasons
 
 

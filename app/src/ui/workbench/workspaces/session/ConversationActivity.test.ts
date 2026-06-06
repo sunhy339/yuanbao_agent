@@ -3,7 +3,7 @@ import { buildConversationActivity } from "./ConversationActivity";
 import type { RuntimeTimelineItem } from "./types";
 
 describe("buildConversationActivity", () => {
-  it("folds context probes and verification commands into one worklog", () => {
+  it("folds context probes while keeping verification commands visible", () => {
     const runtimeItems: RuntimeTimelineItem[] = [
       {
         id: "command:rg",
@@ -37,7 +37,7 @@ describe("buildConversationActivity", () => {
 
     const items = buildConversationActivity([], runtimeItems);
 
-    expect(items).toHaveLength(1);
+    expect(items).toHaveLength(2);
     expect(items[0]?.kind).toBe("worklog");
     if (items[0]?.kind !== "worklog") {
       throw new Error("Expected runtime items to collapse into a worklog");
@@ -46,8 +46,9 @@ describe("buildConversationActivity", () => {
       "command:rg",
       "command:get-content",
       "command:git-show",
-      "command:typecheck",
     ]);
+    expect(items[1]?.kind).toBe("runtime");
+    expect(items[1]?.kind === "runtime" ? items[1].runtime.id : "").toBe("command:typecheck");
   });
 
   it("folds successful routine git mutations into the worklog", () => {

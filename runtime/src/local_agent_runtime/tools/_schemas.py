@@ -233,7 +233,9 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "ask_user_question",
         "description": (
             "Ask the user for missing information and pause the current task until they answer. "
-            "Use this when a decision, requirement, credential, preference, or scope choice cannot be inferred safely."
+            "Use this only when a requirement, credential, permission, destructive decision, or blocking scope choice "
+            "cannot be inferred safely. Do not use it for low-risk style, ordering, output-format, or reading-order "
+            "preferences; choose a sensible default and continue."
         ),
         "input_schema": {
             "type": "object",
@@ -346,7 +348,7 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         ],
         "metadata": {
             "rate_limit": None,
-            "cost_per_use": 0,
+            "cost_per_use": 1,
             "estimated_duration_ms": 1000,
         },
     },
@@ -383,7 +385,7 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         ],
         "metadata": {
             "rate_limit": None,
-            "cost_per_use": 0,
+            "cost_per_use": 1,
             "estimated_duration_ms": 1000,
         },
     },
@@ -473,36 +475,45 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         ],
         "metadata": {
             "rate_limit": None,
-            "cost_per_use": 0,
+            "cost_per_use": 1,
             "estimated_duration_ms": 1000,
         },
     },
     {
         "name": "agent",
         "description": (
-            "Delegate a focused job to a child agent. This is the Claude Code style AgentTool wrapper over the "
-            "runtime child-task system; it records a child task, runs it through the subagent boundary, and returns "
-            "the child result."
+            "Launch a focused child agent for independent research, review, summarization, or bounded implementation. "
+            "Use this when the user asks for multiple agents, when work can be parallelized, or when a deep investigation "
+            "would otherwise fill the main context. Do not duplicate work already delegated to a child agent."
         ),
         "input_schema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "description": _string_property(
+                    "Short 3-8 word label shown for the delegated agent task.",
+                    examples=["Inspect project structure", "Review game state flow"],
+                ),
                 "prompt": _string_property(
-                    "Instruction for the child agent.",
+                    "The complete task for the child agent to perform. Keep it focused and include any read-only/write constraints.",
                     examples=["Inspect the current docs structure and summarize missing sections."],
                 ),
+                "subagent_type": _string_property(
+                    "Type of specialized agent to use.",
+                    default="explorer",
+                    examples=["explorer", "analyst", "coder", "reviewer", "summarizer"],
+                ),
                 "agent_type": _string_property(
-                    "Child agent role.",
+                    "Compatibility alias for subagent_type.",
                     default="explorer",
                     examples=["explorer", "analyst", "coder", "reviewer", "summarizer"],
                 ),
                 "agentType": _string_property(
-                    "Camel-case compatibility alias for agent_type.",
+                    "Camel-case compatibility alias for subagent_type.",
                     default="explorer",
                 ),
                 "title": _string_property(
-                    "Optional short title for the delegated job.",
+                    "Optional short title for the delegated job. Prefer description when available.",
                     examples=["Inspect docs structure"],
                 ),
                 "cwd": _string_property(
@@ -560,6 +571,7 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
+            "When the user explicitly asks to use multiple agents, call agent for the independent parts instead of only saying you used agent perspectives.",
             "Use this for focused investigation, review, summarization, or bounded implementation subtasks.",
             "Prefer the default read-only allowlist unless the child agent must edit files.",
         ],
@@ -572,20 +584,29 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "task",
         "description": (
-            "Create and execute a child collaboration task inline. The runtime records a child task, claims an "
-            "agent worker, marks the task completed, and returns the child task result."
+            "Create and execute a structured child task inline. Use this for a specific delegated subtask that should "
+            "show up as task/team progress, especially in multi-agent or collaboration-style work."
         ),
         "input_schema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "description": _string_property(
+                    "Short 3-8 word label shown for the child task.",
+                    examples=["Inspect routing", "Verify replay"],
+                ),
                 "prompt": _string_property(
                     "Instruction for the child collaboration task.",
                     examples=["Investigate the failing formatter command and summarize the cause."],
                 ),
                 "title": _string_property(
-                    "Optional short title for the child task.",
+                    "Optional short title for the child task. Prefer description when available.",
                     examples=["Investigate formatter failure"],
+                ),
+                "subagent_type": _string_property(
+                    "Compatibility alias for the child worker role.",
+                    default="explorer",
+                    examples=["explorer", "analyst", "coder", "reviewer", "summarizer"],
                 ),
                 "agentType": _string_property(
                     "Optional worker role used to name the child collaboration worker.",

@@ -133,7 +133,9 @@ class EventStoreMixin:
             if (
                 isinstance(bridge, dict)
                 and bool(bridge.get("suppressRealtimeFlat"))
+                and not bool(bridge.get("persistTraceMirror"))
                 and "suppressChatReplay" not in bridge
+                and normalized_type != "message.delta"
             ):
                 payload = {
                     **payload,

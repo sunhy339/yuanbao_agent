@@ -99,11 +99,10 @@ describe("AppShell", () => {
     expect(screen.queryByRole("button", { name: "总览" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建会话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "打开 MCP 中心" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "打开智能体技能" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "打开设置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "MCP" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
     expect(screen.getByLabelText("桌面标题栏")).toHaveTextContent("Yuanbao Agent");
-    expect(screen.getByRole("tab", { name: "新建会话" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "标签页 新建会话" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("workspace content")).toBeInTheDocument();
     expect(screen.getByLabelText("任务指令")).toBeInTheDocument();
     expect(document.querySelector(".sidebar-footer")).not.toBeInTheDocument();
@@ -138,8 +137,7 @@ describe("AppShell", () => {
       </AppShell>,
     );
 
-    const form = document.querySelector("form.composer-dock-hidden");
-    expect(form).toBeTruthy();
+    expect(screen.queryByLabelText("消息输入")).not.toBeInTheDocument();
   });
 
   it("uses the session composer layout from the active tab kind", () => {
@@ -174,7 +172,7 @@ describe("AppShell", () => {
       </AppShell>,
     );
 
-    expect(document.querySelector("form.composer-dock")).toHaveAttribute("data-layout", "session");
+    expect(document.querySelector("form.hc-composer")).toHaveAttribute("data-variant", "session");
   });
 
   it("opens the composer model menu and switches model", async () => {
@@ -209,16 +207,16 @@ describe("AppShell", () => {
     const handlers = renderShell({ sending: true, promptValue: "Add this detail" });
     const user = userEvent.setup();
 
-    const stopButton = document.querySelector<HTMLButtonElement>(".composer-stop");
+    const stopButton = document.querySelector<HTMLButtonElement>(".hc-stop");
     expect(stopButton).toBeInTheDocument();
     expect(stopButton).not.toBeDisabled();
-    expect(screen.getByRole("textbox")).not.toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "任务指令" })).not.toBeDisabled();
 
     await user.click(stopButton!);
 
     expect(handlers.onStopPrompt).toHaveBeenCalledOnce();
 
-    const submitButton = document.querySelector<HTMLButtonElement>(".composer-run");
+    const submitButton = document.querySelector<HTMLButtonElement>(".hc-send");
     expect(submitButton).toBeInTheDocument();
     expect(submitButton).not.toBeDisabled();
 
@@ -232,13 +230,12 @@ describe("AppShell", () => {
     const user = userEvent.setup();
 
     const queueButton = screen.getByRole("button", { name: /暂存/ });
-    expect(screen.getByRole("button", { name: "引导" })).toBeInTheDocument();
-    expect(queueButton).toHaveTextContent("暂存待发");
+    expect(queueButton).toHaveTextContent("暂存");
     expect(queueButton).not.toBeDisabled();
 
     await user.click(queueButton);
 
-    expect(handlers.onQueuePrompt).toHaveBeenCalledOnce();
+    expect(handlers.onQueuePrompt).toHaveBeenCalledWith("queued");
     expect(handlers.onSubmitPrompt).not.toHaveBeenCalled();
   });
 
@@ -249,19 +246,18 @@ describe("AppShell", () => {
     });
     const user = userEvent.setup();
 
-    const permissionButton = document.querySelector<HTMLButtonElement>(".composer-permission-button");
+    const permissionButton = document.querySelector<HTMLButtonElement>(".hc-permission");
     expect(permissionButton).toBeInTheDocument();
 
     await user.click(permissionButton!);
 
-    const menu = document.querySelector<HTMLElement>(".composer-permission-menu");
-    expect(menu).toBeInTheDocument();
-    const options = within(menu!).getAllByRole("menuitemradio");
+    const menu = screen.getByRole("menu", { name: "选择权限模式" });
+    const options = within(menu).getAllByRole("menuitemradio");
     expect(options).toHaveLength(4);
 
-    await user.click(options[3]);
+    await user.click(within(menu).getByRole("menuitemradio", { name: /计划模式/ }));
 
-    expect(handlers.onPermissionModeChange).toHaveBeenCalledWith("skip");
+    expect(handlers.onPermissionModeChange).toHaveBeenCalledWith("plan");
   });
 
   it("shows queued prompts and lets the user guide, reorder, and delete them", async () => {
@@ -274,22 +270,22 @@ describe("AppShell", () => {
     });
     const user = userEvent.setup();
 
-    const queue = document.querySelector<HTMLElement>(".composer-queued-prompts");
+    const queue = screen.getByLabelText("待发送内容");
     expect(queue).toBeInTheDocument();
-    expect(within(queue!).getByText("This output needs one more pass.")).toBeInTheDocument();
-    expect(within(queue!).getByText("Then inspect the file panel.")).toBeInTheDocument();
+    expect(within(queue).getByText("This output needs one more pass.")).toBeInTheDocument();
+    expect(within(queue).getByText("Then inspect the file panel.")).toBeInTheDocument();
 
-    const guideButton = queue!.querySelector<HTMLButtonElement>(".composer-queued-guide");
+    const guideButton = within(queue).getAllByRole("button", { name: "引导" })[0];
     expect(guideButton).toBeInTheDocument();
     expect(guideButton).not.toBeDisabled();
-    await user.click(guideButton!);
+    await user.click(guideButton);
     expect(handlers.onGuideQueuedPrompt).toHaveBeenCalledWith("queued_one");
 
-    const moveDownButton = within(queue!).getAllByRole("button", { name: /下移|涓嬬Щ/ })[0];
+    const moveDownButton = within(queue).getAllByRole("button", { name: "下移" })[0];
     await user.click(moveDownButton);
     expect(handlers.onQueuedPromptMove).toHaveBeenCalledWith("queued_one", "down");
 
-    const deleteButton = within(queue!).getAllByRole("button", { name: /删除|鍒犻櫎/ })[0];
+    const deleteButton = within(queue).getAllByRole("button", { name: "删除待发送内容" })[0];
     await user.click(deleteButton);
     expect(handlers.onQueuedPromptRemove).toHaveBeenCalledWith("queued_one");
   });
@@ -311,9 +307,9 @@ describe("AppShell", () => {
     expect(within(checklist).getByText("Verify gameplay loop")).toBeInTheDocument();
     expect(within(checklist).getByText(/Worker 1/)).toBeInTheDocument();
 
-    const nodes = Array.from(document.querySelectorAll(".composer-runtime-child-tasks, .composer-input"));
+    const nodes = Array.from(document.querySelectorAll(".hc-runtime-child-tasks, .hc-composer-card"));
     expect(nodes[0]).toBe(checklist);
-    expect(nodes[1]).toBe(input.closest(".composer-input"));
+    expect(nodes[1]).toBe(input.closest(".hc-composer-card"));
   });
 
   it("marks completed child tasks with attention separately from clean completions", () => {
@@ -399,11 +395,12 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "新建会话" }));
     await user.click(screen.getByRole("button", { name: "设置" }));
-    await user.click(screen.getByRole("button", { name: "打开智能体技能" }));
-    await user.click(screen.getByRole("button", { name: "打开设置" }));
-    await user.click(screen.getByRole("button", { name: /Repair failing tests/ }));
+    await user.click(screen.getByRole("button", { name: "Skills" }));
+    await user.click(screen.getByRole("button", { name: "MCP" }));
+    await user.click(screen.getByRole("button", { name: "打开会话 Repair failing tests" }));
 
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("new-session");
+    expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("mcp");
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("skills");
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("settings");
     expect(handlers.onOpenSessionTab).toHaveBeenCalledWith(sessions[0]);

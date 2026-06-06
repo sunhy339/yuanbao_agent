@@ -273,8 +273,8 @@ class TestContextBuilderStrictWhitelist:
         assert "memory.remember" in tool_names
         assert "scratchpad.write" in tool_names
         assert "ask_user_question" in tool_names
-        assert "enter_plan_mode" in tool_names
-        assert "exit_plan_mode" in tool_names
+        assert "enter_plan_mode" not in tool_names
+        assert "exit_plan_mode" not in tool_names
         # These should NOT be present
         assert "write_file" not in tool_names
         assert "run_command" not in tool_names

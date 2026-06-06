@@ -189,7 +189,7 @@ describe("CleanComposer", () => {
     await user.click(screen.getByRole("button", { name: /询问权限/ }));
     const permissionPanel = screen.getByText("写入、命令和高风险操作前先确认。").closest(".hc-popover");
     expect(permissionPanel).toBeInTheDocument();
-    await user.click(within(permissionPanel as HTMLElement).getByRole("button", { name: /完全访问权限/ }));
+    await user.click(within(permissionPanel as HTMLElement).getByRole("menuitemradio", { name: /完全访问权限/ }));
     expect(handlers.onPermissionModeChange).not.toHaveBeenCalled();
     expect(within(permissionPanel as HTMLElement).getByText("确认完全访问权限？")).toBeInTheDocument();
 

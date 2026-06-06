@@ -23,8 +23,6 @@ _SYSTEM_NOTIFICATION_EVENT_TYPES = {
     "init",
     "compact_boundary",
     "compact_summary",
-    "goal_event",
-    "memory_event",
     "background_task",
     "session_state_changed",
     "task_started",
@@ -65,7 +63,6 @@ _SYSTEM_NOTIFICATION_SUBTYPES = {
     "task_started",
     "task_progress",
     "session_state_changed",
-    "goal_event",
 }
 
 _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
@@ -397,6 +394,8 @@ def _error_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[str, An
 
 
 def _task_update_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[str, Any]:
+    if not _should_emit_task_update(event, payload):
+        return {}
     task_id = payload.get("taskId") or event.task_id
     status = payload.get("status")
     if not status:
@@ -415,8 +414,50 @@ def _task_update_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[s
         "status": str(status),
     }
     if progress:
-        message["progress"] = str(progress)
+        message["progress"] = _truncate_text(str(progress), 500)
     return message
+
+
+def _should_emit_task_update(event: RuntimeEvent, payload: dict[str, Any]) -> bool:
+    if event.type == "task.routing.decided":
+        return False
+    if event.type in {"task.failed", "task.cancelled", "task.runtime_work_waiting"}:
+        return True
+    if event.type == "task.created":
+        return _is_collaboration_child_task_event(event, payload)
+    if event.type == "task.updated":
+        return _is_collaboration_child_task_event(event, payload)
+    return False
+
+
+def _is_collaboration_child_task_event(event: RuntimeEvent, payload: dict[str, Any]) -> bool:
+    if payload.get("source") == "collaboration" or payload.get("taskKind") == "collaboration_child":
+        return True
+    task_id = _string_value(payload.get("taskId"), payload.get("task_id"), event.task_id)
+    return task_id.startswith("ctask_")
+
+
+def _task_update_has_user_visible_progress(payload: dict[str, Any]) -> bool:
+    for key in (
+        "currentStep",
+        "detail",
+        "summary",
+        "resultSummary",
+        "changedFiles",
+        "commands",
+        "verification",
+        "progress",
+        "message",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, (list, tuple, set)) and len(value) > 0:
+            return True
+        if isinstance(value, dict) and len(value) > 0:
+            return True
+    plan = payload.get("plan")
+    return isinstance(plan, list) and any(isinstance(item, dict) and item.get("status") for item in plan)
 
 
 def _team_message(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -721,10 +762,6 @@ def _system_notification_subtype(event_type: str, payload: dict[str, Any]) -> st
         return event_type
     if event_type == "compact_summary":
         return "compact_summary"
-    if event_type == "goal_event":
-        return "goal_event"
-    if event_type == "memory_event":
-        return "memory_saved"
     if event_type == "background_task":
         status = str(payload.get("status") or payload.get("state") or "").strip().lower()
         return "task_started" if status in _TASK_STARTED_STATUSES else "task_progress"

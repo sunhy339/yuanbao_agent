@@ -214,6 +214,7 @@ def test_failed_events_map_to_haha_cc_error_and_task_update_messages() -> None:
         _event(
             "task.failed",
             {
+                "goal": "Run cleanup",
                 "resultSummary": "Task failed after approval was rejected.",
                 "error": {"code": "APPROVAL_REJECTED", "retryable": False},
             },
@@ -227,18 +228,26 @@ def test_failed_events_map_to_haha_cc_error_and_task_update_messages() -> None:
 
 
 def test_task_and_session_events_map_to_haha_cc_names() -> None:
-    assert to_haha_cc_server_message(_event("task.updated", {"status": "running", "currentStep": "Reading"})) == {
-        "type": "task_update",
-        "taskId": "task_1",
-        "status": "running",
-        "progress": "Reading",
-    }
-    assert to_haha_cc_server_message(_event("task.created", {"status": "queued", "goal": "Write docs"})) == {
+    assert to_haha_cc_server_message(_event("task.updated", {"status": "running", "goal": "Inspect repo", "currentStep": "Reading"})) is None
+    assert to_haha_cc_server_message(_event("task.created", {"status": "queued", "goal": "Write docs"})) is None
+    assert to_haha_cc_server_message(
+        _event(
+            "task.created",
+            {
+                "source": "collaboration",
+                "taskKind": "collaboration_child",
+                "status": "queued",
+                "title": "Write docs",
+            },
+        )
+    ) == {
         "type": "task_update",
         "taskId": "task_1",
         "status": "queued",
         "progress": "Write docs",
     }
+    assert to_haha_cc_server_message(_event("task.routing.decided", {"status": "running", "goal": "Write docs"})) is None
+    assert to_haha_cc_server_message(_event("task.updated", {"status": "running", "goal": "Write docs"})) is None
     assert to_haha_cc_server_message(_event("session.updated", {"title": "New title", "changedFields": ["title"]})) == {
         "type": "session_title_updated",
         "sessionId": "sess_1",
@@ -387,18 +396,8 @@ def test_special_chat_events_map_to_haha_cc_system_notifications() -> None:
         "message": "Context compacted",
         "data": {"summary": "Context compacted"},
     }
-    assert to_haha_cc_server_message(_event("goal_event", {"message": "Goal complete"})) == {
-        "type": "system_notification",
-        "subtype": "goal_event",
-        "message": "Goal complete",
-        "data": {"message": "Goal complete"},
-    }
-    assert to_haha_cc_server_message(_event("memory_event", {"message": "Saved memory"})) == {
-        "type": "system_notification",
-        "subtype": "memory_saved",
-        "message": "Saved memory",
-        "data": {"message": "Saved memory"},
-    }
+    assert to_haha_cc_server_message(_event("goal_event", {"message": "Goal complete"})) is None
+    assert to_haha_cc_server_message(_event("memory_event", {"message": "Saved memory"})) is None
     assert to_haha_cc_server_message(_event("compact_boundary", {"message": "Boundary reached"})) == {
         "type": "system_notification",
         "subtype": "compact_boundary",
@@ -553,6 +552,59 @@ def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_pa
     assert yuanbao_response["result"] == response["result"]
 
 
+def test_rpc_yuanbao_events_after_paginates_until_flat_messages_after_noisy_trace(tmp_path) -> None:
+    from local_agent_runtime.event_bus import EventBus
+    from local_agent_runtime.orchestrator.service import Orchestrator
+    from local_agent_runtime.rpc.server import JsonRpcServer
+    from local_agent_runtime.tools.registry import ToolRegistry
+
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="compat rpc")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="stream", plan=[])
+    for index in range(650):
+        store.append_trace_event(
+            task_id=task["id"],
+            session_id=session["id"],
+            event_type="provider.request",
+            source="provider",
+            payload={"index": index},
+            visibility="trace",
+        )
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="content_delta",
+        source="assistant",
+        payload={"text": "late final"},
+    )
+
+    event_bus = EventBus()
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=None,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    response = server.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "req_1",
+                "method": "events.yuanbaoAfter",
+                "params": {"sessionId": session["id"], "afterSeq": 0, "limit": 10},
+            }
+        )
+    )
+
+    assert response["result"]["messages"] == [{"type": "content_delta", "text": "late final"}]
+    assert response["result"]["lastSeq"] == 651
+    assert response["result"]["truncated"] is False
+
+
 def test_events_after_uses_message_delta_as_historical_content_delta(tmp_path) -> None:
     from local_agent_runtime.event_bus import EventBus
     from local_agent_runtime.orchestrator.service import Orchestrator
@@ -619,6 +671,31 @@ def test_events_after_uses_message_delta_as_historical_content_delta(tmp_path) -
         "lastSeq": 3,
         "truncated": False,
     }
+
+
+def test_persisted_chat_content_delta_can_replay_when_realtime_flat_is_suppressed(tmp_path) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="stream replay")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="stream", plan=[])
+    trace = store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="content_delta",
+        source="assistant",
+        payload={
+            "messageId": "msg_1",
+            "text": "hello",
+            "_chatCompat": True,
+            "_bridge": {"persistTraceMirror": True, "suppressRealtimeFlat": True},
+        },
+    )
+
+    assert trace["yuanbao"] == {"type": "content_delta", "text": "hello"}
+    after = store.events_after(session["id"], 0)["events"]
+    assert after[0]["yuanbao"] == {"type": "content_delta", "text": "hello"}
 
 
 def test_events_after_keeps_message_created_out_of_flat_history(tmp_path) -> None:

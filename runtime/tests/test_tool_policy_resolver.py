@@ -24,7 +24,7 @@ def _mcp_tool(server_id: str, tool_name: str) -> dict:
     }
 
 
-def test_root_synthesis_after_task_result_exposes_no_tools() -> None:
+def test_root_continues_with_non_subagent_tools_after_task_result_by_default() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
@@ -33,13 +33,13 @@ def test_root_synthesis_after_task_result_exposes_no_tools() -> None:
         registered_tools=_tools("task", "read_file", "write_file", "run_command"),
     )
 
-    assert decision.phase == "synthesis"
-    assert decision.allowed_tool_names == []
-    assert set(decision.denied_tool_names) == {"task", "read_file", "write_file", "run_command"}
+    assert decision.phase == "post_task_continuation"
+    assert set(decision.allowed_tool_names) == {"read_file", "write_file", "run_command"}
+    assert decision.denied_tool_names == ["task"]
     assert decision.role_snapshot["runtimeRole"] == "root"
 
 
-def test_plan_strategy_synthesizes_after_task_result_by_default() -> None:
+def test_plan_strategy_continues_with_non_subagent_tools_after_task_result_by_default() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
@@ -48,9 +48,12 @@ def test_plan_strategy_synthesizes_after_task_result_by_default() -> None:
         registered_tools=_tools("task", "read_file", "write_file", "run_command"),
     )
 
-    assert decision.phase == "synthesis"
-    assert decision.allowed_tool_names == []
-    assert set(decision.denied_tool_names) == {"task", "read_file", "write_file", "run_command"}
+    assert decision.phase == "post_task_continuation"
+    assert set(decision.allowed_tool_names) == {"read_file", "write_file", "run_command"}
+    assert decision.denied_tool_names == ["task"]
+    task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
+    assert task_detail["toolContinuationPolicy"]["source"] == "strategy_default_post_task_continuation"
+    assert "parent may continue with non-task tools" in task_detail["reason"]
 
 
 def test_cleanup_noise_profile_limits_root_tools() -> None:
@@ -76,8 +79,8 @@ def test_cleanup_noise_profile_limits_root_tools() -> None:
         ),
     )
 
-    assert set(decision.allowed_tool_names) == {"git_status", "list_dir", "run_command"}
-    assert set(decision.denied_tool_names) == {"read_file", "search_files", "write_file", "apply_patch", "ask_user_question"}
+    assert set(decision.allowed_tool_names) == {"git_status", "list_dir", "run_command", "ask_user_question"}
+    assert set(decision.denied_tool_names) == {"read_file", "search_files", "write_file", "apply_patch"}
 
 
 def test_cleanup_goal_detector_matches_systemdrive_cleanup_request() -> None:
@@ -184,7 +187,7 @@ def test_task_tool_budget_blocks_after_limit() -> None:
     assert "2/2" in decision.reasons["task"]
 
 
-def test_agent_result_enters_synthesis_by_default() -> None:
+def test_agent_result_continues_with_non_subagent_tools_by_default() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
@@ -193,9 +196,9 @@ def test_agent_result_enters_synthesis_by_default() -> None:
         registered_tools=_tools("agent", "task", "read_file"),
     )
 
-    assert decision.phase == "synthesis"
-    assert decision.allowed_tool_names == []
-    assert set(decision.denied_tool_names) == {"agent", "task", "read_file"}
+    assert decision.phase == "post_task_continuation"
+    assert decision.allowed_tool_names == ["read_file"]
+    assert set(decision.denied_tool_names) == {"agent", "task"}
 
 
 def test_plan_strategy_exposes_agent_and_task_during_planning() -> None:
@@ -609,10 +612,154 @@ def test_skill_strict_whitelist_filters_provider_tools_but_keeps_control_flow() 
         ],
     )
 
-    assert set(decision.allowed_tool_names) == {"ask_user_question", "enter_plan_mode", "exit_plan_mode", "read_file"}
-    assert set(decision.denied_tool_names) == {"write_file", "mcp__docs__lookup"}
+    assert set(decision.allowed_tool_names) == {"ask_user_question", "read_file"}
+    assert set(decision.denied_tool_names) == {
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "write_file",
+        "mcp__docs__lookup",
+    }
     assert "skill=docs_only" in decision.reasons["write_file"]
     assert "strict_whitelist" in decision.reasons["mcp__docs__lookup"]
+
+
+def test_default_root_turn_hides_plan_mode_tools_unless_explicit() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"strategy": "react_standard"}},
+        tool_results=[],
+        registered_tools=_tools("read_file", "ask_user_question", "enter_plan_mode", "exit_plan_mode"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"ask_user_question", "read_file"}
+    assert {"enter_plan_mode", "exit_plan_mode"}.issubset(set(decision.denied_tool_names))
+
+    explicit = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"strategy": "react_standard", "planModeToolsEnabled": True}},
+        tool_results=[],
+        registered_tools=_tools("read_file", "ask_user_question", "enter_plan_mode", "exit_plan_mode"),
+    )
+
+    assert set(explicit.allowed_tool_names) == {
+        "ask_user_question",
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "read_file",
+    }
+
+
+def test_read_only_user_constraint_hides_write_capable_tools() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "goal": "Create a next-step optimization plan. Do not modify files and do not run write commands.",
+            "routing": {"strategy": "react_standard"},
+        },
+        tool_results=[],
+        registered_tools=_tools(
+            "read_file",
+            "search_files",
+            "git_status",
+            "write_file",
+            "apply_patch",
+            "run_command",
+            "ask_user_question",
+        ),
+    )
+
+    assert set(decision.allowed_tool_names) == {
+        "ask_user_question",
+        "git_status",
+        "read_file",
+        "search_files",
+    }
+    assert {"write_file", "apply_patch", "run_command"}.issubset(set(decision.denied_tool_names))
+    assert "read-only user constraint" in decision.reasons["*"]
+
+
+def test_read_only_user_constraint_can_explicitly_allow_user_question() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "goal": "Read-only analysis. Do not modify files.",
+            "routing": {"strategy": "react_standard", "requiresUserInput": True},
+        },
+        tool_results=[],
+        registered_tools=_tools("read_file", "write_file", "ask_user_question"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"ask_user_question", "read_file"}
+    assert set(decision.denied_tool_names) == {"write_file"}
+
+
+def test_read_only_user_constraint_can_come_from_main_workflow_preview() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "react_standard",
+                "mainWorkflow": {
+                    "userTakeover": {
+                        "latestUserMessagePreview": "只读分析当前项目，不要修改文件。",
+                    },
+                },
+            },
+        },
+        tool_results=[],
+        registered_tools=_tools("read_file", "write_file", "run_command", "ask_user_question"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"ask_user_question", "read_file"}
+    assert set(decision.denied_tool_names) == {"write_file", "run_command"}
+
+
+def test_read_only_multi_agent_keeps_subagent_tools_without_write_tools() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "goal": "Use multiple agents for read-only analysis. Do not modify files.",
+            "routing": {"strategy": "plan_swarm"},
+        },
+        tool_results=[],
+        registered_tools=_tools("agent", "task", "read_file", "write_file", "run_command", "ask_user_question"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"agent", "ask_user_question", "read_file", "task"}
+    assert set(decision.denied_tool_names) == {"write_file", "run_command"}
+
+
+def test_explicit_plan_mode_keeps_plan_tools_under_read_only_constraint() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "goal": "Inspect read-only context first, then request explicit plan approval before any edit.",
+            "routing": {"strategy": "react_standard", "planModeToolsEnabled": True},
+        },
+        tool_results=[],
+        registered_tools=_tools(
+            "enter_plan_mode",
+            "exit_plan_mode",
+            "read_file",
+            "write_file",
+            "run_command",
+            "ask_user_question",
+        ),
+    )
+
+    assert set(decision.allowed_tool_names) == {
+        "ask_user_question",
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "read_file",
+    }
+    assert set(decision.denied_tool_names) == {"write_file", "run_command"}
 
 
 def test_skill_inherit_mcp_allows_mcp_but_filters_builtin_tools() -> None:

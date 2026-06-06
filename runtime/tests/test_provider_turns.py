@@ -1852,7 +1852,7 @@ class TestProviderTurnTransportAndUsage:
         assert retry_events[-1]["payload"]["stage"] == "stream"
         assert retry_events[-1]["payload"]["fallbackFromStream"] is True
 
-    def test_stream_tool_call_delta_emits_chat_compat_tool_input(self, tmp_path: Any) -> None:
+    def test_stream_tool_call_delta_is_trace_only_not_chat_tool_input(self, tmp_path: Any) -> None:
         provider = ToolDeltaStreamProvider()
         runtime = _make_runtime(tmp_path, provider)
         task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="read", plan=[])
@@ -1889,16 +1889,11 @@ class TestProviderTurnTransportAndUsage:
         assert starts[-1]["payload"]["toolPhaseId"] == "context_read"
         assert starts[-1]["payload"]["toolPhaseLabel"] == "读取上下文"
         assert starts[-1]["payload"]["toolSemanticParentId"] == "phase:context_read"
-        assert [event["payload"]["toolInput"] for event in deltas] == ["{\"path\":", "\"README.md\"}"]
-        assert all(event["payload"]["parentToolUseId"] == "call_parent" for event in deltas)
-        assert all(event["payload"]["toolCategory"] == "context_read" for event in deltas)
-        assert all(event["payload"]["toolPhaseId"] == "context_read" for event in deltas)
-        assert all(event["payload"]["toolPhaseLabel"] == "读取上下文" for event in deltas)
-        assert all(event["payload"]["toolSemanticParentId"] == "phase:context_read" for event in deltas)
+        assert deltas == []
 
         trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
         trace_types = [event["type"] for event in trace]
-        assert "provider.stream.tool_call_delta" not in trace_types
+        assert trace_types.count("provider.stream.tool_call_delta") == 2
         assert all(
             event["visibility"] == "trace"
             for event in trace

@@ -114,6 +114,80 @@ def test_execute_tool_normalizes_agent_before_subagent_dispatch(tmp_path: Any) -
     assert completed["payload"]["result"]["childTaskId"] == "ctask_agent_1"
 
 
+def test_execute_tool_accepts_haha_style_agent_fields(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Delegate review",
+        plan=[],
+    )
+    recorder = RecordingSubagentService()
+    runtime.orchestrator._subagent_service = recorder  # noqa: SLF001
+
+    runtime.orchestrator._execute_tool(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        tool_spec={
+            "id": "call_agent",
+            "name": "agent",
+            "arguments": {
+                "description": "Inspect project docs",
+                "prompt": "Read the project docs and report missing sections.",
+                "subagent_type": "reviewer",
+            },
+        },
+    )
+
+    dispatched = recorder.calls[0]
+    assert dispatched["agentType"] == "reviewer"
+    assert dispatched["agent_type"] == "reviewer"
+    assert dispatched["subagent_type"] == "reviewer"
+    assert dispatched["title"] == "Inspect project docs"
+
+
+def test_execute_tool_lifts_tiny_model_supplied_agent_token_budget(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Delegate readonly analysis",
+        plan=[],
+    )
+    recorder = RecordingSubagentService()
+    runtime.orchestrator._subagent_service = recorder  # noqa: SLF001
+
+    runtime.orchestrator._execute_tool(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        tool_spec={
+            "id": "call_agent",
+            "name": "agent",
+            "arguments": {
+                "prompt": "Read the project docs and summarize optimization opportunities.",
+                "agent_type": "analysis",
+                "tool_allowlist": ["read_file", "search_files"],
+                "budget": {
+                    "maxTokens": 1200,
+                    "remainingTokens": 1200,
+                    "maxToolCalls": 3,
+                    "remainingToolCalls": 3,
+                },
+            },
+        },
+    )
+
+    dispatched = recorder.calls[0]
+    assert dispatched["budget"]["maxTokens"] >= 16000
+    assert dispatched["budget"]["remainingTokens"] >= 16000
+    assert dispatched["budget"]["maxToolCalls"] >= 12
+    assert dispatched["budget"]["remainingToolCalls"] >= 12
+    assert dispatched["budget"]["normalizedByRuntime"] is True
+    assert dispatched["budget"]["childToolAllowlist"] == ["read_file", "search_files"]
+
+
 def test_child_agent_profile_drives_context_hints_and_plan_mode(tmp_path: Any, monkeypatch: Any) -> None:
     runtime = _make_runtime(tmp_path)
     session = _open_session(runtime, tmp_path)
@@ -162,6 +236,25 @@ def test_provider_tools_hide_subagent_tools_for_simple_and_child_contexts(tmp_pa
     simple_names = {tool["name"] for tool in simple_tools}
     assert "agent" not in simple_names
     assert "task" not in simple_names
+    simple_decision = runtime.orchestrator._tool_policy_decision_for_turn(  # noqa: SLF001
+        task={"role": "root"},
+        context={"routing": {"strategy": "react_standard"}},
+        tool_results=[],
+        cached_provider_tools=simple_tools,
+    )
+    assert "enter_plan_mode" not in simple_decision.allowed_tool_names
+    assert "exit_plan_mode" not in simple_decision.allowed_tool_names
+
+    explicit_plan_tools = runtime.orchestrator._provider_tools({  # noqa: SLF001
+        "routing": {"strategy": "react_standard", "planModeToolsEnabled": True},
+    })
+    explicit_decision = runtime.orchestrator._tool_policy_decision_for_turn(  # noqa: SLF001
+        task={"role": "root"},
+        context={"routing": {"strategy": "react_standard", "planModeToolsEnabled": True}},
+        tool_results=[],
+        cached_provider_tools=explicit_plan_tools,
+    )
+    assert {"enter_plan_mode", "exit_plan_mode"}.issubset(set(explicit_decision.allowed_tool_names))
 
     swarm_tools = runtime.orchestrator._provider_tools({"routing": {"strategy": "plan_swarm"}})  # noqa: SLF001
     swarm_names = {tool["name"] for tool in swarm_tools}
@@ -186,13 +279,59 @@ def test_provider_tools_hide_subagent_tools_for_simple_and_child_contexts(tmp_pa
     assert child_decision.allowed_tool_names == ["read_file"]
 
 
+def test_provider_tools_empty_for_minimal_simple_context(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path)
+    tools = build_builtin_tools(
+        policy_guard=PolicyGuard(),
+        store=runtime.store,
+        subagent_service=RecordingSubagentService(),
+    )
+    runtime.orchestrator._tool_registry = ToolRegistry(tools)  # noqa: SLF001
+
+    names = runtime.orchestrator._provider_tools({  # noqa: SLF001
+        "minimal": True,
+        "routing": {"scenario": "simple_query", "strategy": "react_fast", "contextMode": "minimal"},
+    })
+
+    assert names == []
+
+
+def test_model_tool_swarm_injects_delegation_guidance_only_for_model_tools(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path)
+    context = {
+        "messages": [
+            {"role": "system", "content": "base"},
+            {"role": "user", "content": "Current user request:\nUse multiple agents."},
+        ]
+    }
+
+    plain = runtime.orchestrator._context_with_model_tool_guidance(  # noqa: SLF001
+        context,
+        {"strategy": "plan_swarm"},
+    )
+    assert "Available delegation tools:" not in plain["messages"][-1]["content"]
+
+    guided = runtime.orchestrator._context_with_model_tool_guidance(  # noqa: SLF001
+        context,
+        {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
+    )
+
+    assert "Available delegation tools:" in guided["messages"][-1]["content"]
+    assert "agent({description, subagent_type, prompt})" in guided["messages"][-1]["content"]
+    assert "Do not claim multi-agent collaboration unless you actually call agent or task." in guided["messages"][-1]["content"]
+
+
 def test_agent_result_uses_task_result_synthesis_gate(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path)
 
     assert runtime.orchestrator._should_synthesize_after_task_results(  # noqa: SLF001
-        {},
+        {"routing": {"toolContinuation": {"allowToolsAfterTaskResults": False}}},
         [{"name": "agent", "result": {"status": "completed"}}],
     ) is True
+    assert runtime.orchestrator._should_synthesize_after_task_results(  # noqa: SLF001
+        {},
+        [{"name": "agent", "result": {"status": "completed"}}],
+    ) is False
     assert runtime.orchestrator._should_synthesize_after_task_results(  # noqa: SLF001
         {},
         [{"name": "agent", "result": {"status": "waiting_approval"}}],

@@ -8,6 +8,25 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryFlowMixin:
+    _PROVIDER_RUNTIME_FAILURE_CODES = {
+        "FAST_LOOP_FAILED",
+        "LOOP_EXECUTION_FAILED",
+        "BACKGROUND_LOOP_FAILED",
+        "MODEL_PROVIDER_ERROR",
+    }
+    _PROVIDER_FAILURE_CATEGORIES = {
+        "auth",
+        "rate_limit",
+        "timeout",
+        "context_too_large",
+        "refusal",
+        "server_error",
+        "network",
+        "unsupported_format",
+        "request_validation",
+        "invalid_response",
+        "unknown",
+    }
     _TRANSIENT_PROVIDER_FAILURE_RE = re.compile(
         r"("
         r"concurrency limit exceeded|"
@@ -170,9 +189,9 @@ class MemoryFlowMixin:
             return
         if task.get("status") not in {"completed", "failed", "cancelled"}:
             return
-        if task.get("status") == "failed" and self._is_transient_provider_failure(task):
+        if task.get("status") == "failed" and self._is_provider_runtime_failure(task):
             logger.debug(
-                "Skipping memory write for transient provider failure task %s",
+                "Skipping memory write for provider/runtime failure task %s",
                 task.get("id"),
             )
             return
@@ -378,7 +397,7 @@ class MemoryFlowMixin:
         from ..memory.types import MemoryCategory
 
         results: list[dict[str, Any]] = []
-        if task.get("status") == "failed" and self._is_transient_provider_failure(task):
+        if task.get("status") == "failed" and self._is_provider_runtime_failure(task):
             return results
 
         goal = str(task.get("goal") or "").strip()
@@ -467,6 +486,19 @@ class MemoryFlowMixin:
         if "provider returned error" in lowered and self._TRANSIENT_PROVIDER_FAILURE_RE.search(failure_text):
             return True
         return bool(self._TRANSIENT_PROVIDER_FAILURE_RE.search(failure_text))
+
+    def _is_provider_runtime_failure(self, task: dict[str, Any]) -> bool:
+        if self._is_transient_provider_failure(task):
+            return True
+        error_code = str(task.get("errorCode") or task.get("error_code") or "").strip().upper()
+        structured = task.get("structuredResult")
+        structured = structured if isinstance(structured, dict) else {}
+        recovery = structured.get("failureRecovery")
+        recovery = recovery if isinstance(recovery, dict) else {}
+        category = str(recovery.get("category") or "").strip()
+        if category and category in self._PROVIDER_FAILURE_CATEGORIES:
+            return True
+        return bool(error_code and error_code in self._PROVIDER_RUNTIME_FAILURE_CODES and recovery)
 
     def _task_failure_text(self, task: dict[str, Any]) -> str:
         values: list[str] = []

@@ -192,6 +192,11 @@ class ProposalStoreMixin:
         if row is None:
             raise ValueError(f"Approval not found: {approval_id}")
         approval = self._serialize_approval(dict(row))
+        task_row = self._conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (approval["taskId"],),
+        ).fetchone()
+        task_status = str(task_row["status"] or "").strip() if task_row is not None else ""
         try:
             request = json.loads(approval.get("requestJson") or "{}")
         except json.JSONDecodeError:
@@ -203,25 +208,32 @@ class ProposalStoreMixin:
             changed_paths = _changed_paths_from_diff_text(str(request.get("diffText") or request.get("patchText") or ""))
         diff_text = request.get("diffText")
         files_changed = request.get("filesChanged")
+        resolved_payload = {
+            "approvalId": approval["id"],
+            "taskId": approval["taskId"],
+            "kind": approval["kind"],
+            "request": request,
+            "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
+            "changedPaths": changed_paths,
+            "diffText": diff_text if isinstance(diff_text, str) else "",
+            "preview": _approval_preview(approval["kind"], request),
+            "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
+            "decision": approval["decision"],
+            "decidedBy": approval["decidedBy"],
+            "decidedAt": approval["decidedAt"],
+        }
+        if task_status:
+            resolved_payload["taskStatus"] = task_status
+        if task_status in {"cancelled", "canceled", "completed", "failed"}:
+            resolved_payload["ignored"] = True
+        elif task_status == "paused":
+            resolved_payload["deferred"] = True
         self.append_trace_event(
             task_id=approval["taskId"],
             event_type="approval.resolved",
             source="approval",
             related_id=approval["id"],
-            payload={
-                "approvalId": approval["id"],
-                "taskId": approval["taskId"],
-                "kind": approval["kind"],
-                "request": request,
-                "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
-                "changedPaths": changed_paths,
-                "diffText": diff_text if isinstance(diff_text, str) else "",
-                "preview": _approval_preview(approval["kind"], request),
-                "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
-                "decision": approval["decision"],
-                "decidedBy": approval["decidedBy"],
-                "decidedAt": approval["decidedAt"],
-            },
+            payload=resolved_payload,
             created_at=approval["decidedAt"],
         )
         return approval

@@ -586,7 +586,7 @@ Goal: keep frontend message lifecycle events aligned with haha-cc flat text outp
 
 Acceptance:
 - Realtime stdout keeps one flat text delta per token.
-- Stored lifecycle replay can still return haha-style `content_delta`.
+- Stored lifecycle replay can still return flat `content_delta`.
 - `message.created` does not create a flat `content_start`; adapters should use explicit `content_start`.
 - Frontend `message.delta` consumption and external adapter flat output stay consistent.
 

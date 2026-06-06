@@ -20,10 +20,8 @@ _WRITE_WORKTREE_SCENARIOS = {
     "code_edit",
     "debug",
     "test_write",
-    "doc_write",
     "multi_step_task",
     "supervised_task",
-    "swarm_task",
 }
 _WORKSPACE_EVIDENCE_GOAL_RE = re.compile(
     r"("
@@ -35,6 +33,24 @@ _WORKSPACE_EVIDENCE_GOAL_RE = re.compile(
     r"检查(?:一下)?(?:当前|项目|仓库|进展|状态)|"
     r"基于(?:当前|仓库|项目|代码)|结合(?:当前|仓库|项目|代码)|"
     r"查看(?:当前|项目|仓库)|整理(?:当前|项目|仓库)"
+    r")",
+    re.IGNORECASE,
+)
+_CURRENT_WORKSPACE_REFERENCE_RE = re.compile(
+    r"("
+    r"current\s+(?:project|repo|repository|workspace|codebase|snake\s+game|app|application)|"
+    r"this\s+(?:project|repo|repository|workspace|codebase|snake\s+game|app|application)|"
+    r"the\s+(?:current\s+)?(?:project|repo|repository|workspace|codebase|snake\s+game)\s+(?:status|state|progress|plan|roadmap|docs?|documentation|README)|"
+    r"基于(?:当前|这个|本地|仓库|项目|代码)|结合(?:当前|这个|本地|仓库|项目|代码)|"
+    r"当前(?:项目|仓库|工程|代码|进度|任务|清单|状态)|这个(?:项目|仓库|工程|代码)"
+    r")",
+    re.IGNORECASE,
+)
+_WORKSPACE_EVIDENCE_DELIVERABLE_RE = re.compile(
+    r"("
+    r"status|progress|roadmap|next[- ]?step|plan|todo|task\s+list|current\s+state|"
+    r"document(?:ation)?|docs?|readme|summary|summari[sz]e|analy[sz]e|proposal|"
+    r"路线图|计划|方案|下一步|进度|状态|现状|任务清单|待办|文档|说明|总结|梳理|分析"
     r")",
     re.IGNORECASE,
 )
@@ -62,19 +78,16 @@ class MessageRoutingMixin:
         strategy = routing.strategy.value
         tool_continuation = self._routing_tool_continuation_from_decision(routing, strategy)
         profile = self._routing_profile_from_decision(routing)
+        metadata = getattr(routing, "metadata", None)
+        orchestration_mode = metadata.get("orchestrationMode") if isinstance(metadata, dict) else None
+        runtime_mode = metadata.get("runtime") if isinstance(metadata, dict) else None
+        intent_hints = metadata.get("intentHints") if isinstance(metadata, dict) else None
         goal_text = ""
         if isinstance(context, dict):
             goal_text = str(context.get("goal") or context.get("userGoal") or context.get("content") or "")
         if self._goal_mentions_generated_local_cleanup(goal_text):
             profile = dict(profile or {})
             profile.setdefault("toolPolicy", "cleanup_noise")
-            profile.setdefault("workspaceEvidenceRequired", {"required": False, "source": "cleanup_noise"})
-        workspace_evidence = self._routing_workspace_evidence_from_decision(routing, context=context)
-        if workspace_evidence and not (
-            isinstance(profile, dict) and "workspaceEvidenceRequired" in profile
-        ):
-            profile = dict(profile or {})
-            profile["workspaceEvidenceRequired"] = workspace_evidence
         return {
             "scenario": routing.scenario.value,
             "strategy": strategy,
@@ -85,6 +98,9 @@ class MessageRoutingMixin:
             "reasoning": routing.reasoning,
             "skill_id": routing.skill_id,
             "toolContinuation": tool_continuation,
+            **({"orchestrationMode": orchestration_mode} if isinstance(orchestration_mode, str) and orchestration_mode else {}),
+            **({"runtime": runtime_mode} if isinstance(runtime_mode, str) and runtime_mode else {}),
+            **({"intentHints": deepcopy(intent_hints)} if isinstance(intent_hints, dict) else {}),
             **({"profile": profile} if profile else {}),
             "profile_snapshot": self._runtime_profile_snapshot(context),
             "worktreeBindingRequired": False,
@@ -118,65 +134,6 @@ class MessageRoutingMixin:
         profile = metadata.get("profile")
         return dict(profile) if isinstance(profile, dict) else {}
 
-    def _routing_workspace_evidence_from_decision(
-        self,
-        routing: Any,
-        context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        metadata = getattr(routing, "metadata", None)
-        raw = metadata.get("workspaceEvidenceRequired") if isinstance(metadata, dict) else None
-        if raw is None and isinstance(metadata, dict):
-            raw = metadata.get("workspace_evidence_required")
-        if isinstance(raw, dict):
-            normalized = self._normalize_workspace_evidence_contract(raw)
-            if normalized:
-                return normalized
-        if raw is True:
-            return self._default_workspace_evidence_contract(str(routing.scenario.value), source="routing_metadata")
-        if raw is False:
-            return {"required": False, "source": "routing_metadata"}
-        return {}
-
-    @staticmethod
-    def _default_workspace_evidence_contract(scenario: str, *, source: str) -> dict[str, Any]:
-        return {
-            "required": True,
-            "source": source,
-            "scenario": scenario,
-            "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
-        }
-
-    def _normalize_workspace_evidence_contract(self, raw: dict[str, Any]) -> dict[str, Any]:
-        required = raw.get("required")
-        if required is None:
-            required = raw.get("enabled")
-        if not isinstance(required, bool):
-            required = True
-        result: dict[str, Any] = {
-            "required": required,
-            "source": str(raw.get("source") or "routing_metadata"),
-        }
-        required_tools = raw.get("requiredTools")
-        if required_tools is None:
-            required_tools = raw.get("required_tools")
-        if isinstance(required_tools, list):
-            tools = [
-                str(item).strip()
-                for item in required_tools
-                if str(item or "").strip()
-            ]
-            if tools:
-                result["requiredTools"] = tools[:20]
-        for key in ("reason", "rationale", "scenario"):
-            value = raw.get(key)
-            if isinstance(value, str) and value.strip():
-                result[key] = value.strip()[:500]
-        return result
-
-    @staticmethod
-    def _goal_mentions_workspace_evidence(goal: str) -> bool:
-        return bool(_WORKSPACE_EVIDENCE_GOAL_RE.search(str(goal or "")))
-
     @staticmethod
     def _goal_mentions_generated_local_cleanup(goal: str) -> bool:
         text = str(goal or "")
@@ -196,11 +153,16 @@ class MessageRoutingMixin:
             if isinstance(rationale, str) and rationale.strip():
                 continuation["rationale"] = rationale.strip()[:500]
             return continuation
+        if strategy in {"plan_execute", "plan_supervise", "plan_swarm"}:
+            return {
+                "allowToolsAfterTaskResults": True,
+                "allowMoreSubtasksAfterTaskResults": False,
+                "source": "strategy_default_post_task_continuation",
+            }
         return {
-            "allowToolsAfterTaskResults": False,
+            "allowToolsAfterTaskResults": True,
             "allowMoreSubtasksAfterTaskResults": False,
-            "maxTaskToolCalls": 1,
-            "source": "strategy_default_synthesis",
+            "source": "default_post_task_continuation",
         }
 
     @staticmethod
@@ -215,13 +177,6 @@ class MessageRoutingMixin:
 
     @staticmethod
     def _should_use_minimal_context(routing: dict[str, Any]) -> bool:
-        profile = routing.get("profile")
-        if isinstance(profile, dict):
-            contract = profile.get("workspaceEvidenceRequired") or profile.get("workspace_evidence_required")
-            if contract is True:
-                return False
-            if isinstance(contract, dict) and contract.get("required") is True:
-                return False
         return (
             routing.get("scenario") == "simple_query"
             and routing.get("strategy") == "react_fast"
@@ -271,7 +226,27 @@ class MessageRoutingMixin:
                 "latestUserMessagePreview": str(goal or "")[:200],
             },
         }
-        return {**routing, "mainWorkflow": workflow}
+        explicit_plan_mode = self._explicit_plan_mode_requested(params)
+        return {
+            **routing,
+            "mainWorkflow": workflow,
+            **(
+                {
+                    "planModeToolsEnabled": True,
+                    "explicitPlanMode": True,
+                }
+                if explicit_plan_mode
+                else {}
+            ),
+        }
+
+    @staticmethod
+    def _explicit_plan_mode_requested(params: dict[str, Any]) -> bool:
+        for key in ("planMode", "plan_mode", "explicitPlanMode", "explicit_plan_mode", "planModeToolsEnabled", "plan_mode_tools_enabled"):
+            if params.get(key) is True:
+                return True
+        mode = str(params.get("mode") or params.get("executionMode") or params.get("execution_mode") or "").strip().lower()
+        return mode in {"plan", "plan_mode", "approval_plan"}
 
     @staticmethod
     def _safe_float(value: Any, default: float) -> float:
@@ -582,8 +557,12 @@ class MessageRoutingMixin:
     def _should_auto_bind_worktree(self, routing: dict[str, Any]) -> bool:
         if routing.get("disableWorktreeBinding") is True:
             return False
+        if routing.get("orchestrationMode") == "model_tools":
+            return bool(routing.get("worktreeBindingRequired") is True)
+        if routing.get("worktreeBindingRequired") is True:
+            return True
         worktree_config = self._worktree_config()
-        if worktree_config.get("autoBindWriteTasks", True) is False:
+        if worktree_config.get("autoBindWriteTasks", False) is not True:
             return False
         scenario = str(routing.get("scenario") or "")
         return scenario in _WRITE_WORKTREE_SCENARIOS
@@ -594,6 +573,55 @@ class MessageRoutingMixin:
         if not self._should_auto_bind_worktree(routing):
             return routing
         return {**routing, "worktreeBindingRequired": True}
+
+    def _return_worktree_binding_failed_task(
+        self,
+        *,
+        session: dict[str, Any],
+        task: dict[str, Any],
+        goal: str,
+        routing_dict: dict[str, Any],
+        user_msg: dict[str, Any] | None = None,
+        assistant_msg: dict[str, Any] | None = None,
+        accepted_mode: str = "new",
+        summary: str = "Write-oriented task requires an active worktree, but worktree binding failed.",
+        latency_ms: int = 0,
+    ) -> dict[str, Any]:
+        if user_msg is not None:
+            self._publish(session["id"], task, "message.created", {"message": user_msg})
+        if assistant_msg is not None:
+            self._publish(session["id"], task, "message.created", {"message": assistant_msg})
+        self._publish(
+            session["id"],
+            task,
+            "task.created",
+            {"status": task.get("status"), "goal": goal},
+        )
+        self._publish(
+            session["id"],
+            task,
+            "task.routing.decided",
+            {**routing_dict, "latency_ms": latency_ms},
+        )
+        failed = self._fail_task(
+            session_id=session["id"],
+            task=task,
+            summary=summary,
+            error_code="WORKTREE_BINDING_FAILED",
+            structured_result={
+                "failureKind": "worktree_binding_failed",
+                "worktreeBindingRequired": True,
+            },
+        )
+        result: dict[str, Any] = {
+            "task": failed,
+            "acceptedMode": accepted_mode,
+        }
+        if user_msg is not None:
+            result["userMessage"] = user_msg
+        if assistant_msg is not None:
+            result["assistantMessage"] = assistant_msg
+        return result
 
     @staticmethod
     def _session_launch_metadata(session: dict[str, Any]) -> dict[str, Any]:
@@ -618,7 +646,7 @@ class MessageRoutingMixin:
         if repository.get("worktree") is False:
             updated["worktreeBindingRequired"] = False
             updated["disableWorktreeBinding"] = True
-        elif repository.get("worktree") is True and self._should_auto_bind_worktree(updated):
+        elif repository.get("worktree") is True:
             updated["worktreeBindingRequired"] = True
         return updated
 
@@ -688,6 +716,28 @@ class MessageRoutingMixin:
             messages.append({"role": "user", "content": binding_text})
         bound_context["messages"] = messages
         return bound_context
+
+    @staticmethod
+    def _context_with_model_tool_guidance(context: dict[str, Any], routing: dict[str, Any]) -> dict[str, Any]:
+        if routing.get("orchestrationMode") != "model_tools":
+            return context
+        if routing.get("strategy") not in {"plan_swarm", "plan_execute", "plan_supervise"}:
+            return context
+        guidance = "\n".join([
+            "Available delegation tools:",
+            "- Use agent({description, subagent_type, prompt}) for focused independent work when the user asks for multiple agents or the task benefits from parallel analysis.",
+            "- Use task({description, prompt}) when a delegated subtask should be tracked as structured task progress.",
+            "- Do not claim multi-agent collaboration unless you actually call agent or task.",
+            "- Keep child prompts short and scoped; prefer read-only child work unless edits are required.",
+        ])
+        messages = list(context.get("messages") or [])
+        if messages and messages[-1].get("role") == "user":
+            content = str(messages[-1].get("content") or "")
+            if "Available delegation tools:" not in content:
+                messages[-1] = {**messages[-1], "content": f"{content}\n\n{guidance}"}
+        else:
+            messages.append({"role": "user", "content": guidance})
+        return {**context, "messages": messages}
 
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._shutting_down:
@@ -790,7 +840,15 @@ class MessageRoutingMixin:
                     routing_dict["activeWorktree"] = worktree
                     queued_task = self._persist_task_routing(queued_task, routing_dict)
                 elif routing_dict.get("worktreeBindingRequired") is True:
-                    raise ValueError("Write-oriented task requires an active worktree, but worktree binding failed.")
+                    return self._return_worktree_binding_failed_task(
+                        session=session,
+                        task=queued_task,
+                        goal=goal,
+                        routing_dict=routing_dict,
+                        user_msg=user_msg,
+                        accepted_mode="queued",
+                        latency_ms=0,
+                    )
                 self._publish(session["id"], queued_task, "message.created", {"message": user_msg})
                 self._publish(session["id"], queued_task, "task.created", {"status": "queued", "goal": goal})
                 self._publish(session["id"], queued_task, "task.queued", {"status": "queued", "goal": goal})
@@ -883,7 +941,17 @@ class MessageRoutingMixin:
                 routing_dict["activeWorktree"] = worktree
                 runtime_task = self._persist_task_routing(runtime_task, routing_dict)
             elif routing_dict.get("worktreeBindingRequired") is True:
-                raise ValueError("Write-oriented background task requires an active worktree, but worktree binding failed.")
+                return self._return_worktree_binding_failed_task(
+                    session=session,
+                    task=runtime_task,
+                    goal=goal,
+                    routing_dict=routing_dict,
+                    user_msg=user_msg,
+                    assistant_msg=assistant_msg,
+                    accepted_mode="new",
+                    summary="Write-oriented background task requires an active worktree, but worktree binding failed.",
+                    latency_ms=_route_latency_ms,
+                )
             self._record_routing_proposal(
                 session_id=session["id"],
                 task_id=runtime_task["id"],
@@ -938,11 +1006,14 @@ class MessageRoutingMixin:
             minimal=minimal_context,
             current_message_metadata=message_metadata,
         )
+        if minimal_context:
+            context["minimal"] = True
         if isinstance(context.get("skillFallback"), dict):
             routing_dict["skillFallback"] = context["skillFallback"]
         routing_dict["profile_snapshot"] = self._runtime_profile_snapshot(context)
         # Inject routing decision into context as a plain dict for JSON safety.
         context["routing"] = routing_dict
+        context = self._context_with_model_tool_guidance(context, routing_dict)
         # Emit tool filter event if skill filtering was applied
         self._maybe_publish_tool_filter(context, routing.skill_id)
         logger.info(
@@ -997,7 +1068,16 @@ class MessageRoutingMixin:
             context["routing"] = routing_dict
             context = self._context_with_worktree_binding(context, worktree)
         elif routing_dict.get("worktreeBindingRequired") is True:
-            raise ValueError("Write-oriented task requires an active worktree, but worktree binding failed.")
+            return self._return_worktree_binding_failed_task(
+                session=session,
+                task=runtime_task,
+                goal=goal,
+                routing_dict=routing_dict,
+                user_msg=user_msg,
+                assistant_msg=assistant_msg,
+                accepted_mode="new",
+                latency_ms=_route_latency_ms,
+            )
 
         self._record_routing_proposal(
             session_id=session["id"],
@@ -1050,15 +1130,6 @@ class MessageRoutingMixin:
             event_type="task.routing.decided",
             payload={**routing_dict, "latency_ms": _route_latency_ms},
         )
-        publish_progress = getattr(self, "_publish_assistant_progress", None)
-        if callable(publish_progress):
-            publish_progress(
-                session_id=session["id"],
-                task=runtime_task,
-                text="正在整理上下文",
-                phase="context_prepare",
-            )
-
         result = self._execute_message_task(
             session_id=session["id"],
             task=runtime_task,

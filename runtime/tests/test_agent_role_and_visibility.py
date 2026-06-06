@@ -96,9 +96,11 @@ class TestEventVisibilityInference:
         task = {"role": role}
         return Orchestrator._infer_event_visibility(event_type, task)
 
-    # Root streaming: chat (user sees assistant output)
-    def test_assistant_token_root_is_chat(self):
+    # Root assistant.token derives chat text, but the raw compat event stays trace.
+    def test_assistant_token_root_derives_chat_but_raw_event_is_trace(self):
         assert self._invoke("assistant.token", role="root") == "chat"
+        from local_agent_runtime.orchestrator.service import Orchestrator
+        assert Orchestrator._raw_runtime_event_visibility("assistant.token", "chat", None) == "trace"
 
     def test_message_delta_root_is_chat(self):
         assert self._invoke("message.delta", role="root") == "chat"

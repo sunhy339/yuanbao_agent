@@ -15,6 +15,7 @@ Design target:
 from __future__ import annotations
 
 import json
+import logging
 import re as _re
 import time
 from typing import Any
@@ -22,6 +23,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..services.worker_budget import WorkerBudget
 from ..tools.task import normalize_agent_tool_params
+
+logger = logging.getLogger(__name__)
 
 _WORKTREE_BOUND_TOOLS = {
     "list_dir",
@@ -35,6 +38,7 @@ _WORKTREE_BOUND_TOOLS = {
     "code_search",
     "notebook",
 }
+_LAZY_WORKTREE_BIND_TOOLS = {"apply_patch", "write_file"}
 _ACTIVE_WORKTREE_STATUSES = {"creating", "active", "paused", "ready_for_review"}
 _TOOL_VISIBLE_RESULT_MAX_CHARS = 8000
 _TOOL_VISIBLE_TEXT_HEAD_CHARS = 1200
@@ -42,6 +46,9 @@ _TOOL_VISIBLE_TEXT_TAIL_CHARS = 800
 _TOOL_VISIBLE_COLLECTION_LIMIT = 12
 _TOOL_VISIBLE_SNIPPET_LIMIT = 600
 SUBAGENT_TOOL_NAMES = {"agent", "task"}
+_MIN_MODEL_SUPPLIED_CHILD_TOKEN_BUDGET = 16000
+_DEFAULT_CHILD_TOOL_CALL_BUDGET = 12
+_MIN_MODEL_SUPPLIED_CHILD_TOOL_CALL_BUDGET = 12
 _VERIFY_COMMAND_RE = _re.compile(
     r"\b("
     r"npm\s+(?:run\s+)?(?:test|typecheck|lint|build)|"
@@ -154,7 +161,11 @@ def _visible_tool_result(
     """
     if not isinstance(result, dict):
         return result
-    if _json_size(result) <= max_chars:
+    force_compact = (
+        str(result.get("status") or "").strip().lower() == "approval_required"
+        or isinstance(result.get("approval"), dict)
+    )
+    if not force_compact and _json_size(result) <= max_chars:
         return result
 
     summary_text = summary or _tool_result_summary(tool_name, result, target)
@@ -167,6 +178,18 @@ def _visible_tool_result(
         "truncated": True,
         "fullResultRef": _tool_result_full_ref(tool_name, result),
     }
+    approval = result.get("approval")
+    if isinstance(approval, dict):
+        compacted["approval"] = {
+            key: value
+            for key, value in {
+                "id": approval.get("id"),
+                "kind": approval.get("kind"),
+                "decision": approval.get("decision"),
+                "createdAt": approval.get("createdAt"),
+            }.items()
+            if value not in (None, "", [])
+        }
 
     if tool_name == "run_command":
         command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
@@ -451,6 +474,7 @@ def _tool_result_preview(tool_name: str, result: dict[str, Any] | None, target: 
         return []
 
     failure_like = _tool_result_is_failure_like(result)
+    approval_required = str(result.get("status") or "").strip().lower() == "approval_required"
     rows: list[dict[str, str]] = []
     if tool_name == "run_command":
         exit_code = result.get("exitCode")
@@ -475,6 +499,15 @@ def _tool_result_preview(tool_name: str, result: dict[str, Any] | None, target: 
             ) if row
         )
     elif tool_name == "write_file":
+        if approval_required:
+            rows.extend(
+                row for row in (
+                    _preview_row("Status", "waiting for approval"),
+                    _preview_row("File", target or result.get("path") or "file"),
+                    _preview_row("Changes", f"{result.get('filesChanged')} file(s)" if result.get("filesChanged") is not None else ""),
+                ) if row
+            )
+            return rows
         rows.extend(
             row for row in (
                 _preview_row("文件", target or result.get("path") or "file"),
@@ -929,7 +962,15 @@ def _tool_runtime_progress_message(
         key = target or arguments.get("key") or "key"
         return _compact_text(f"正在读取 scratchpad：{key}", 220)
     if tool_name in {"agent", "task"}:
-        title = arguments.get("title") or arguments.get("agent_type") or arguments.get("agentType") or arguments.get("prompt") or "subtask"
+        title = (
+            arguments.get("description")
+            or arguments.get("title")
+            or arguments.get("subagent_type")
+            or arguments.get("agent_type")
+            or arguments.get("agentType")
+            or arguments.get("prompt")
+            or "subtask"
+        )
         return _compact_text(f"正在启动子任务：{title}", 220)
     if tool_name.startswith("mcp__"):
         destination = _tool_progress_destination(tool_name, arguments, target)
@@ -988,7 +1029,9 @@ def _tool_runtime_activity_messages(result: dict[str, Any] | None, *, limit: int
 
 def _task_dispatch_steps(arguments: dict[str, Any], result: dict[str, Any]) -> list[dict[str, str]]:
     title = _compact_text(
-        arguments.get("title")
+        arguments.get("description")
+        or arguments.get("title")
+        or arguments.get("subagent_type")
         or arguments.get("agentType")
         or arguments.get("agent_type")
         or arguments.get("prompt")
@@ -1003,8 +1046,59 @@ def _task_dispatch_steps(arguments: dict[str, Any], result: dict[str, Any]) -> l
         {"label": "dispatch", "status": "completed" if status == "completed" else status, "summary": summary},
     ]
     if child_id:
-        steps.append({"label": "child_task", "status": "completed", "summary": child_id})
+        steps.append({"label": "child_task", "status": "completed", "summary": "Child task recorded."})
     return steps
+
+
+def _normalize_subagent_budget(arguments: dict[str, Any]) -> dict[str, Any]:
+    budget = dict(arguments.get("budget")) if isinstance(arguments.get("budget"), dict) else {}
+    if "maxTokens" in budget or "max_tokens" in budget or "remainingTokens" in budget or "remaining_tokens" in budget:
+        raw_limit = budget.get("maxTokens", budget.get("max_tokens"))
+        raw_remaining = budget.get("remainingTokens", budget.get("remaining_tokens"))
+        try:
+            limit = int(raw_limit) if raw_limit is not None else None
+        except (TypeError, ValueError):
+            limit = None
+        try:
+            remaining = int(raw_remaining) if raw_remaining is not None else None
+        except (TypeError, ValueError):
+            remaining = None
+        effective = max(
+            _MIN_MODEL_SUPPLIED_CHILD_TOKEN_BUDGET,
+            *(value for value in (limit, remaining) if value is not None),
+        )
+        budget["maxTokens"] = effective
+        budget["remainingTokens"] = max(effective, remaining or 0)
+        budget["normalizedByRuntime"] = True
+    if (
+        "maxToolCalls" in budget
+        or "max_tool_calls" in budget
+        or "remainingToolCalls" in budget
+        or "remaining_tool_calls" in budget
+    ):
+        raw_limit = budget.get("maxToolCalls", budget.get("max_tool_calls"))
+        raw_remaining = budget.get("remainingToolCalls", budget.get("remaining_tool_calls"))
+        try:
+            limit = int(raw_limit) if raw_limit is not None else None
+        except (TypeError, ValueError):
+            limit = None
+        try:
+            remaining = int(raw_remaining) if raw_remaining is not None else None
+        except (TypeError, ValueError):
+            remaining = None
+        effective_calls = max(
+            _MIN_MODEL_SUPPLIED_CHILD_TOOL_CALL_BUDGET,
+            *(value for value in (limit, remaining) if value is not None),
+        )
+        budget["maxToolCalls"] = effective_calls
+        budget["remainingToolCalls"] = max(effective_calls, remaining or 0)
+        budget["normalizedByRuntime"] = True
+    else:
+        budget.setdefault("maxToolCalls", _DEFAULT_CHILD_TOOL_CALL_BUDGET)
+        budget.setdefault("remainingToolCalls", _DEFAULT_CHILD_TOOL_CALL_BUDGET)
+    if budget:
+        arguments["budget"] = budget
+    return arguments
 
 
 def _tool_runtime_activity_item_text(item: Any) -> str:
@@ -1107,6 +1201,16 @@ def _tool_result_summary(tool_name: str, result: dict[str, Any] | None, target: 
         return ""
     status = result.get("status")
     error = result.get("error")
+    status_text = str(status or "").strip().lower()
+    if status_text == "approval_required":
+        target_text = target or result.get("path") or result.get("command") or result.get("url") or tool_name
+        if tool_name == "write_file":
+            return _compact_text(f"approval required before writing {target_text}", 180)
+        if tool_name == "apply_patch":
+            return _compact_text(f"approval required before applying changes {target_text}".strip(), 180)
+        if tool_name == "run_command":
+            return _compact_text(f"approval required before running {target_text}", 180)
+        return _compact_text(f"approval required before {tool_name} {target_text}".strip(), 180)
     if tool_name == "computer_use":
         action = result.get("action")
         request = result.get("request") if isinstance(result.get("request"), dict) else {}
@@ -1546,6 +1650,51 @@ class ToolExecutionMixin:
             bound.setdefault("cwd", ".")
         return bound
 
+    def _ensure_worktree_for_write_tool(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_name: str,
+        context: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        if tool_name not in _LAZY_WORKTREE_BIND_TOOLS:
+            return context, None
+        routing = task.get("routing")
+        if not isinstance(routing, dict):
+            routing = {}
+        if routing.get("disableWorktreeBinding") is True:
+            return context, None
+        if routing.get("worktreeBindingRequired") is not True:
+            return context, None
+        if self._store.get_worktree_by_task({"taskId": task["id"]}).get("worktree") is not None:
+            return context, None
+        try:
+            session = self._store.require_session(session_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("Unable to load session before lazy worktree binding", exc_info=True)
+            return context, None
+        routing_for_bind = {**routing, "worktreeBindingRequired": True}
+        worktree = self._maybe_bind_task_worktree(
+            session=session,
+            task=task,
+            routing=routing_for_bind,
+        )
+        if worktree is None:
+            return context, {
+                "status": "failed",
+                "ok": False,
+                "error": "Write-oriented tool requires an active worktree, but worktree binding failed.",
+                "summary": "Write-oriented tool requires an active worktree, but worktree binding failed.",
+                "failureKind": "worktree_binding_failed",
+            }
+        updated_routing = {**routing_for_bind, "activeWorktree": worktree}
+        task["routing"] = self._store.update_task(
+            task_id=task["id"],
+            routing=updated_routing,
+        ).get("routing") or updated_routing
+        return self._context_with_worktree_binding(context or {}, worktree), None
+
     def _execute_tool(
         self,
         session_id: str,
@@ -1568,6 +1717,12 @@ class ToolExecutionMixin:
             "taskId": task["id"],
             "sessionId": session_id,
         }
+        context, worktree_binding_failure = self._ensure_worktree_for_write_tool(
+            session_id=session_id,
+            task=task,
+            tool_name=tool_spec["name"],
+            context=context,
+        )
         for key, value in tool_batch_metadata.items():
             tool_arguments.setdefault(key, value)
         if tool_spec["name"] == "run_command":
@@ -1585,6 +1740,15 @@ class ToolExecutionMixin:
         )
         if tool_spec["name"] == "agent":
             tool_arguments = normalize_agent_tool_params(tool_arguments)
+            tool_spec = {
+                **tool_spec,
+                "arguments": {
+                    **tool_spec.get("arguments", {}),
+                    **tool_arguments,
+                },
+            }
+        if tool_spec["name"] in SUBAGENT_TOOL_NAMES:
+            tool_arguments = _normalize_subagent_budget(tool_arguments)
             tool_spec = {
                 **tool_spec,
                 "arguments": {
@@ -1731,7 +1895,9 @@ class ToolExecutionMixin:
             )
 
         try:
-            if tool_spec["name"] in SUBAGENT_TOOL_NAMES:
+            if worktree_binding_failure is not None:
+                result = worktree_binding_failure
+            elif tool_spec["name"] in SUBAGENT_TOOL_NAMES:
                 self._fire_hooks("before_subagent_start", session_id, task, extra_context={"toolArguments": tool_arguments})
                 try:
                     result = self._subagent_service.dispatch(tool_arguments)
@@ -1956,11 +2122,37 @@ class ToolExecutionMixin:
 
         if tool_spec["name"] in SUBAGENT_TOOL_NAMES:
             tool_result = provider_tool_result()
+            if result.get("status") == "approval_required":
+                event_type = "tool.blocked"
+                extra = {"result": result, "reason": "approval_required"}
+                tool_status = "blocked"
+            elif result.get("status") == "blocked":
+                event_type = "tool.blocked"
+                extra = {"result": result, "reason": result.get("error", "Blocked by permission policy.")}
+                tool_status = "blocked"
+            elif self._tool_failed(tool_spec["name"], result):
+                event_type = "tool.failed"
+                extra = {"result": result}
+                tool_status = "failed"
+            else:
+                event_type = "tool.completed"
+                extra = {"result": result}
+                tool_status = "completed"
             self._publish(
                 session_id=session_id,
                 task=task,
-                event_type="tool.completed",
-                payload=tool_event_payload({"result": result}),
+                event_type=event_type,
+                payload=tool_event_payload(extra),
+            )
+            self._fire_hooks(
+                "after_tool_call",
+                session_id,
+                task,
+                extra_context={
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "toolStatus": tool_status,
+                },
             )
             return tool_result
 
@@ -2047,8 +2239,11 @@ class ToolExecutionMixin:
             self._publish(
                 session_id=session_id,
                 task=task,
-                event_type="tool.completed",
-                payload=tool_event_payload({"result": result}),
+                event_type="tool.blocked",
+                payload=tool_event_payload({
+                    "result": result,
+                    "reason": "approval_required",
+                }),
             )
             return tool_result
 

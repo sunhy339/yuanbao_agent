@@ -35,12 +35,34 @@ def test_planner_uses_lifecycle_plan_for_explicit_swarm_route() -> None:
 
     plan = planner.plan(
         "use multiple agents to optimize this project",
-        context={"workspace_name": "test_pro", "routing": {"scenario": "swarm_task", "strategy": "plan_swarm"}},
+        context={
+            "workspace_name": "test_pro",
+            "routing": {"scenario": "swarm_task", "strategy": "plan_swarm", "enable_planning": True},
+        },
     )
 
     assert [step["id"] for step in plan] == ["decompose-work", "dispatch-work", "synthesize-results"]
     assert plan[0]["status"] == "active"
     assert "tools" not in plan[0]["detail"].lower()
+
+
+def test_planner_skips_lifecycle_plan_for_model_tool_swarm_route() -> None:
+    planner = Planner()
+
+    plan = planner.plan(
+        "use multiple agents to optimize this project",
+        context={
+            "workspace_name": "test_pro",
+            "routing": {
+                "scenario": "swarm_task",
+                "strategy": "plan_swarm",
+                "enable_planning": False,
+                "orchestrationMode": "model_tools",
+            },
+        },
+    )
+
+    assert plan == []
 
 
 def test_planner_uses_lifecycle_plan_for_explicit_plan_request() -> None:
@@ -52,3 +74,14 @@ def test_planner_uses_lifecycle_plan_for_explicit_plan_request() -> None:
     )
 
     assert [step["id"] for step in plan] == ["clarify-goal", "draft-plan", "present-plan"]
+
+
+def test_planner_does_not_treat_explaining_a_plan_as_plan_request() -> None:
+    planner = Planner()
+
+    plan = planner.plan(
+        "explain a plan",
+        context={"workspace_name": "test_pro", "routing": {"scenario": "simple_query", "strategy": "react_fast"}},
+    )
+
+    assert plan == []

@@ -648,10 +648,13 @@ export function CleanAppShell({
           style={{ "--hc-file-pane-reserve": filePaneOpen && activeKind === "session" ? `${effectiveFilePaneWidth}px` : "0px" } as React.CSSProperties}
         >
           <header className="hc-tabs" aria-label="标签页">
-            <div className="hc-tab-strip">
+            <div className="hc-tab-strip" role="tablist" aria-label="已打开标签页">
               {tabs.map((tab) => (
                 <button
                   type="button"
+                  role="tab"
+                  aria-label={`标签页 ${tab.kind === "session" ? tab.title || "New Session" : systemLabel(tab.kind)}`}
+                  aria-selected={tab.id === activeTabId}
                   key={tab.id}
                   className={tab.id === activeTabId ? "is-active" : undefined}
                   onClick={() => onActivateTab(tab.id)}

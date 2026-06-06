@@ -528,6 +528,8 @@ def test_context_builder_expands_cache_friendly_history_and_stable_prefix(
                     "maxContextTokens": 12000,
                     "promptCache": {
                         "enabled": True,
+                        "includeKeyFiles": True,
+                        "includeStableWorkspaceContext": True,
                         "targetFillRatio": 0.6,
                         "maxStableContextTokens": 8000,
                         "recentMessages": 20,
@@ -570,6 +572,19 @@ def test_context_builder_splits_stable_prefix_from_dynamic_tail(
         "_git_summary",
         lambda self, workspace_root: "Git status summary:\n- modified runtime file.",
     )
+    store.update_config(
+        {
+            "config": {
+                "provider": {
+                    "promptCache": {
+                        "enabled": True,
+                        "includeKeyFiles": True,
+                        "includeStableWorkspaceContext": True,
+                    }
+                }
+            }
+        }
+    )
 
     context = ContextBuilder(store, tool_schemas=[]).build(
         session_id=session["id"],
@@ -594,6 +609,33 @@ def test_context_builder_splits_stable_prefix_from_dynamic_tail(
     assert "git_status" in stats["dynamicTailSections"]
     assert stats["stablePrefixTokens"] > 0
     assert stats["stablePrefixTokens"] < stats["messageTokens"]
+
+
+def test_context_builder_default_cache_prefix_does_not_inline_workspace_files(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Project docs\nvisible only through tools\n", encoding="utf-8")
+    (workspace_root / "module.py").write_text("VALUE = 'tool-visible'\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="No workspace pack by default")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Read README.md and module.py",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "Stable workspace context pack:" not in text
+    assert "visible only through tools" not in text
+    assert "tool-visible" not in text
+    assert "stable_workspace_context" not in context["budgetStats"]["stablePrefixSections"]
+    assert "key_file:README.md" not in context["budgetStats"]["stablePrefixSections"]
+    assert context["budgetStats"]["promptCache"]["includeStableWorkspaceContext"] is False
+    assert context["budgetStats"]["promptCache"]["includeKeyFiles"] is False
 
 
 def test_context_builder_prompt_cache_policy_can_be_disabled(
@@ -764,6 +806,18 @@ def test_context_builder_orders_stable_memory_before_dynamic_history_and_repo_no
         workspace["id"],
         "Project memory:\n- prefer focused pytest runs for backend changes.",
     )
+    store.update_config(
+        {
+            "config": {
+                "provider": {
+                    "promptCache": {
+                        "enabled": True,
+                        "includeKeyFiles": True,
+                    }
+                }
+            }
+        }
+    )
     session = store.create_session(workspace_id=workspace["id"], title="Ordering")
     store.create_message(session_id=session["id"], role="user", content="Keep the history concise.")
     store.create_message(session_id=session["id"], role="assistant", content="I will keep the history concise.")
@@ -798,6 +852,18 @@ def test_context_builder_moves_child_role_after_stable_workspace_prefix(
         encoding="utf-8",
     )
     workspace = store.upsert_workspace(str(workspace_root))
+    store.update_config(
+        {
+            "config": {
+                "provider": {
+                    "promptCache": {
+                        "enabled": True,
+                        "includeKeyFiles": True,
+                    }
+                }
+            }
+        }
+    )
     session = store.create_session(workspace_id=workspace["id"], title="Child cache")
 
     context = ContextBuilder(store, tool_schemas=[]).build(

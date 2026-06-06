@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -37,7 +38,40 @@ WRITE_TOOLS = frozenset({"write_file", "apply_patch", "run_command"})
 SUBAGENT_TOOLS = frozenset({"agent", "task"})
 MEMORY_AND_SCRATCHPAD_TOOLS = frozenset({"memory.recall", "memory.remember", "scratchpad.read", "scratchpad.write"})
 CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question", "enter_plan_mode", "exit_plan_mode"})
-MINIMAL_CLEANUP_TOOLS = frozenset({"git_status", "list_dir", "run_command"})
+DEFAULT_CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question"})
+ASK_USER_QUESTION_TOOLS = frozenset({"ask_user_question"})
+MINIMAL_CLEANUP_TOOLS = frozenset({"git_status", "list_dir", "run_command", "ask_user_question"})
+READ_ONLY_CONTROL_TOOLS = frozenset({"ask_user_question"})
+READ_ONLY_CONSTRAINT_RE = re.compile(
+    r"("
+    r"read[-_\s]?only|readonly|no\s+(?:write|edit|modify|changes?|mutation|file\s+changes?)|"
+    r"do\s+not\s+(?:write|edit|modify|change|run\s+write)|"
+    r"don't\s+(?:write|edit|modify|change|run\s+write)|"
+    r"without\s+(?:writing|editing|modifying|changing)|"
+    r"不要(?:修改|写入|改动|编辑|运行(?:写入|修改)|动文件)|"
+    r"不(?:要|允许)?(?:修改|写入|改动|编辑|动文件)|"
+    r"只读|仅读取|不要运行写命令|不要执行写命令|不要改文件"
+    r")",
+    re.IGNORECASE,
+)
+NO_TOOL_CONSTRAINT_RE = re.compile(
+    "("
+    r"no\s+tools?|"
+    r"without\s+(?:any\s+)?tools?|"
+    r"do\s+not\s+(?:use|call|invoke)\s+(?:any\s+)?tools?|"
+    r"don't\s+(?:use|call|invoke)\s+(?:any\s+)?tools?|"
+    r"do\s+not\s+(?:read|search|inspect)\s+(?:files?|the\s+workspace|the\s+repo)|"
+    r"don't\s+(?:read|search|inspect)\s+(?:files?|the\s+workspace|the\s+repo)|"
+    "\u4e0d\u8981(?:\u8c03\u7528|\u4f7f\u7528|\u7528)?(?:\u4efb\u4f55)?\u5de5\u5177|"
+    "\u4e0d\u7528(?:\u4efb\u4f55)?\u5de5\u5177|"
+    "\u4e0d\u9700\u8981(?:\u4efb\u4f55)?\u5de5\u5177|"
+    "\u65e0\u9700(?:\u4efb\u4f55)?\u5de5\u5177|"
+    "\u522b(?:\u8c03\u7528|\u4f7f\u7528|\u7528)(?:\u4efb\u4f55)?\u5de5\u5177|"
+    "\u7981\u7528(?:\u4efb\u4f55)?\u5de5\u5177|"
+    "\u4e0d\u8981(?:\u8bfb\u53d6|\u641c\u7d22|\u68c0\u67e5)(?:\u6587\u4ef6|\u4ed3\u5e93|\u5de5\u4f5c\u533a)"
+    ")",
+    re.IGNORECASE,
+)
 VERIFICATION_COMMAND_MARKERS = (
     "pytest",
     "unittest",
@@ -147,7 +181,11 @@ class ToolPolicyResolver:
             name = self._tool_name(tool)
             if not name:
                 continue
-            phase_allowed = allow_all or name in allowed_names or (name.startswith("mcp__") and "mcp__*" in allowed_names)
+            phase_allowed = (
+                (allow_all and self._tool_allowed_by_default_all(name, context))
+                or name in allowed_names
+                or (name.startswith("mcp__") and "mcp__*" in allowed_names)
+            )
             detail: dict[str, Any] = {
                 "toolName": name,
                 "source": self._tool_source(tool, name),
@@ -214,7 +252,7 @@ class ToolPolicyResolver:
                     detail["requiresApproval"] = True
             else:
                 denied_names.append(name)
-                reason = self._denied_reason(name, phase, runtime_role)
+                reason = self._denied_reason(name, phase, runtime_role, context)
                 reasons.setdefault(name, reason)
                 detail["finalDecision"] = "denied"
                 detail["reason"] = reason
@@ -364,15 +402,40 @@ class ToolPolicyResolver:
         reasons: dict[str, str] = {}
         if phase in {"synthesis", "approval_waiting"}:
             return set(), reasons
+        no_tool_constraint = self._no_tool_constraint(context)
+        if no_tool_constraint:
+            reasons["*"] = f"explicit user constraint disables tools ({no_tool_constraint})"
+            return set(), reasons
         if phase == "plan_mode":
-            return set(PLAN_MODE_TOOL_NAMES), reasons
+            names = set(PLAN_MODE_TOOL_NAMES)
+            if self._ask_user_question_enabled(context):
+                names.update(ASK_USER_QUESTION_TOOLS)
+            return names, reasons
 
         profile_tool_policy = self._profile_tool_policy(context)
         if profile_tool_policy == "cleanup_noise" and runtime_role in {"root", "worker"}:
             names = set(MINIMAL_CLEANUP_TOOLS)
+            if self._ask_user_question_enabled(context):
+                names.update(ASK_USER_QUESTION_TOOLS)
             if phase in {"synthesis", "approval_waiting"}:
                 names.clear()
             reasons["*"] = "cleanup_noise profile limits tools to minimal inspection and cleanup"
+            return names, reasons
+
+        read_only_constraint = self._read_only_constraint(context)
+        if read_only_constraint and runtime_role in {"root", "worker", "planner", "reviewer", "summarizer"}:
+            names = set(READ_ONLY_TOOLS) | READ_ONLY_CONTROL_TOOLS
+            if self._ask_user_question_enabled(context):
+                names.update(ASK_USER_QUESTION_TOOLS)
+            if self._explicit_plan_mode_tools_enabled(context):
+                names.update({"enter_plan_mode", "exit_plan_mode"})
+            routing = context.get("routing")
+            strategy = routing.get("strategy") if isinstance(routing, dict) else None
+            if phase == "planning" and runtime_role in {"root", "planner"} and strategy in self.TASK_TOOL_STRATEGIES:
+                names.update(SUBAGENT_TOOLS)
+            if phase == "plan_mode":
+                names.add("exit_plan_mode")
+            reasons["*"] = f"read-only user constraint limits tool visibility ({read_only_constraint})"
             return names, reasons
 
         child_allowlist = self._child_allowlist(context)
@@ -401,6 +464,65 @@ class ToolPolicyResolver:
 
         return names, reasons
 
+    def _tool_allowed_by_default_all(self, tool_name: str, context: dict[str, Any]) -> bool:
+        if self._read_only_constraint(context):
+            if tool_name in {"enter_plan_mode", "exit_plan_mode"} and self._explicit_plan_mode_tools_enabled(context):
+                return True
+            return tool_name in READ_ONLY_TOOLS or tool_name in READ_ONLY_CONTROL_TOOLS
+        if tool_name not in CONTROL_FLOW_TOOL_NAMES:
+            return True
+        if tool_name in DEFAULT_CONTROL_FLOW_TOOL_NAMES:
+            return True
+        if self._explicit_plan_mode_tools_enabled(context):
+            return True
+        return False
+
+    @staticmethod
+    def _ask_user_question_enabled(context: dict[str, Any]) -> bool:
+        if context.get("_allow_ask_user_question") is True or context.get("_pending_user_question"):
+            return True
+        if ToolPolicyResolver._explicit_plan_mode_tools_enabled(context):
+            return True
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            for key in (
+                "allowAskUserQuestion",
+                "allow_ask_user_question",
+                "requiresUserInput",
+                "requires_user_input",
+                "userInputRequired",
+                "user_input_required",
+            ):
+                if routing.get(key) is True:
+                    return True
+            main_workflow = routing.get("mainWorkflow")
+            if isinstance(main_workflow, dict):
+                for key in ("allowAskUserQuestion", "requiresUserInput", "userInputRequired"):
+                    if main_workflow.get(key) is True:
+                        return True
+        return False
+
+    @staticmethod
+    def _explicit_plan_mode_tools_enabled(context: dict[str, Any]) -> bool:
+        if context.get("_plan_mode") is True or context.get("_allow_plan_mode_tools") is True:
+            return True
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            for key in ("planModeToolsEnabled", "plan_mode_tools_enabled", "explicitPlanMode", "explicit_plan_mode"):
+                if routing.get(key) is True:
+                    return True
+            main_workflow = routing.get("mainWorkflow")
+            if isinstance(main_workflow, dict):
+                takeover = main_workflow.get("userTakeover")
+                if isinstance(takeover, dict) and str(takeover.get("mode") or "").strip().lower() in {
+                    "plan",
+                    "plan_mode",
+                    "approval_plan",
+                }:
+                    return True
+        mode = str(context.get("mode") or context.get("executionMode") or "").strip().lower()
+        return mode in {"plan", "plan_mode", "approval_plan"}
+
     def _profile_tool_policy(self, context: dict[str, Any]) -> str:
         routing = context.get("routing")
         if not isinstance(routing, dict):
@@ -414,6 +536,80 @@ class ToolPolicyResolver:
             if text:
                 return text
         return ""
+
+    def _read_only_constraint(self, context: dict[str, Any]) -> str:
+        for value in self._read_only_constraint_candidates(context):
+            if isinstance(value, bool):
+                if value:
+                    return "explicit_flag"
+                continue
+            text = str(value or "").strip()
+            if not text:
+                continue
+            normalized = text.lower()
+            if normalized in {"read_only", "readonly", "read-only", "inspect_only", "analysis_only"}:
+                return normalized
+            if READ_ONLY_CONSTRAINT_RE.search(text):
+                return "user_text"
+        return ""
+
+    def _no_tool_constraint(self, context: dict[str, Any]) -> str:
+        for value in self._read_only_constraint_candidates(context):
+            if isinstance(value, bool):
+                continue
+            text = str(value or "").strip()
+            if not text:
+                continue
+            normalized = text.lower()
+            if normalized in {"no_tools", "no-tools", "tools_off", "disable_tools"}:
+                return normalized
+            if NO_TOOL_CONSTRAINT_RE.search(text):
+                return "user_text"
+        return ""
+
+    def _read_only_constraint_candidates(self, context: dict[str, Any]) -> list[Any]:
+        candidates: list[Any] = [
+            context.get("readOnly"),
+            context.get("read_only"),
+            context.get("readonly"),
+            context.get("toolPolicy"),
+            context.get("tool_policy"),
+            context.get("mode"),
+            context.get("executionMode"),
+            context.get("execution_mode"),
+        ]
+        for key in ("goal", "userGoal", "user_goal", "message", "content", "latestUserMessage", "latest_user_message"):
+            candidates.append(context.get(key))
+        task = context.get("task")
+        if isinstance(task, dict):
+            for key in ("goal", "title", "description", "resultSummary"):
+                candidates.append(task.get(key))
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            for key in (
+                "readOnly",
+                "read_only",
+                "readonly",
+                "toolPolicy",
+                "tool_policy",
+                "goal",
+                "userGoal",
+                "user_goal",
+                "latestUserMessagePreview",
+                "reasoning",
+            ):
+                candidates.append(routing.get(key))
+            profile = routing.get("profile")
+            if isinstance(profile, dict):
+                for key in ("readOnly", "read_only", "readonly", "toolPolicy", "tool_policy", "mode"):
+                    candidates.append(profile.get(key))
+            main_workflow = routing.get("mainWorkflow")
+            if isinstance(main_workflow, dict):
+                takeover = main_workflow.get("userTakeover")
+                if isinstance(takeover, dict):
+                    candidates.append(takeover.get("latestUserMessagePreview"))
+                    candidates.append(takeover.get("mode"))
+        return candidates
 
     def _last_task_result_ready(self, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> bool:
         if self._allow_tools_after_task_results(context) or not tool_results:
@@ -470,7 +666,18 @@ class ToolPolicyResolver:
                         "allowToolsAfterTaskResults": value,
                         "source": f"routing.{key}",
                     }
-        return {"allowToolsAfterTaskResults": False, "source": "default"}
+            strategy = str(routing.get("strategy") or "").strip()
+            if strategy in self.TASK_TOOL_STRATEGIES:
+                return {
+                    "allowToolsAfterTaskResults": True,
+                    "allowMoreSubtasksAfterTaskResults": False,
+                    "source": "strategy_default_post_task_continuation",
+                }
+        return {
+            "allowToolsAfterTaskResults": True,
+            "allowMoreSubtasksAfterTaskResults": False,
+            "source": "default_post_task_continuation",
+        }
 
     def _allow_more_subtasks_after_task_results(self, context: dict[str, Any]) -> bool:
         if context.get("_allow_more_subtasks_after_task_results") is True:
@@ -599,9 +806,13 @@ class ToolPolicyResolver:
             return function["name"]
         return None
 
-    def _denied_reason(self, name: str, phase: str, runtime_role: str) -> str:
+    def _denied_reason(self, name: str, phase: str, runtime_role: str, context: dict[str, Any] | None = None) -> str:
         if phase in {"synthesis", "approval_waiting"}:
             return f"phase={phase} exposes no tools"
+        if name == "ask_user_question" and context is not None and not self._ask_user_question_enabled(context):
+            return "ask_user_question is hidden unless user input is explicitly required"
+        if name in WRITE_TOOLS and context is not None and self._read_only_constraint(context):
+            return f"tool {name} hidden by explicit read-only user constraint"
         if runtime_role in {"reviewer", "summarizer"} and name not in READ_ONLY_TOOLS:
             return f"runtimeRole={runtime_role} is read-only"
         return f"tool not allowed for phase={phase} runtimeRole={runtime_role}"

@@ -194,18 +194,8 @@ def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> N
         "message": "Context compacted",
         "data": {"summary": "Context compacted", "phase": "completed"},
     }
-    assert to_yuanbao_server_message(_event("goal_event", {"message": "Goal complete", "status": "complete"})) == {
-        "type": "system_notification",
-        "subtype": "goal_event",
-        "message": "Goal complete",
-        "data": {"message": "Goal complete", "status": "complete"},
-    }
-    assert to_yuanbao_server_message(_event("memory_event", {"message": "Saved MEMORY.md"})) == {
-        "type": "system_notification",
-        "subtype": "memory_saved",
-        "message": "Saved MEMORY.md",
-        "data": {"message": "Saved MEMORY.md"},
-    }
+    assert to_yuanbao_server_message(_event("goal_event", {"message": "Goal complete", "status": "complete"})) is None
+    assert to_yuanbao_server_message(_event("memory_event", {"message": "Saved MEMORY.md"})) is None
     assert to_yuanbao_server_message(_event("compact_boundary", {"summary": "Compaction boundary"})) == {
         "type": "system_notification",
         "subtype": "compact_boundary",
@@ -382,7 +372,7 @@ def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
         to_yuanbao_server_message(_event("collab.team.created", {"teamName": "docs"})),
         to_yuanbao_server_message(_event("collab.task.created", {"task": {"id": "child_1", "sessionId": "sess_1", "title": "Inspect", "status": "queued"}})),
         to_yuanbao_server_message(_event("collab.team.deleted", {"teamName": "docs"})),
-        to_yuanbao_server_message(_event("task.updated", {"taskId": "task_1", "status": "running"})),
+        to_yuanbao_server_message(_event("task.runtime_work_waiting", {"taskId": "task_1", "status": "running", "detail": "Waiting"})),
         to_yuanbao_server_message(_event("session.updated", {"sessionId": "sess_1", "title": "New title", "changedFields": ["title"]})),
     ]
 
@@ -416,6 +406,7 @@ def test_runtime_work_waiting_is_task_update_not_permission_request() -> None:
             "task.runtime_work_waiting",
             {
                 "status": "running",
+                "goal": "Finish cleanup",
                 "detail": "Completion is waiting for runtime work to settle.",
                 "completionGate": {"status": "waiting_runtime_work"},
             },
@@ -428,6 +419,23 @@ def test_runtime_work_waiting_is_task_update_not_permission_request() -> None:
         "status": "running",
         "progress": "Completion is waiting for runtime work to settle.",
     }
+
+
+def test_root_task_updates_do_not_leak_into_flat_chat_protocol() -> None:
+    assert (
+        to_yuanbao_server_message(
+            _event(
+                "task.updated",
+                {
+                    "status": "running",
+                    "goal": "Inspect repo",
+                    "currentStep": "Reading README.md",
+                },
+            )
+        )
+        is None
+    )
+    assert to_yuanbao_server_message(_event("task.completed", {"status": "completed", "summary": "done"})) is None
 
 
 def test_yuanbao_adapter_maps_collaboration_snapshot_to_stable_team_update() -> None:

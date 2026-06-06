@@ -9,9 +9,9 @@ from typing import Any, Callable, TextIO
 
 from ..models import RpcEnvelope, RuntimeEvent
 from ..yuanbao_event_adapter import (
-    collect_yuanbao_server_messages,
     to_yuanbao_output_frames,
     to_yuanbao_server_message,
+    yuanbao_message_from_event_payload,
 )
 from ..services.collaboration_service import CollaborationService
 from ..services.replay_service import ReplayService
@@ -452,16 +452,47 @@ class JsonRpcServer:
 
     def _yuanbao_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
         """Fetch Yuanbao flat ServerMessages after a trace sequence."""
-        result = self._events_after(params)
-        events = result.get("events") if isinstance(result, dict) else []
-        collected = collect_yuanbao_server_messages(
-            events,
-            after_seq=int(params.get("afterSeq", params.get("after_seq", 0))),
-        )
+        session_id = params.get("sessionId") or params.get("session_id", "")
+        after_seq = int(params.get("afterSeq", params.get("after_seq", 0)))
+        message_limit = max(1, min(int(params.get("limit", 500)), 5000))
+        event_page_limit = max(1, min(int(params.get("eventLimit", params.get("event_limit", 500))), 500))
+        max_pages = max(1, min(int(params.get("maxPages", params.get("max_pages", 40))), 100))
+        messages: list[dict[str, Any]] = []
+        last_seq = after_seq
+        truncated = False
+
+        for _page in range(max_pages):
+            result = self._store.events_after(session_id, last_seq, limit=event_page_limit)
+            events = result.get("events") if isinstance(result, dict) else []
+            if not isinstance(events, list) or not events:
+                truncated = False
+                break
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                sequence = event.get("sequence")
+                if isinstance(sequence, (int, float)) and not isinstance(sequence, bool):
+                    last_seq = max(last_seq, int(sequence))
+                message = yuanbao_message_from_event_payload(event)
+                if message is None:
+                    continue
+                messages.append(message)
+                if len(messages) >= message_limit:
+                    return {
+                        "messages": messages,
+                        "lastSeq": last_seq,
+                        "truncated": True,
+                    }
+            truncated = bool(result.get("truncated")) if isinstance(result, dict) else False
+            if not truncated:
+                break
+        else:
+            truncated = True
+
         return {
-            "messages": collected["messages"],
-            "lastSeq": collected["lastSeq"],
-            "truncated": bool(result.get("truncated")) if isinstance(result, dict) else False,
+            "messages": messages,
+            "lastSeq": last_seq,
+            "truncated": truncated,
         }
 
     def _haha_cc_events_after(self, params: dict[str, Any]) -> dict[str, Any]:

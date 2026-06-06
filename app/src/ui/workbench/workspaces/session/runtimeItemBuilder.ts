@@ -747,6 +747,29 @@ export function buildRuntimeItems({
 
   approvals.forEach((approval) => {
     if (approval.kind === "completion_review") {
+      if (approval.completionEvidence) {
+        items.push({
+          id: `completion:${approval.id}`,
+          kind: "completion",
+          title: formatApprovalDisplayTitle({
+            title: approval.title,
+            kind: approval.kind,
+            command: approval.command || approval.parametersPreview,
+          }),
+          status: approval.status,
+          summary: approval.summary || approval.completionEvidence.summary,
+          meta: compactMeta([
+            approval.completionEvidence.evidenceLevel ? `证据级别：${approval.completionEvidence.evidenceLevel}` : null,
+            approval.completionEvidence.status ? `状态：${approval.completionEvidence.status}` : null,
+            approval.risk ? `风险：${formatStatusLabel(`${approval.risk} risk`)}` : null,
+          ]),
+          riskLevel: approval.risk,
+          completionEvidence: approval.completionEvidence,
+          time: approval.requestedAt,
+          visibility: "chat",
+          toolName: approval.kind,
+        });
+      }
       return;
     }
     const normalizedStatus = approval.status.toLowerCase();

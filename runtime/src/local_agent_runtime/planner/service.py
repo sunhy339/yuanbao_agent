@@ -50,9 +50,21 @@ class Planner:
         return routing if isinstance(routing, dict) else {}
 
     def _is_orchestration_route(self, routing: dict[str, Any]) -> bool:
+        if self._is_model_tool_orchestration_route(routing):
+            return False
         strategy = str(routing.get("strategy") or "").strip()
         scenario = str(routing.get("scenario") or "").strip()
         return strategy in self._PLAN_STRATEGIES or scenario in self._SCAFFOLDED_PLAN_SCENARIOS
+
+    @staticmethod
+    def _is_model_tool_orchestration_route(routing: dict[str, Any]) -> bool:
+        mode = str(routing.get("orchestrationMode") or routing.get("orchestration_mode") or "").strip()
+        if mode == "model_tools":
+            return True
+        strategy = str(routing.get("strategy") or "").strip()
+        scenario = str(routing.get("scenario") or "").strip()
+        planning_like = strategy in Planner._PLAN_STRATEGIES or scenario in Planner._SCAFFOLDED_PLAN_SCENARIOS
+        return planning_like and routing.get("enable_planning") is False
 
     def _orchestration_plan(
         self,
@@ -147,6 +159,8 @@ class Planner:
             return True
         routing = context.get("routing") if isinstance(context, dict) else None
         if isinstance(routing, dict):
+            if self._is_model_tool_orchestration_route(routing):
+                return False
             strategy = str(routing.get("strategy") or "").strip()
             scenario = str(routing.get("scenario") or "").strip()
             if strategy in self._PLAN_STRATEGIES or scenario in self._SCAFFOLDED_PLAN_SCENARIOS:
@@ -156,21 +170,35 @@ class Planner:
     @staticmethod
     def _explicit_plan_request(goal: str) -> bool:
         lowered = str(goal or "").casefold()
-        markers = (
-            "plan",
+        direct_markers = (
             "roadmap",
             "break down",
             "decompose",
             "task list",
             "subtasks",
-            "规划",
-            "计划",
+            "execution plan",
+            "implementation plan",
+            "制定计划",
+            "做一个计划",
+            "做个计划",
+            "给我一个计划",
+            "生成计划",
+            "执行计划",
+            "实施计划",
             "路线图",
             "拆分",
             "任务清单",
             "子任务",
         )
-        return any(marker in lowered for marker in markers)
+        if any(marker in lowered for marker in direct_markers):
+            return True
+        if re.search(
+            r"\b(?:create|make|write|give|draft|propose|prepare|design|outline|generate|build)\s+"
+            r"(?:me\s+)?(?:a\s+|an\s+|the\s+)?(?:plan|roadmap)\b",
+            lowered,
+        ):
+            return True
+        return re.search(r"\b(?:plan|roadmap)\s+(?:for|to)\b", lowered) is not None
 
     def _route_goal(self, goal: str) -> dict[str, str]:
         lowered = goal.lower().strip()

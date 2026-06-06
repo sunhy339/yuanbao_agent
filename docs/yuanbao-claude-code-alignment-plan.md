@@ -416,4 +416,4 @@ Covered streaming sources:
 
 ### 11.3 Message lifecycle flat boundary
 
-`message.created` is a Yuanbao envelope lifecycle event only. It should not generate flat `content_start`, because haha-cc style consumers treat explicit `content_start`, `content_delta`, and `message_complete` as the flat assistant-output lifecycle.
+`message.created` is a Yuanbao envelope lifecycle event only. It should not generate flat `content_start`, because legacy flat consumers treat explicit `content_start`, `content_delta`, and `message_complete` as the assistant-output lifecycle.

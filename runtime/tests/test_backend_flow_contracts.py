@@ -6,13 +6,19 @@ from types import SimpleNamespace
 from typing import Any
 
 from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.main import build_server
+from local_agent_runtime.memory import MemoryManager, MemoryRetriever, MemoryStore
 from local_agent_runtime.orchestration.types import OrchestrationResult
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.planner.types import PlanResult, Subtask
+from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.policy.permission_engine import PermissionEngine
 from local_agent_runtime.router.meta_router import MetaRouter
 from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 from local_agent_runtime.rpc.server import JsonRpcServer
+from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
+from local_agent_runtime.tools import build_builtin_tools
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
@@ -79,6 +85,59 @@ def _make_runtime(tmp_path: Path, provider: Any, tools: dict[str, Any] | None = 
     return SimpleNamespace(server=server, store=store, orchestrator=orchestrator, events=events)
 
 
+def _make_memory_runtime(tmp_path: Path, provider: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
+    event_bus = EventBus()
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    memory_store = MemoryStore(store)
+    memory_manager = MemoryManager(
+        store=memory_store,
+        retriever=MemoryRetriever(memory_store),
+    )
+    tool_registry = ToolRegistry(tools or {})
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=tool_registry,
+        provider=provider,
+        meta_router=MetaRouter(provider=None),
+        memory_manager=memory_manager,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    return SimpleNamespace(server=server, store=store, orchestrator=orchestrator, events=events)
+
+
+def _make_builtin_runtime(tmp_path: Path, provider: Any) -> SimpleNamespace:
+    event_bus = EventBus()
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    store.set_feature_flag("multiAgent", True)
+    config = store.get_config({})["config"]
+    policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
+    permission_engine = PermissionEngine(config=config, store=store)
+    collaboration = CollaborationService(store, event_bus)
+    subagent_service = SubagentService(store, collaboration)
+    tool_registry = ToolRegistry(
+        build_builtin_tools(
+            policy_guard=policy_guard,
+            store=store,
+            subagent_service=subagent_service,
+            permission_engine=permission_engine,
+        )
+    )
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=tool_registry,
+        provider=provider,
+        meta_router=MetaRouter(provider=None),
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    return SimpleNamespace(server=server, store=store, orchestrator=orchestrator, events=events)
+
+
 def _rpc(runtime: SimpleNamespace, method: str, params: dict[str, Any]) -> dict[str, Any]:
     request_id = f"req_{len(runtime.events)}_{method}"
     response = runtime.server.handle_line(json.dumps({
@@ -125,6 +184,18 @@ def _force_route(runtime: SimpleNamespace, *, scenario: Scenario, strategy: Exec
     )
 
 
+def test_default_server_does_not_enable_backend_advisor_main_path(tmp_path: Path) -> None:
+    server = build_server(database_path=str(tmp_path / "server.sqlite3"))
+    try:
+        orchestrator = server._orchestrator  # noqa: SLF001
+        assert getattr(orchestrator, "_decision_advisor", None) is None
+        router = getattr(orchestrator, "_meta_router")
+        assert getattr(router, "_decision_advisor", None) is None
+        assert getattr(router, "_provider", None) is None
+    finally:
+        server.graceful_shutdown()
+
+
 def test_simple_chat_stays_model_first_without_tool_or_plan_flow(tmp_path: Path) -> None:
     provider = ScriptedProvider([{"final": "你好！"}])
     runtime = _make_runtime(tmp_path, provider)
@@ -162,6 +233,68 @@ def test_document_style_prompt_does_not_invent_workspace_probe_or_review(tmp_pat
         and event["payload"].get("phase") == "workspace_evidence_required"
     ]
     assert len(provider.calls) == 1
+
+
+def test_model_tool_swarm_summary_only_does_not_request_completion_review(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="agent",
+        goal="Use multiple agents for read-only analysis",
+        plan=[],
+        routing={
+            "scenario": "swarm_task",
+            "strategy": "plan_swarm",
+            "orchestrationMode": "model_tools",
+        },
+    )
+
+    result = runtime.orchestrator._complete_task(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        summary="Read-only agent synthesis completed.",
+        context={
+            "routing": {
+                "scenario": "swarm_task",
+                "strategy": "plan_swarm",
+                "orchestrationMode": "model_tools",
+            }
+        },
+        skip_reflection=True,
+    )
+
+    assert result["status"] == "completed"
+    assert "completionGate" not in result.get("structuredResult", {})
+    assert "completion_review" not in _event_types(runtime)
+    assert not [
+        event for event in runtime.events
+        if event["type"] == "approval.requested"
+        and event["payload"].get("kind") == "completion_review"
+    ]
+
+
+def test_trace_only_routing_event_does_not_emit_flat_chat_message(tmp_path: Path) -> None:
+    provider = ScriptedProvider([{"final": "done"}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "read file.txt"})
+
+    task = response["result"]["task"]
+    routing_events = [event for event in runtime.events if event["type"] == "task.routing.decided"]
+    assert routing_events
+    assert all(event["visibility"] == "trace" for event in routing_events)
+    assert all("yuanbao" not in event and "hahaCc" not in event for event in routing_events)
+    persisted = runtime.store.list_trace_events({"taskId": task["id"], "limit": 100})["traceEvents"]
+    persisted_routing = [event for event in persisted if event["type"] == "task.routing.decided"]
+    assert persisted_routing
+    assert all("yuanbao" not in event and "hahaCc" not in event for event in persisted_routing)
+    replay = runtime.server._handlers["events.yuanbaoAfter"]({"sessionId": session["id"], "afterSeq": 0})["messages"]
+    assert not any(
+        message.get("type") == "task_update" and message.get("status") == "react_standard"
+        for message in replay
+    )
 
 
 def test_provider_thinking_surrounds_tool_cycle_in_haha_order(tmp_path: Path) -> None:
@@ -229,6 +362,133 @@ def test_provider_thinking_surrounds_tool_cycle_in_haha_order(tmp_path: Path) ->
 
     assert first_thinking < tool_start < tool_result < second_thinking < final_delta < message_complete
     assert all(event["visibility"] == "chat" for event in events if event["type"] in {"thinking", "content_start", "tool_result", "content_delta", "message_complete"})
+
+
+def test_chat_compat_tool_frames_persist_for_session_replay(tmp_path: Path) -> None:
+    provider = ScriptedProvider([
+        {
+            "thought_summary": "Need one workspace lookup.",
+            "message": "I will read the note.",
+            "tool_calls": [
+                {"id": "call_read", "name": "read_file", "arguments": {"path": "README.md"}},
+            ],
+        },
+        {"final": "The note says hello."},
+    ])
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "read_file": lambda params: {
+                "path": params["path"],
+                "content": "hello",
+                "bytes": 5,
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "read the note"})
+    task = response["result"]["task"]
+
+    trace = runtime.store.list_trace_events({"taskId": task["id"], "limit": 200})["traceEvents"]
+    trace_types = [event["type"] for event in trace]
+
+    for expected in ["thinking", "content_start", "tool_use_complete", "content_delta", "tool_result", "message_complete"]:
+        assert expected in trace_types
+
+    raw_tool_lifecycle = [event for event in trace if event["type"] in {"tool.started", "tool.completed"}]
+    assert raw_tool_lifecycle
+    assert all(event["visibility"] == "trace" for event in raw_tool_lifecycle)
+
+    recoverable = [
+        event
+        for event in trace
+        if event["type"] in {"thinking", "content_start", "tool_use_complete", "content_delta", "tool_result", "message_complete"}
+    ]
+    assert recoverable
+    assert all(event["visibility"] == "chat" for event in recoverable)
+    assert all(event["payload"].get("_chatCompat") is True for event in recoverable)
+    assert all(event["payload"].get("_bridge", {}).get("persistTraceMirror") is True for event in recoverable)
+    assert all(
+        event.get("yuanbao")
+        for event in recoverable
+        if not (event["type"] == "content_delta" and event["payload"].get("toolOutput"))
+    )
+
+    tool_output_deltas = [
+        event
+        for event in recoverable
+        if event["type"] == "content_delta" and event["payload"].get("toolOutput")
+    ]
+    assert tool_output_deltas
+    assert not [
+        event for event in trace
+        if event["type"] == "content_delta" and event["payload"].get("text") == "The note says hello."
+    ]
+
+    recovered = runtime.store.events_after(session["id"], 0)["events"]
+    recovered_types = [event["type"] for event in recovered]
+    for expected in ["thinking", "content_start", "tool_use_complete", "tool_result", "message_complete"]:
+        assert expected in recovered_types
+    completed_raw = [event for event in recovered if event["type"] == "message.completed"]
+    assert completed_raw
+    assert all(event.get("yuanbao") is None for event in completed_raw)
+    assert all(event["payload"].get("_bridge", {}).get("suppressRealtimeFlat") is True for event in completed_raw)
+
+
+def test_write_file_approval_is_waiting_node_without_raw_request_json(tmp_path: Path) -> None:
+    provider = ScriptedProvider([
+        {
+            "thought_summary": "Need to create the requested file.",
+            "message": "I will create the file.",
+            "tool_calls": [
+                {
+                    "id": "call_write",
+                    "name": "write_file",
+                    "arguments": {
+                        "path": "todo.html",
+                        "content": "<h1>Todo</h1>",
+                        "overwrite": True,
+                    },
+                }
+            ],
+        }
+    ])
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "create todo"})
+
+    assert response["result"]["task"]["status"] == "waiting_approval"
+    types = _event_types(runtime)
+    assert "approval.requested" in types
+    assert "task.waiting_approval" in types
+    assert "tool.blocked" in types
+    assert "tool.completed" not in types
+
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_write"
+    )
+    content = tool_result["content"]
+    assert content["status"] == "approval_required"
+    assert content["summary"] == "approval required before writing todo.html"
+    assert "requestJson" not in json.dumps(content, ensure_ascii=False)
+    assert "workspaceRoot" not in json.dumps(content, ensure_ascii=False)
+    assert content["approval"]["id"].startswith("appr_")
+    assert content["approval"]["kind"] == "write_file"
+
+    blocked = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.blocked" and event["payload"].get("toolCallId") == "call_write"
+    )
+    assert blocked["resultSummary"] == "approval required before writing todo.html"
+    blocked_json = json.dumps(blocked, ensure_ascii=False)
+    assert "requestJson" not in blocked_json
+    assert "workspaceRoot" not in blocked_json
 
 
 def test_completion_review_approval_is_internal_and_idempotent(tmp_path: Path) -> None:
@@ -318,7 +578,7 @@ def test_transient_provider_failure_has_single_user_failure_surface(tmp_path: Pa
     from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
 
     provider = ScriptedProvider(error=ProviderAdapterError("Concurrency limit exceeded for account, please retry later"))
-    runtime = _make_runtime(tmp_path, provider)
+    runtime = _make_memory_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
     runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
         scenario=Scenario.SIMPLE_QUERY,
@@ -336,12 +596,53 @@ def test_transient_provider_failure_has_single_user_failure_surface(tmp_path: Pa
     types = _event_types(runtime)
     assert types.count("message.failed") == 1
     assert types.count("task.failed") == 1
-    goal_events = [event for event in runtime.events if event["type"] == "goal_event" and event["payload"].get("action") == "failed"]
-    assert len(goal_events) == 1
-    assert goal_events[0]["visibility"] == "panel"
+    assert not [event for event in runtime.events if event["type"] == "goal_event" and event["payload"].get("action") == "failed"]
     assert not [event for event in runtime.events if event["type"] == "memory_event"]
+    assert not [
+        event for event in runtime.events
+        if event["type"] == "agent.decision.failure_recovery"
+        and event["visibility"] != "trace"
+    ]
     assert not [event for event in runtime.events if event["type"] == "approval.requested"]
     assert not [event for event in runtime.events if event["type"] == "completion_review"]
+    assert MemoryStore(runtime.store).query_all(session_id=session["id"], workspace_id=session["workspaceId"]) == []
+
+
+def test_provider_auth_failure_does_not_write_visible_memory_events(tmp_path: Path) -> None:
+    from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
+
+    provider = ScriptedProvider(error=ProviderAdapterError("Provider request failed with HTTP 401: unknown provider error"))
+    runtime = _make_memory_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
+        scenario=Scenario.SIMPLE_QUERY,
+        strategy=ExecutionStrategy.REACT_FAST,
+        confidence=0.95,
+        max_steps=3,
+        enable_reflection=False,
+        enable_planning=False,
+        reasoning="simple provider auth failure test",
+    )
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "你好"})
+
+    assert response["result"]["task"]["status"] == "failed"
+    task = response["result"]["task"]
+    assert task["errorCode"] == "FAST_LOOP_FAILED"
+    assert task["structuredResult"]["failureRecovery"]["category"] == "auth"
+    types = _event_types(runtime)
+    assert types.count("message.failed") == 1
+    assert types.count("task.failed") == 1
+    assert not [event for event in runtime.events if event["type"] == "goal_event" and event["payload"].get("action") == "failed"]
+    assert not [event for event in runtime.events if event["type"] == "memory_event"]
+    assert not [
+        event for event in runtime.events
+        if event["type"] == "agent.decision.failure_recovery"
+        and event["visibility"] != "trace"
+    ]
+    assert not [event for event in runtime.events if event["type"] == "approval.requested"]
+    assert not [event for event in runtime.events if event["type"] == "completion_review"]
+    assert MemoryStore(runtime.store).query_all(session_id=session["id"], workspace_id=session["workspaceId"]) == []
 
 
 def test_terminal_cancel_absorbs_late_visible_runtime_events(tmp_path: Path) -> None:
@@ -553,6 +854,40 @@ def test_plan_approval_resolution_keeps_structured_preview_sections(tmp_path: Pa
     persisted = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
     persisted_resolved = [event for event in persisted if event["type"] == "approval.resolved"][-1]
     assert persisted_resolved["payload"]["previewSections"] == preview_sections
+
+
+def test_cancelled_task_completion_review_submit_emits_ignored_resolution(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="cleanup generated path",
+        plan=[],
+        status="cancelled",
+    )
+    approval = runtime.store.create_approval(
+        task["id"],
+        "completion_review",
+        {
+            "summary": "Internal completion review",
+            "structuredResult": {"status": "needs_more_work"},
+        },
+    )
+
+    result = runtime.orchestrator.submit_approval({"approvalId": approval["id"], "decision": "approved"})
+
+    assert result["ignored"] is True
+    assert result["task"]["status"] == "cancelled"
+    resolved = [event for event in runtime.events if event["type"] == "approval.resolved"][-1]
+    assert resolved["payload"]["ignored"] is True
+    assert resolved["payload"]["kind"] == "completion_review"
+    assert resolved["payload"]["taskStatus"] == "cancelled"
+    assert "yuanbao" not in resolved
+    assert not [event for event in runtime.events if event["type"] == "permission_request"]
+    persisted = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+    persisted_resolved = [event for event in persisted if event["type"] == "approval.resolved"][-1]
+    assert persisted_resolved["payload"]["ignored"] is True
 
 
 def test_swarm_decomposition_failure_falls_back_to_original_request_not_fixed_template(tmp_path: Path) -> None:

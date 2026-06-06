@@ -391,16 +391,19 @@ class MessageExecutionMixin:
                     )
                 }
             if react_result["status"] == "failed":
+                structured_result = {
+                    "toolResults": react_result.get("tool_results", []),
+                    "budgetExhausted": react_result.get("budget_exhausted") is True,
+                }
+                if isinstance(react_result.get("structured_result"), dict):
+                    structured_result.update(react_result["structured_result"])
                 return {
                     "task": self._fail_task(
                         session_id=session_id,
                         task=task,
                         summary=react_result.get("summary") or "ReAct loop failed.",
                         error_code=react_result.get("error_code") or "REACT_LOOP_FAILED",
-                        structured_result={
-                            "toolResults": react_result.get("tool_results", []),
-                            "budgetExhausted": react_result.get("budget_exhausted") is True,
-                        },
+                        structured_result=structured_result,
                     )
                 }
 

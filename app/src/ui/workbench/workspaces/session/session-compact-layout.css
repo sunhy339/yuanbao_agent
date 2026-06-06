@@ -1,4 +1,4 @@
-/* Session workspace v3: haha-cc inspired chat stream plus a file-only side pane. */
+/* Session workspace v3: Yuanbao chat stream plus a file-only side pane. */
 .workspace-frame:has(.session-workspace-chat-only) {
   height: 100%;
   min-height: 0;
@@ -825,7 +825,7 @@
   min-width: 0;
 }
 
-/* Main chat output: align the stream with the newer haha-cc desktop screenshots. */
+/* Main chat output: align the stream with the newer desktop reference screenshots. */
 .session-workspace-chat-only .message-stream,
 .session-workspace-chat-only .message-stream.message-stream-chat-only {
   width: min(1240px, calc(100% - 28px));
@@ -2475,7 +2475,7 @@
   background: #c98b20;
 }
 
-/* haha-cc style transcript pass: text first, tool rows second, cards only when detail is needed. */
+/* Yuanbao transcript pass: text first, tool rows second, cards only when detail is needed. */
 .session-workspace-chat-only .message-stream,
 .session-workspace-chat-only .message-stream.message-stream-chat-only {
   width: min(1060px, calc(100% - 64px));
@@ -2770,7 +2770,7 @@
   }
 }
 
-/* Final haha-cc-like transcript layer: quiet prose, thin tool rows, no avatar rail. */
+/* Final Yuanbao transcript layer: quiet prose, thin tool rows, no avatar rail. */
 .session-workspace-chat-only .session-console .message-stream,
 .session-workspace-chat-only .message-stream,
 .session-workspace-chat-only .message-stream.message-stream-chat-only {

@@ -376,7 +376,7 @@ describe("App session message recovery", () => {
     expect(await screen.findByText("Beta persisted request")).toBeInTheDocument();
     runtimeMocks.listMessages.mockClear();
 
-    await user.click(screen.getByRole("button", { name: /^Alpha Session$/ }));
+    await user.click(screen.getByRole("tab", { name: "标签页 Alpha Session" }));
     expect(await screen.findByText("Alpha persisted answer")).toBeInTheDocument();
     expect(screen.queryByText("Beta persisted request")).not.toBeInTheDocument();
     expect(runtimeMocks.listMessages).toHaveBeenCalledWith({
@@ -384,7 +384,7 @@ describe("App session message recovery", () => {
       limit: 500,
     });
 
-    await user.click(screen.getByRole("button", { name: /^Beta Session$/ }));
+    await user.click(screen.getByRole("tab", { name: "标签页 Beta Session" }));
     expect(await screen.findByText("Beta persisted answer")).toBeInTheDocument();
     expect(screen.queryByText("Alpha persisted request")).not.toBeInTheDocument();
     expect(runtimeMocks.listMessages).toHaveBeenCalledWith({

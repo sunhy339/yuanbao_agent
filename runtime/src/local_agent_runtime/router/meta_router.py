@@ -1,9 +1,8 @@
-"""Meta-router: classify user goals into scenarios and pick an execution strategy.
+"""Meta-router: choose a thin turn policy for a user goal.
 
-Two-signal routing:
-  1. Rule-based keyword matching provides a cheap candidate and fallback.
-  2. DecisionAdvisor participates in semantic routing when available, with the
-     rule candidate supplied as context for audit and guardrails.
+Keyword matching remains useful as diagnostic intent hints, but normal user
+turns should stay model-first ReAct. The model chooses tools through provider
+output; the backend enforces policy and projects typed events.
 """
 
 from __future__ import annotations
@@ -60,6 +59,16 @@ _DOC_SIGNAL_RE = re.compile(
     r"\b(?:readme|docs?|documentation)\b|\u6587\u6863|\u8bf4\u660e",
     re.IGNORECASE,
 )
+_READ_ONLY_DOC_INTENT_RE = re.compile(
+    r"\b(?:read|inspect|look at|open|summari[sz]e|explain|describe|review|analy[sz]e)\b|"
+    r"\u8bfb\u53d6|\u67e5\u770b|\u603b\u7ed3|\u6458\u8981|\u89e3\u91ca|\u5206\u6790",
+    re.IGNORECASE,
+)
+_DOC_WRITE_INTENT_RE = re.compile(
+    r"\b(?:write|create|generate|draft|update|modify|edit|replace|append|add|rewrite)\b|"
+    r"\u7f16\u5199|\u5199|\u751f\u6210|\u521b\u5efa|\u66f4\u65b0|\u4fee\u6539|\u7f16\u8f91|\u8ffd\u52a0|\u65b0\u589e|\u91cd\u5199",
+    re.IGNORECASE,
+)
 _WORK_DOMAIN_SIGNAL_RE = re.compile(
     r"\b(?:frontend|front-end|backend|back-end|api|database|storage|validation|"
     r"error handling|tests?|readme|docs?|documentation|ui|data model)\b|"
@@ -70,6 +79,18 @@ _WORK_DOMAIN_SIGNAL_RE = re.compile(
 )
 _GREETING_ONLY_RE = re.compile(
     r"^\s*(?:hi|hello|hey|你好|您好|嗨|哈喽|hello[!.]*|hi[!.]*)\s*[!.。！]?\s*$",
+    re.IGNORECASE,
+)
+_NO_WORKSPACE_TOOL_REQUEST_RE = re.compile(
+    r"\b(?:do not|don't|without|no need to|needn't)\s+(?:read|inspect|open|search|use)\s+"
+    r"(?:files?|workspace|repo|repository|tools?)\b|"
+    r"\b(?:do not|don't|without)\s+(?:use|call)\s+tools?\b|"
+    r"\bno\s+(?:files?|tools?|workspace|repo|repository)\b|"
+    r"不要(?:读取|查看|搜索|使用)(?:文件|仓库|项目|工具)|不(?:需要|要)(?:读|查|看|用)(?:文件|仓库|项目|工具)",
+    re.IGNORECASE,
+)
+_DIRECT_ANSWER_RE = re.compile(
+    r"\b(?:reply|answer|respond|say|explain|summari[sz]e)\b|回答|回复|解释|总结",
     re.IGNORECASE,
 )
 
@@ -102,34 +123,42 @@ class MetaRouter:
         """Return a routing decision for *goal*.
 
         Phase 1: rule-based match (free, instant).
-        Phase 2: when DecisionAdvisor is available, ask the LLM with the rule
-        candidate as context; deterministic rules remain the fallback.
+        Phase 2: when the deterministic route is uncertain, or config
+        explicitly enables semantic-first routing, ask DecisionAdvisor with the
+        rule candidate as context; deterministic rules remain the fallback.
         Fallback: FREE_FORM → REACT_STANDARD.
         """
         rule_result = self._rule_based_route(goal, context)
+        if self._is_explicit_no_workspace_direct_answer(goal):
+            return self._build_decision(
+                scenario=Scenario.SIMPLE_QUERY,
+                confidence=max(rule_result.confidence, 0.92),
+                reasoning=f"rule-match: explicit-no-workspace-direct-answer; {rule_result.reasoning}",
+            )
         if self._is_greeting_only_route(goal, rule_result):
             return rule_result
         if self._has_explicit_multi_agent_signal(goal):
-            return self._build_decision(
+            decision = self._build_model_tool_orchestration_decision(
                 scenario=Scenario.SWARM_TASK,
                 confidence=max(rule_result.confidence, 0.9),
                 reasoning=f"explicit-multi-agent-signal: {rule_result.reasoning}",
             )
+            self._attach_intent_hints(decision, rule_result)
+            return decision
         defer_rule_to_llm = self._should_defer_rule_to_llm(goal, rule_result)
         consult_routing_advisor = self._should_consult_routing_advisor(
             context=context,
             rule_result=rule_result,
             defer_rule_to_llm=defer_rule_to_llm,
         )
-        if rule_result.confidence >= _RULE_CONFIDENCE_THRESHOLD and not consult_routing_advisor:
-            return rule_result
-
         rule_candidate = rule_result if consult_routing_advisor else None
-        llm_result = self._llm_route(
-            goal,
-            context,
-            rule_candidate=rule_candidate,
-        )
+        llm_result = None
+        if consult_routing_advisor:
+            llm_result = self._llm_route(
+                goal,
+                context,
+                rule_candidate=rule_candidate,
+            )
         if llm_result is not None and rule_candidate is not None:
             llm_result.metadata["rule_candidate"] = {
                 "scenario": rule_result.scenario.value,
@@ -141,7 +170,7 @@ class MetaRouter:
         if llm_result is not None and llm_result.confidence > rule_result.confidence:
             return llm_result
 
-        return rule_result
+        return self._build_model_first_decision(rule_result)
 
     def _should_consult_routing_advisor(
         self,
@@ -150,29 +179,29 @@ class MetaRouter:
         rule_result: RoutingDecision,
         defer_rule_to_llm: bool,
     ) -> bool:
+        if not self._routing_advisor_high_confidence_enabled(context):
+            return False
         if self._decision_advisor is not None:
-            if defer_rule_to_llm or rule_result.confidence < _RULE_CONFIDENCE_THRESHOLD:
-                return True
-            return self._routing_advisor_high_confidence_enabled(context)
+            return True
         if self._provider is not None:
-            return defer_rule_to_llm or rule_result.confidence < _RULE_CONFIDENCE_THRESHOLD
+            return True
         return False
 
     def _routing_advisor_high_confidence_enabled(self, context: dict[str, Any] | None) -> bool:
         config = (context or {}).get("config") if isinstance(context, dict) else None
         if not isinstance(config, dict):
-            return True
+            return False
         advisor = config.get("advisor")
         if not isinstance(advisor, dict):
             autonomy = config.get("autonomy")
             advisor = autonomy.get("advisor") if isinstance(autonomy, dict) else None
         if not isinstance(advisor, dict):
-            return True
+            return False
         value = advisor.get("routingStrategyUseForHighConfidence")
         if value is None:
             value = advisor.get("routingStrategySemanticFirst")
         if value is None:
-            return True
+            return False
         if isinstance(value, bool):
             return value
         return str(value).strip().casefold() not in {"0", "false", "no", "off", "never"}
@@ -223,6 +252,9 @@ class MetaRouter:
                 best_scenario = Scenario.CODE_EDIT
                 best_conf = max(best_conf, 0.82)
                 matched_keyword = f"react-standard-for-broad-work:{matched_keyword}"
+            override = self._read_only_doc_override(goal, best_scenario, matched_keyword)
+            if override is not None:
+                best_scenario, best_conf, matched_keyword = override
             override = self._planning_task_override(goal, best_scenario, matched_keyword)
             if override is None:
                 override = self._development_task_override(goal, best_scenario, matched_keyword)
@@ -242,6 +274,22 @@ class MetaRouter:
             and rule_result.confidence >= 0.95
             and _GREETING_ONLY_RE.match(goal) is not None
         )
+
+    @staticmethod
+    def _is_explicit_no_workspace_direct_answer(goal: str) -> bool:
+        if _NO_WORKSPACE_TOOL_REQUEST_RE.search(goal) is None:
+            return False
+        if _DIRECT_ANSWER_RE.search(goal) is None and _GREETING_ONLY_RE.search(goal) is None:
+            return False
+        if _CODE_FILE_RE.search(goal) is not None:
+            return False
+        if (
+            _CODE_EDIT_INTENT_RE.search(goal) is not None
+            or _CODE_GENERATION_INTENT_RE.search(goal) is not None
+            or _TEST_COMMAND_RE.search(goal) is not None
+        ):
+            return False
+        return True
 
     def _planning_task_override(
         self,
@@ -288,6 +336,24 @@ class MetaRouter:
             Scenario.CODE_EDIT,
             0.86,
             f"development-task-overrides-doc:{matched_keyword or 'doc'}",
+        )
+
+    def _read_only_doc_override(
+        self,
+        goal: str,
+        scenario: Scenario,
+        matched_keyword: str,
+    ) -> tuple[Scenario, float, str] | None:
+        if scenario != Scenario.DOC_WRITE:
+            return None
+        if not _READ_ONLY_DOC_INTENT_RE.search(goal):
+            return None
+        if _DOC_WRITE_INTENT_RE.search(goal):
+            return None
+        return (
+            Scenario.CODE_SEARCH,
+            0.82,
+            f"read-only-doc-overrides-write:{matched_keyword or 'doc'}",
         )
 
     def _looks_like_development_goal(self, goal: str) -> bool:
@@ -364,7 +430,36 @@ class MetaRouter:
             }
             guarded.metadata["rule_candidate"] = dict(llm_result.metadata.get("rule_candidate") or {})
             return guarded
+        if (
+            self._is_read_only_doc_goal(goal)
+            and rule_result.scenario in {Scenario.CODE_SEARCH, Scenario.SIMPLE_QUERY, Scenario.FREE_FORM}
+            and llm_result.scenario in {Scenario.DOC_WRITE, Scenario.CODE_EDIT, Scenario.TEST_WRITE, Scenario.DEBUG}
+        ):
+            guarded = self._build_decision(
+                scenario=rule_result.scenario,
+                confidence=max(rule_result.confidence, 0.82),
+                reasoning=(
+                    "rule-fallback-after-advisor-upgraded-read-only-doc: "
+                    f"{llm_result.reasoning}"
+                ),
+            )
+            guarded.metadata["advisor_candidate"] = {
+                "scenario": llm_result.scenario.value,
+                "strategy": llm_result.strategy.value,
+                "confidence": llm_result.confidence,
+                "reasoning": llm_result.reasoning,
+            }
+            guarded.metadata["rule_candidate"] = dict(llm_result.metadata.get("rule_candidate") or {})
+            return guarded
         return llm_result
+
+    @staticmethod
+    def _is_read_only_doc_goal(goal: str) -> bool:
+        return bool(
+            _DOC_SIGNAL_RE.search(goal)
+            and _READ_ONLY_DOC_INTENT_RE.search(goal)
+            and not _DOC_WRITE_INTENT_RE.search(goal)
+        )
 
     @staticmethod
     def _has_explicit_multi_agent_signal(goal: str) -> bool:
@@ -543,6 +638,52 @@ class MetaRouter:
             metadata={"decision_id": uuid.uuid4().hex[:12]},
         )
 
+    def _build_model_tool_orchestration_decision(
+        self,
+        scenario: Scenario,
+        confidence: float,
+        reasoning: str = "",
+    ) -> RoutingDecision:
+        decision = self._build_decision(
+            scenario=scenario,
+            confidence=confidence,
+            reasoning=reasoning,
+        )
+        decision.enable_planning = False
+        decision.metadata["orchestrationMode"] = "model_tools"
+        decision.metadata["runtime"] = "react_tool_loop"
+        return decision
+
+    def _build_model_first_decision(self, rule_candidate: RoutingDecision) -> RoutingDecision:
+        decision = self._build_decision(
+            scenario=Scenario.FREE_FORM,
+            confidence=max(0.45, min(rule_candidate.confidence, 0.7)),
+            reasoning=f"model-first-default: {rule_candidate.reasoning}",
+        )
+        decision.strategy = ExecutionStrategy.REACT_STANDARD
+        decision.skill_id = None
+        decision.enable_planning = False
+        decision.enable_reflection = False
+        decision.max_steps = max(decision.max_steps, 35)
+        self._attach_intent_hints(decision, rule_candidate)
+        return decision
+
+    @staticmethod
+    def _attach_intent_hints(decision: RoutingDecision, rule_candidate: RoutingDecision) -> None:
+        hints = decision.metadata.get("intentHints")
+        if not isinstance(hints, dict):
+            hints = {}
+            decision.metadata["intentHints"] = hints
+        hints["ruleCandidate"] = {
+            "scenario": rule_candidate.scenario.value,
+            "strategy": rule_candidate.strategy.value,
+            "confidence": rule_candidate.confidence,
+            "skill_id": rule_candidate.skill_id,
+            "max_steps": rule_candidate.max_steps,
+            "enable_planning": rule_candidate.enable_planning,
+            "reasoning": rule_candidate.reasoning,
+        }
+
     @staticmethod
     def _build_classification_prompt(goal: str) -> str:
         scenario_names = ", ".join(s.value for s in Scenario)
@@ -629,9 +770,6 @@ class MetaRouter:
         tool_continuation = self._advisor_tool_continuation_payload(payload)
         if tool_continuation:
             metadata["toolContinuation"] = tool_continuation
-        workspace_evidence = self._advisor_workspace_evidence_payload(payload)
-        if workspace_evidence:
-            metadata["workspaceEvidenceRequired"] = workspace_evidence
 
         return RoutingDecision(
             scenario=scenario,
@@ -672,43 +810,6 @@ class MetaRouter:
         if isinstance(rationale, str) and rationale.strip():
             continuation["rationale"] = rationale.strip()[:500]
         return continuation if len(continuation) > 1 else {}
-
-    @staticmethod
-    def _advisor_workspace_evidence_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        raw = payload.get("workspace_evidence_required")
-        if raw is None:
-            raw = payload.get("workspaceEvidenceRequired")
-        if isinstance(raw, bool):
-            return {
-                "required": raw,
-                "source": "decision_advisor",
-            }
-        if not isinstance(raw, dict):
-            return {}
-        required = raw.get("required")
-        if required is None:
-            required = raw.get("enabled")
-        result: dict[str, Any] = {
-            "required": required if isinstance(required, bool) else True,
-            "source": "decision_advisor",
-        }
-        required_tools = raw.get("requiredTools")
-        if required_tools is None:
-            required_tools = raw.get("required_tools")
-        if isinstance(required_tools, list):
-            tools = [
-                str(item).strip()
-                for item in required_tools
-                if str(item or "").strip()
-            ]
-            if tools:
-                result["requiredTools"] = tools[:20]
-        for key in ("reason", "rationale"):
-            value = raw.get(key)
-            if isinstance(value, str) and value.strip():
-                result[key] = value.strip()[:500]
-        return result
-
 
 # Re-export the keyword index so it is accessible from tests if needed.
 from .defaults import _KEYWORD_INDEX  # noqa: E402

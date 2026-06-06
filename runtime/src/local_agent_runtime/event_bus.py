@@ -36,7 +36,14 @@ class EventBus:
             subscribers = list(self._subscribers)
         for sink in subscribers:
             try:
-                sink(event)
+                persisted = sink(event)
+                if isinstance(persisted, dict):
+                    persisted_id = persisted.get("id")
+                    persisted_seq = persisted.get("sequence")
+                    if isinstance(persisted_id, str) and persisted_id:
+                        event.event_id = persisted_id
+                    if isinstance(persisted_seq, (int, float)) and not isinstance(persisted_seq, bool):
+                        event.seq = int(persisted_seq)
             except Exception:
                 continue
 
@@ -59,8 +66,10 @@ class EventBus:
 
 
 def _suppresses_realtime_flat_message(event: RuntimeEvent) -> bool:
+    if event.visibility == "trace":
+        return True
     event_payload = event.payload if isinstance(event.payload, dict) else {}
-    if event.type in {"message.delta", "message.completed"} and event_payload.get("_chatCompat") is True:
+    if event.type == "message.completed" and event_payload.get("_chatCompat") is True:
         return True
     bridge = event_payload.get("_bridge")
     return isinstance(bridge, dict) and bridge.get("suppressRealtimeFlat") is True

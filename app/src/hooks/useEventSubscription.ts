@@ -1217,9 +1217,6 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         // --- New message lifecycle events (P1.3 / P1.4) ---
         // message.delta: streaming token, routed by messageId
         if (event.type === "message.delta") {
-          if (isChatCompatPayload(event.payload)) {
-            return;
-          }
           if (!isChatVisibleEvent(event)) {
             return;
           }

@@ -117,7 +117,17 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
             assert run_command_properties["backgroundJob"]["oneOf"][0]["type"] == "boolean"
         elif name in {"web_fetch", "browser"}:
             assert "url" in input_schema["required"]
-        elif name in {"computer_use", "memory.remember", "memory.recall", "scratchpad.write", "scratchpad.read"}:
+        elif name in {
+            "ask_user_question",
+            "enter_plan_mode",
+            "exit_plan_mode",
+            "agent",
+            "computer_use",
+            "memory.remember",
+            "memory.recall",
+            "scratchpad.write",
+            "scratchpad.read",
+        }:
             pass  # session/task-scoped tools do not require workspaceRoot
         else:
             assert "workspaceRoot" in input_schema["required"]

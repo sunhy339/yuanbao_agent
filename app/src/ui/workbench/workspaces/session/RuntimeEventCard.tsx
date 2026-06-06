@@ -123,6 +123,81 @@ function buildCollapsedCommandBody(item: RuntimeTimelineItem) {
   return compactText(combined, 220);
 }
 
+function CompletionEvidenceCard({ item }: { item: RuntimeTimelineItem }) {
+  const evidence = item.completionEvidence;
+  if (!evidence) return null;
+  const metrics = Array.isArray(evidence.metrics) ? evidence.metrics : [];
+  const issues = Array.isArray(evidence.issues) ? evidence.issues : [];
+  const auditApprovals = (evidence.audit?.approvals ?? [])
+    .filter((approval) => approval.summary || approval.decision || approval.gateStatus || approval.reviewStatus || approval.verificationStatus)
+    .slice(-3);
+
+  return (
+    <article
+      className="runtime-event-card runtime-completion-card"
+      data-activity-kind="runtime"
+      data-kind="completion"
+      data-status={item.status ?? evidence.status ?? "review"}
+    >
+      <header className="runtime-completion-head">
+        <div>
+          <span>完成审查</span>
+          <strong>{item.title || "完成审查"}</strong>
+        </div>
+        {item.status ? <StatusBadge label={formatStatusLabel(item.status)} tone={getStatusTone(item.status)} compact /> : null}
+      </header>
+      {item.summary ? <p>{item.summary}</p> : null}
+      <section className="runtime-completion-evidence" aria-label="Completion evidence">
+        <div className="runtime-completion-evidence-head">
+          {evidence.evidenceLevel ? <span>{evidence.evidenceLevel}</span> : null}
+          {evidence.status ? <span>{evidence.status}</span> : null}
+        </div>
+        <p>{evidence.summary}</p>
+        {metrics.length ? (
+          <dl>
+            {metrics.slice(0, 6).map((metric) => (
+              <div key={`${metric.label}:${metric.value}`}>
+                <dt>{metric.label}</dt>
+                <dd>{metric.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {issues.length ? (
+          <ul>
+            {issues.slice(0, 4).map((issue) => (
+              <li key={issue}>{issue}</li>
+            ))}
+          </ul>
+        ) : null}
+        {auditApprovals.length ? (
+          <ul aria-label="Completion audit">
+            {auditApprovals.map((approval, index) => (
+              <li key={approval.approvalId ?? `${approval.kind ?? "approval"}:${index}`}>
+                {approval.summary ? <span>{approval.summary}</span> : null}
+                {[approval.decision, approval.gateStatus, approval.reviewStatus, approval.verificationStatus]
+                  .filter(Boolean)
+                  .map((part) => (
+                    <small key={part}> {part}</small>
+                  ))}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {evidence.reviewConclusion ? (
+          <p>
+            {[
+              evidence.reviewConclusion.decision ? `review ${evidence.reviewConclusion.decision}` : null,
+              evidence.reviewConclusion.decidedBy ? `by ${evidence.reviewConclusion.decidedBy}` : null,
+              evidence.reviewConclusion.summary,
+            ].filter(Boolean).join(" | ")}
+          </p>
+        ) : null}
+      </section>
+    </article>
+  );
+}
+
 function ProcessRuntimeCard({
   item,
   kindLabel,
@@ -520,6 +595,10 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
         />
       </div>
     );
+  }
+
+  if (item.kind === "completion") {
+    return <CompletionEvidenceCard item={item} />;
   }
 
   if (item.kind === "patch" && item.sourceId) {

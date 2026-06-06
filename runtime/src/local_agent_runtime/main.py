@@ -7,7 +7,6 @@ from .event_bus import EventBus
 from .git.worktree_adapter import GitWorktreeAdapter
 from .memory import MemoryManager, MemoryRetriever, MemoryStore
 from .orchestrator.service import Orchestrator
-from .policy.decision_advisor import DecisionAdvisor
 from .policy.guard import PolicyGuard
 from .policy.permission_engine import PermissionEngine
 from .provider.adapter import ProviderAdapter
@@ -39,8 +38,8 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     collaboration = CollaborationService(store, event_bus)
     subagent_service = SubagentService(store, collaboration)
     provider = ProviderAdapter()
-    decision_advisor = DecisionAdvisor(provider=provider)
-    meta_router = MetaRouter(provider=provider, decision_advisor=decision_advisor)
+    decision_advisor = None
+    meta_router = MetaRouter(provider=None, decision_advisor=None)
     memory_store = MemoryStore(store)
     memory_manager = MemoryManager(
         store=memory_store,

@@ -432,6 +432,120 @@ function getFileReferenceToken(value: string, caretIndex: number) {
   };
 }
 
+function normalizeRuntimeChildStatus(status?: string) {
+  const normalized = status?.toLowerCase();
+  if (!normalized) return "pending";
+  if (["completed", "succeeded", "passed", "applied"].includes(normalized)) return "completed";
+  if (["active", "running", "started", "planning", "verifying"].includes(normalized)) return "active";
+  if (["failed", "error", "cancelled", "rejected"].includes(normalized)) return "failed";
+  return "pending";
+}
+
+function runtimeChildState(childTask: ComposerRuntimeChildTask) {
+  if (childTask.attention?.trim()) {
+    return "warning";
+  }
+  return normalizeRuntimeChildStatus(childTask.status);
+}
+
+function parseStructuredRuntimeChildSummary(value?: string) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeRuntimeChildSummary(value?: string) {
+  const structured = parseStructuredRuntimeChildSummary(value);
+  if (structured) {
+    const changedFiles = Array.isArray(structured.changedFiles) ? structured.changedFiles.length : undefined;
+    const testsRun = Array.isArray(structured.testsRun) ? structured.testsRun.length : undefined;
+    const risks = Array.isArray(structured.risks) ? structured.risks.length : undefined;
+    const parts = [
+      changedFiles !== undefined ? (changedFiles > 0 ? `${changedFiles} 个文件改动` : "无文件改动") : null,
+      testsRun !== undefined ? (testsRun > 0 ? `${testsRun} 项测试` : "未运行测试") : null,
+      risks !== undefined && risks > 0 ? `${risks} 个风险` : null,
+    ].filter(Boolean) as string[];
+    return parts[0] ?? undefined;
+  }
+  const text = value?.trim();
+  if (!text || text.startsWith("{") || text.startsWith("[")) {
+    return undefined;
+  }
+  return text.length > 88 ? `${text.slice(0, 84).trimEnd()}...` : text;
+}
+
+function normalizeAgentLabel(value?: string) {
+  return value?.trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function isGenericAgentWorker(workerName?: string, agentType?: string) {
+  const worker = normalizeAgentLabel(workerName);
+  const role = normalizeAgentLabel(agentType);
+  if (!worker) return false;
+  return Boolean(role) && (worker === role || worker === `${role} worker` || worker === `${role} agent`);
+}
+
+function isGenericPlannerWorker(workerName?: string, agentType?: string) {
+  const worker = normalizeAgentLabel(workerName);
+  return isGenericAgentWorker(workerName, agentType) || worker === "planner" || worker === "planner worker" || worker === "planner agent";
+}
+
+function isGenericPlannerScanTask(task: ComposerRuntimeChildTask) {
+  return (
+    isGenericPlannerWorker(task.workerName, task.agentType) &&
+    /\b(inspect|identify|understand|locate|search|scan)\b/i.test(task.title ?? "")
+  );
+}
+
+type VisibleRuntimeChildTask = ComposerRuntimeChildTask & {
+  count?: number;
+  displaySummary?: string;
+  displayWorker?: string;
+  collapsedKind?: "planner_scan";
+};
+
+function groupRuntimeChildTasks(tasks: ComposerRuntimeChildTask[]): VisibleRuntimeChildTask[] {
+  const cards: VisibleRuntimeChildTask[] = [];
+  const grouped = new Map<string, ComposerRuntimeChildTask[]>();
+
+  for (const task of tasks) {
+    const state = runtimeChildState(task);
+    const genericWorker = isGenericAgentWorker(task.workerName, task.agentType);
+    const genericPlanner = isGenericPlannerWorker(task.workerName, task.agentType);
+    if (state === "completed" && genericPlanner && !task.attention && isGenericPlannerScanTask(task)) {
+      const key = "planner_scan|planner";
+      grouped.set(key, [...(grouped.get(key) ?? []), task]);
+      continue;
+    }
+    cards.push({
+      ...task,
+      displaySummary: task.attention ?? summarizeRuntimeChildSummary(task.summary),
+      displayWorker: genericWorker || genericPlanner ? undefined : task.workerName,
+    });
+  }
+
+  grouped.forEach((items, key) => {
+    const first = items[0];
+    cards.push({
+      ...first,
+      id: `group:${key}`,
+      count: items.length,
+      title: "已完成范围确认",
+      displaySummary: `${items.length} 次范围确认已完成，尚未进入修改或验证。`,
+      displayWorker: undefined,
+      collapsedKind: "planner_scan",
+    });
+  });
+
+  return cards;
+}
+
 export function CleanComposer({
   promptValue,
   onPromptChange,
@@ -455,7 +569,7 @@ export function CleanComposer({
   modelOptions = [],
   selectedModelId,
   onSelectModel,
-  runtimeChildTasks,
+  runtimeChildTasks = [],
   providerLabel,
   cwdLabel,
   permissionLabel,
@@ -501,6 +615,19 @@ export function CleanComposer({
   const hasPayload = Boolean(promptValue.trim() || attachments.length);
   const canSubmit = !disabled && !submitting && hasPayload;
   const canQueue = Boolean(sending && canSubmit && onQueuePrompt);
+  const visibleRuntimeChildTasks = runtimeChildTasks.slice(0, 6);
+  const groupedRuntimeChildTasks = useMemo(
+    () => groupRuntimeChildTasks(visibleRuntimeChildTasks),
+    [visibleRuntimeChildTasks],
+  );
+  const completedRuntimeChildCount = visibleRuntimeChildTasks.filter(
+    (childTask) => runtimeChildState(childTask) === "completed",
+  ).length;
+  const activeRuntimeChildCount = visibleRuntimeChildTasks.filter((childTask) =>
+    ["active", "pending"].includes(runtimeChildState(childTask)),
+  ).length;
+  const attentionRuntimeChildCount = visibleRuntimeChildTasks.filter((childTask) => runtimeChildState(childTask) === "warning").length;
+  const onlyPlannerScans = groupedRuntimeChildTasks.length === 1 && groupedRuntimeChildTasks[0]?.collapsedKind === "planner_scan";
   const context = contextUsage(contextPreview);
   const contextRows = contextBudgetRows(contextPreview);
   const contextComposition = contextCompositionRows(contextPreview);
@@ -1070,6 +1197,41 @@ export function CleanComposer({
         </div>
       ) : null}
 
+      {visibleRuntimeChildTasks.length && !onlyPlannerScans ? (
+        <details className="hc-runtime-child-tasks" aria-label="Runtime child tasks">
+          <summary>
+            <span className="hc-runtime-child-dot" aria-hidden="true" />
+            <strong>子任务进展</strong>
+            <span>{completedRuntimeChildCount}/{visibleRuntimeChildTasks.length}</span>
+            {activeRuntimeChildCount ? <em>{activeRuntimeChildCount} 进行中</em> : null}
+            {attentionRuntimeChildCount ? <em>{attentionRuntimeChildCount} 待留意</em> : null}
+          </summary>
+          <ol>
+            {groupedRuntimeChildTasks.map((childTask, index) => {
+              const status = runtimeChildState(childTask);
+              return (
+                <li key={childTask.id || `${index}-${childTask.title}`} data-state={status}>
+                  <span className="hc-runtime-child-state" aria-hidden="true" />
+                  <div>
+                    <span>#{index + 1}</span>
+                    <strong>{childTask.title}</strong>
+                    {childTask.displayWorker || childTask.displaySummary ? (
+                      <small>
+                        {[
+                          childTask.displayWorker ? `worker: ${childTask.displayWorker}` : null,
+                          childTask.displaySummary,
+                        ].filter(Boolean).join(" · ")}
+                      </small>
+                    ) : null}
+                  </div>
+                  {childTask.count && childTask.count > 1 ? <b>{childTask.count} 次</b> : null}
+                </li>
+              );
+            })}
+          </ol>
+        </details>
+      ) : null}
+
       <div className="hc-composer-card" data-dragging={dragActive ? "true" : "false"}>
         {dragActive ? (
           <div className="hc-drop-overlay" role="status" aria-live="polite">
@@ -1191,16 +1353,24 @@ export function CleanComposer({
               ) : null}
             </div>
             <div className="hc-menu">
-              <button type="button" className="hc-pill hc-permission" onClick={() => setPermissionOpen((open) => !open)}>
+              <button
+                type="button"
+                className="hc-pill hc-permission"
+                aria-haspopup="menu"
+                aria-expanded={permissionOpen}
+                onClick={() => setPermissionOpen((open) => !open)}
+              >
                 <Shield size={15} />
                 <span>{permissionLabel || "询问权限"}</span>
                 <ChevronDown size={14} />
               </button>
               {permissionOpen ? (
-                <div className="hc-popover">
+                <div className="hc-popover" role="menu" aria-label="选择权限模式">
                   {permissionOptions.map((option) => (
                     <button
                       type="button"
+                      role="menuitemradio"
+                      aria-checked={option.id === permissionMode}
                       key={option.id}
                       data-active={option.id === permissionMode}
                       onClick={() => selectPermissionMode(option.id)}
@@ -1317,15 +1487,24 @@ export function CleanComposer({
               ) : null}
             </div>
             <div className="hc-menu">
-              <button type="button" className="hc-model" onClick={() => setModelOpen((open) => !open)}>
+              <button
+                type="button"
+                className="hc-model"
+                aria-haspopup="listbox"
+                aria-expanded={modelOpen}
+                aria-label={`选择模型 ${selectedModel?.label ?? providerLabel}`}
+                onClick={() => setModelOpen((open) => !open)}
+              >
                 <span>{selectedModel?.label ?? providerLabel}</span>
                 <ChevronDown size={14} />
               </button>
               {modelOpen ? (
-                <div className="hc-popover hc-model-popover">
+                <div className="hc-popover hc-model-popover" role="listbox" aria-label="选择模型">
                   {modelOptions.map((option) => (
                     <button
                       type="button"
+                      role="option"
+                      aria-selected={option.id === selectedModelId}
                       key={option.id}
                       data-active={option.id === selectedModelId}
                       onClick={() => {

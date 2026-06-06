@@ -49,7 +49,15 @@ def _dispatch_subagent_tool(
     if subagent_service is None:
         raise ValueError(f"{tool_name} tool is not configured")
     prompt = str(params.get("prompt", "")).strip()
-    title = str(params.get("title") or params.get("agentType") or params.get("agent_type") or prompt or "subtask").strip()
+    title = str(
+        params.get("description")
+        or params.get("title")
+        or params.get("agentType")
+        or params.get("agent_type")
+        or params.get("subagent_type")
+        or prompt
+        or "subtask"
+    ).strip()
     steps = [
         _step("prepare", "completed", title[:120]),
     ]
@@ -113,10 +121,17 @@ def _dispatch_subagent_tool(
 
 def normalize_agent_tool_params(params: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(params)
-    agent_type = _first_text(normalized, "agent_type", "agentType", "role", default="explorer")
+    agent_type = _first_text(normalized, "subagent_type", "agent_type", "agentType", "role", default="explorer")
     normalized["agentType"] = agent_type
     normalized["agent_type"] = agent_type
-    normalized["title"] = str(normalized.get("title") or agent_type or normalized.get("prompt") or "agent").strip()
+    normalized["subagent_type"] = agent_type
+    normalized["title"] = str(
+        normalized.get("description")
+        or normalized.get("title")
+        or agent_type
+        or normalized.get("prompt")
+        or "agent"
+    ).strip()
 
     tool_allowlist = _first_present(normalized, "tool_allowlist", "toolAllowlist", "child_tool_allowlist", "childToolAllowlist")
     if tool_allowlist is not None:

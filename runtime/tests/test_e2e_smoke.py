@@ -398,7 +398,6 @@ def _run_patch_approval_smoke(runtime: SimpleNamespace, workspace_root: Path) ->
 def test_approved_write_file_records_changed_files(tmp_path: Path) -> None:
     provider = ScriptedHttpPostProvider(
         [
-            _routing_response(),
             _write_file_tool_call_response({"path": "notes.txt", "content": "hello\n"}),
             _final_response(),
         ]
@@ -447,7 +446,6 @@ def test_approved_write_file_records_changed_files(tmp_path: Path) -> None:
 def test_non_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_path: Path) -> None:
     provider = ScriptedHttpPostProvider(
         [
-            _routing_response(),
             _tool_call_response({"files": [{"path": "todo.txt", "content": "status: new\n"}]}),
             _final_response(),
         ]
@@ -458,11 +456,10 @@ def test_non_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_pa
     finally:
         runtime.store.close()
 
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == 2
     assert "stream" not in provider.requests[0]["json"]
-    assert provider.requests[0]["json"]["messages"][0]["content"].startswith("You are a task classifier")
-    assert provider.requests[1]["json"]["tools"]
-    assert provider.requests[2]["json"]["messages"][-1]["role"] == "tool"
+    assert provider.requests[0]["json"]["tools"]
+    assert provider.requests[1]["json"]["messages"][-1]["role"] == "tool"
 
 
 def test_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_path: Path) -> None:
@@ -490,7 +487,7 @@ def test_streaming_provider_failure_without_partial_output_does_not_fallback(tmp
             ProviderAdapterError("Provider streaming response exceeded 1s before completion."),
             ProviderAdapterError("Provider streaming response exceeded 1s before completion."),
         ],
-        post_responses=[_routing_response()],
+        post_responses=[],
         stream_responses=[],
     )
     runtime = _make_runtime(tmp_path, provider)
@@ -513,7 +510,7 @@ def test_streaming_provider_failure_without_partial_output_does_not_fallback(tmp
 
     assert task["status"] == "failed"
     assert len(provider.stream_requests) == 2
-    assert len(provider.post_requests) == 1
+    assert len(provider.post_requests) == 0
     assert turns[0]["failureRecovery"]["category"] == "timeout"
     assert turns[0]["failureRecovery"]["strategy"] == "surface_error"
     assert turns[0]["failureRecovery"]["advisorGate"]["reason"] == "no_partial_output"
@@ -523,7 +520,7 @@ def test_streaming_provider_failure_without_partial_output_does_not_fallback(tmp
 def test_streaming_provider_auth_failure_does_not_retry_non_streaming(tmp_path: Path) -> None:
     provider = ScriptedSseThenPostProvider(
         stream_error=ProviderAdapterError("Provider request failed with HTTP 401: unauthorized"),
-        post_responses=[_routing_response()],
+        post_responses=[],
         stream_responses=[],
     )
     runtime = _make_runtime(tmp_path, provider)
@@ -546,6 +543,6 @@ def test_streaming_provider_auth_failure_does_not_retry_non_streaming(tmp_path: 
 
     assert task["status"] == "failed"
     assert len(provider.stream_requests) == 1
-    assert len(provider.post_requests) == 1
+    assert len(provider.post_requests) == 0
     assert turns[0]["failureRecovery"]["category"] == "auth"
     assert not any(event["type"] == "provider.stream.fallback_non_stream" for event in trace)

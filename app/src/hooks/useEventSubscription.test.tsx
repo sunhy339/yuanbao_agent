@@ -172,6 +172,61 @@ describe("useEventSubscription", () => {
     }));
   });
 
+  it("renders chat-compat message.delta as the canonical live text stream", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_msg_delta_1",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "message.delta",
+        ts: 10,
+        seq: 10,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_1",
+          delta: "hello ",
+          _chatCompat: true,
+        },
+        hahaCc: { type: "content_delta", text: "hello " },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_msg_delta_2",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "message.delta",
+        ts: 11,
+        seq: 11,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_1",
+          delta: "world",
+          _chatCompat: true,
+        },
+        hahaCc: { type: "content_delta", text: "world" },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_legacy_token",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "assistant.token",
+        ts: 12,
+        seq: 12,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_1",
+          delta: " ignored",
+          _chatCompat: true,
+        },
+      });
+    });
+
+    expect(screen.getByText("hello world")).not.toBeNull();
+    expect(screen.queryByText(/ignored/)).toBeNull();
+  });
+
   it("renders thinking events and preserves their source metadata", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());

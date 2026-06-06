@@ -165,6 +165,113 @@
   box-shadow: none;
 }
 
+.runtime-completion-card {
+  gap: 10px;
+  border-color: rgba(15, 23, 42, 0.1);
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #30343b;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
+}
+
+.runtime-completion-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.runtime-completion-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.runtime-completion-head span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.runtime-completion-head strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-completion-card > p,
+.runtime-completion-evidence p {
+  margin: 0;
+  color: #475467;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.runtime-completion-evidence {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.runtime-completion-evidence-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runtime-completion-evidence-head span,
+.runtime-completion-evidence small {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff;
+  color: #667085;
+  font-size: 11px;
+}
+
+.runtime-completion-evidence dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+
+.runtime-completion-evidence dl div {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.runtime-completion-evidence dt {
+  color: #667085;
+}
+
+.runtime-completion-evidence dd {
+  margin: 0;
+  color: #1f2937;
+  font-weight: 700;
+}
+
+.runtime-completion-evidence ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .runtime-worklog-head,
 .runtime-file-change-head {
   display: grid;

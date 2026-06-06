@@ -93,6 +93,10 @@ class ReactToolHelpersMixin:
             summary = (result.get("summary") or "Patch tool failed.").strip()
             patch_id = result.get("patch_id", "unknown patch")
             return f"Apply patch failed for {patch_id}: {summary}"
+        if tool_name == "write_file":
+            summary = (result.get("summary") or result.get("error") or "Write file failed.").strip()
+            path = result.get("path") or tool_spec.get("arguments", {}).get("path") or "file"
+            return f"Write file failed for {path}: {summary}"
         if tool_name == "git_status":
             summary = (result.get("summary") or "Git status failed.").strip()
             return f"Git status failed: {summary}"

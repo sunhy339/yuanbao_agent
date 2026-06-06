@@ -15,6 +15,15 @@ from pathlib import Path
 from typing import Any
 
 from ..context.token_budget import estimate_tokens
+from ..execution.tool_pipeline import (
+    _tool_batch_metadata,
+    _tool_category,
+    _tool_phase_metadata,
+    _tool_result_preview,
+    _tool_result_summary,
+    _tool_semantic_parent_metadata,
+    _tool_target,
+)
 from ..provider.failure_recovery import classify_provider_failure
 from ..policy.permission_engine import PermissionEngine, PermissionRequest
 from ..policy.tool_policy_resolver import ToolPolicyDecision, ToolPolicyResolver
@@ -211,7 +220,7 @@ class ReactRunnerMixin:
             "arguments": deepcopy(tool_spec.get("arguments", {})),
             "target": str(tool_spec.get("name") or ""),
             "inputSummary": "blocked by plan mode",
-            "toolCategory": "task",
+            "toolCategory": "tool",
             "toolOperationId": f"tool:{tool_spec.get('name') or 'tool'}",
             "toolOperationLabel": "Plan mode",
             "resultSummary": result["summary"],
@@ -224,6 +233,285 @@ class ReactRunnerMixin:
         if context.get("_plan_mode") is not True:
             return True
         return str(tool_spec.get("name") or "") in _PLAN_MODE_ALLOWED_TOOL_NAMES
+
+    @staticmethod
+    def _exit_plan_mode_requires_active_plan(context: dict[str, Any], tool_spec: dict[str, Any]) -> bool:
+        return str(tool_spec.get("name") or "") == "exit_plan_mode" and context.get("_plan_mode") is not True
+
+    def _blocked_exit_plan_mode_tool_result(self, tool_spec: dict[str, Any]) -> dict[str, Any]:
+        tool_call_id = tool_spec.get("id") or self._store.new_id("tc")
+        result = {
+            "status": "blocked",
+            "error": "exit_plan_mode can only be used after enter_plan_mode has put the task in plan mode.",
+            "summary": "Plan approval was not requested because plan mode is not active.",
+        }
+        return {
+            "id": tool_call_id,
+            "name": tool_spec.get("name"),
+            "arguments": deepcopy(tool_spec.get("arguments", {})),
+            "target": "plan",
+            "inputSummary": "exit_plan_mode outside plan mode",
+            "toolCategory": "tool",
+            "toolOperationId": "tool:exit_plan_mode",
+            "toolOperationLabel": "Plan mode",
+            "resultSummary": result["summary"],
+            "result": result,
+            "modelVisibleResult": result,
+        }
+
+    def _blocked_unavailable_tool_result(
+        self,
+        tool_spec: dict[str, Any],
+        *,
+        tool_policy_decision: ToolPolicyDecision,
+    ) -> dict[str, Any]:
+        tool_name = str(tool_spec.get("name") or "tool")
+        tool_call_id = tool_spec.get("id") or self._store.new_id("tc")
+        phase = str(tool_policy_decision.phase or "tool_policy")
+        reason = tool_policy_decision.reasons.get(tool_name)
+        if not reason:
+            reason = f"{tool_name} was not available to the model in this turn."
+        result = {
+            "status": "blocked",
+            "failureKind": "tool_not_available",
+            "toolName": tool_name,
+            "phase": phase,
+            "error": reason,
+            "summary": f"Tool {tool_name} was not available in this turn.",
+        }
+        return {
+            "id": tool_call_id,
+            "name": tool_name,
+            "arguments": deepcopy(tool_spec.get("arguments", {})),
+            "target": tool_name,
+            "inputSummary": "blocked by tool policy",
+            "toolCategory": "tool",
+            "toolOperationId": f"tool:{tool_name}",
+            "toolOperationLabel": "Tool policy",
+            "resultSummary": result["summary"],
+            "result": result,
+            "modelVisibleResult": result,
+        }
+
+    def _defaulted_ask_user_question_tool_result(
+        self,
+        tool_spec: dict[str, Any],
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if tool_spec.get("name") != "ask_user_question":
+            return None
+        arguments = tool_spec.get("arguments")
+        if not isinstance(arguments, dict):
+            return None
+        question = arguments.get("question") or arguments.get("prompt") or arguments.get("text")
+        policy_needs = {
+            "question": question,
+            "summary": arguments.get("summary"),
+            "reason": arguments.get("reason"),
+        }
+        if isinstance(arguments.get("options"), list):
+            policy_needs["options"] = arguments["options"]
+        if isinstance(arguments.get("questions"), list):
+            policy_needs["questions"] = arguments["questions"]
+        if self._ask_user_question_is_required(
+            question=question,
+            reason=arguments.get("reason"),
+            policy_needs=policy_needs,
+            goal=goal,
+            context=context,
+        ):
+            return None
+        questions = self._normalize_user_questions_payload({
+            "question": question,
+            "questions": arguments.get("questions"),
+            "options": arguments.get("options"),
+            "summary": arguments.get("summary"),
+        })
+        default_answer = self._default_answer_for_low_risk_question(
+            question=question,
+            policy_needs={"questions": questions, "options": arguments.get("options")},
+            goal=goal,
+        )
+        result = {
+            "status": "answered",
+            "summary": default_answer,
+            "answer": default_answer,
+            "answers": self._default_answers_for_questions(questions, default_answer),
+            "questions": questions,
+            "defaulted": True,
+            "reason": "low_risk_preference_defaulted",
+        }
+        tool_call_id = tool_spec.get("id") or self._store.new_id("tc")
+        tool_arguments = {
+            **deepcopy(arguments),
+            "taskId": task["id"],
+            "sessionId": session_id,
+        }
+        for key, value in _tool_batch_metadata(tool_spec).items():
+            tool_arguments.setdefault(key, value)
+        tool_category = _tool_category("ask_user_question", tool_arguments)
+        return {
+            "id": tool_call_id,
+            "name": "ask_user_question",
+            "arguments": tool_arguments,
+            "target": "user",
+            "inputSummary": str(arguments.get("summary") or question or "ask_user_question")[:500],
+            "toolCategory": tool_category,
+            "toolOperationId": "tool:ask_user_question",
+            "toolOperationLabel": "User input",
+            "resultSummary": default_answer,
+            "result": result,
+            "modelVisibleResult": result,
+        }
+
+    def _publish_defaulted_tool_lifecycle(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_spec: dict[str, Any],
+        tool_result: dict[str, Any],
+    ) -> None:
+        tool_name = str(tool_result.get("name") or tool_spec.get("name") or "tool")
+        arguments = deepcopy(tool_result.get("arguments") or tool_spec.get("arguments") or {})
+        tool_call_id = str(tool_result.get("id") or tool_spec.get("id") or self._store.new_id("tc"))
+        parent_tool_use_id = tool_spec.get("parentToolUseId") or tool_result.get("parentToolUseId")
+        tool_batch_metadata = _tool_batch_metadata(tool_spec)
+        target = str(tool_result.get("target") or _tool_target(tool_name, arguments) or tool_name)
+        input_summary = str(tool_result.get("inputSummary") or target)
+        tool_category = str(tool_result.get("toolCategory") or _tool_category(tool_name, arguments))
+        phase_metadata = _tool_phase_metadata(tool_category)
+        semantic_parent_metadata = _tool_semantic_parent_metadata(phase_metadata, tool_batch_metadata)
+        result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+        result_summary = str(tool_result.get("resultSummary") or result.get("summary") or "")
+        result_preview = _tool_result_preview(tool_name, result, target)
+        common_payload = {
+            "toolCallId": tool_call_id,
+            **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
+            **tool_batch_metadata,
+            "toolName": tool_name,
+            "arguments": arguments,
+            "target": target,
+            "inputSummary": input_summary,
+            "toolCategory": tool_category,
+            **phase_metadata,
+            **semantic_parent_metadata,
+        }
+        trace_payload = {
+            "_bridge": {
+                "suppressRealtimeFlat": True,
+                "suppressChatReplay": True,
+            }
+        }
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="tool.started",
+            payload={**common_payload, **trace_payload},
+            visibility="trace",
+        )
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="tool.completed",
+            payload={
+                **common_payload,
+                **trace_payload,
+                "durationMs": 0,
+                "resultSummary": result_summary,
+                **({"resultPreview": result_preview} if result_preview else {}),
+                "result": result,
+            },
+            visibility="trace",
+        )
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="assistant_progress",
+            payload={
+                "summary": result_summary,
+                "phase": "default_preference",
+                "reason": "ask_user_question_tool_low_risk_preference",
+                "toolCallId": tool_call_id,
+            },
+            visibility="panel",
+        )
+
+    @staticmethod
+    def _provider_turn_allows_tool(
+        tool_spec: dict[str, Any],
+        tool_policy_decision: ToolPolicyDecision,
+    ) -> bool:
+        tool_name = str(tool_spec.get("name") or "").strip()
+        if not tool_name:
+            return False
+        allowed = set(tool_policy_decision.allowed_tool_names)
+        return tool_name in allowed or (tool_name.startswith("mcp__") and "mcp__*" in allowed)
+
+    def _publish_blocked_tool_lifecycle(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_spec: dict[str, Any],
+        tool_result: dict[str, Any],
+    ) -> None:
+        """Project pre-execution tool blocks as normal tool lifecycle events."""
+        tool_name = str(tool_result.get("name") or tool_spec.get("name") or "tool")
+        arguments = deepcopy(tool_result.get("arguments") or tool_spec.get("arguments") or {})
+        tool_call_id = str(tool_result.get("id") or tool_spec.get("id") or self._store.new_id("tc"))
+        parent_tool_use_id = tool_spec.get("parentToolUseId") or tool_result.get("parentToolUseId")
+        tool_batch_metadata = _tool_batch_metadata(tool_spec)
+        target = str(tool_result.get("target") or _tool_target(tool_name, arguments) or tool_name)
+        input_summary = str(tool_result.get("inputSummary") or target)
+        tool_category = str(tool_result.get("toolCategory") or _tool_category(tool_name, arguments))
+        phase_metadata = _tool_phase_metadata(tool_category)
+        semantic_parent_metadata = _tool_semantic_parent_metadata(phase_metadata, tool_batch_metadata)
+        result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+        result_summary = str(
+            tool_result.get("resultSummary")
+            or _tool_result_summary(tool_name, result, target)
+            or result.get("summary")
+            or ""
+        )
+        result_preview = tool_result.get("resultPreview")
+        if not isinstance(result_preview, list):
+            result_preview = _tool_result_preview(tool_name, result, target)
+        common_payload = {
+            "toolCallId": tool_call_id,
+            **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
+            **tool_batch_metadata,
+            "toolName": tool_name,
+            "arguments": arguments,
+            "target": target,
+            "inputSummary": input_summary,
+            "toolCategory": tool_category,
+            **phase_metadata,
+            **semantic_parent_metadata,
+        }
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="tool.started",
+            payload=common_payload,
+        )
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="tool.blocked",
+            payload={
+                **common_payload,
+                "durationMs": 0,
+                "resultSummary": result_summary,
+                **({"resultPreview": result_preview} if result_preview else {}),
+                "reason": result.get("error") or result_summary,
+                "result": result,
+            },
+        )
 
     def _run_react_loop_inner(
         self,
@@ -522,7 +810,7 @@ class ReactRunnerMixin:
                         "failureRecovery": failure_recovery,
                         "error": str(exc)[:500],
                     },
-                    visibility="panel",
+                    visibility="trace",
                 )
                 if not provider_context.get("_provider_failure_recovery_recorded"):
                     self._record_failure_recovery_proposal(
@@ -617,37 +905,6 @@ class ReactRunnerMixin:
             assistant_text = parsed.get("message") or ""
             if parsed["status"] == "completed" and not assistant_text:
                 assistant_text = parsed["summary"]
-
-            if (
-                parsed["status"] == "completed"
-                and self._should_require_workspace_evidence_before_final(
-                    task=task,
-                    context=context,
-                    tool_results=tool_results,
-                )
-            ):
-                self._publish(
-                    session_id=session_id,
-                    task=task,
-                    event_type="assistant_progress",
-                    payload={
-                        "summary": "Need workspace evidence before final answer; continuing with read-only inspection.",
-                        "phase": "workspace_evidence_required",
-                        "reason": "missing_read_only_workspace_evidence",
-                        "requiredTools": self._workspace_evidence_required_tools(task=task, context=context),
-                    },
-                    visibility="panel",
-                )
-                if assistant_text:
-                    messages.append({
-                        "role": "assistant",
-                        "content": assistant_text,
-                    })
-                messages.append({
-                    "role": "user",
-                    "content": self._workspace_evidence_followup_prompt(task=task, context=context),
-                })
-                continue
 
             if turn_result.decision == TurnDecision.ASK_USER:
                 if not self._ask_user_question_is_required(
@@ -862,6 +1119,20 @@ class ReactRunnerMixin:
                             f"{self._tool_failure_summary(tool_spec, tool_result['result'])}"
                         )
                     return None
+                if (
+                    isinstance(tool_result.get("result"), dict)
+                    and tool_result["result"].get("failureKind") == "worktree_binding_failed"
+                ):
+                    return {
+                        "status": "failed",
+                        "summary": self._tool_failure_summary(tool_spec, tool_result["result"]),
+                        "tool_results": tool_results,
+                        "error_code": "WORKTREE_BINDING_FAILED",
+                        "structured_result": {
+                            "failureKind": "worktree_binding_failed",
+                            "toolName": tool_spec["name"],
+                        },
+                    }
                 if not self._tool_failed(tool_spec["name"], tool_result["result"]):
                     self._advance_after_tool(session_id=session_id, task=task, tool_spec=tool_spec)
                 return None
@@ -886,11 +1157,83 @@ class ReactRunnerMixin:
                 tool_call, tool_spec, cache_key, cached_tool_result = _prepared_tool_call(index)
                 if not self._plan_mode_allows_tool(context, tool_spec):
                     tool_result = self._blocked_plan_mode_tool_result(tool_spec)
+                    self._publish_blocked_tool_lifecycle(
+                        session_id=session_id,
+                        task=task,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                    )
                     maybe_terminal = _finalize_executed_tool(
                         index=index,
                         tool_call=tool_call,
                         tool_spec=tool_spec,
                         tool_result=tool_result,
+                        cache_key=None,
+                    )
+                    if maybe_terminal is not None:
+                        return maybe_terminal
+                    index += 1
+                    continue
+                if self._exit_plan_mode_requires_active_plan(context, tool_spec):
+                    tool_result = self._blocked_exit_plan_mode_tool_result(tool_spec)
+                    self._publish_blocked_tool_lifecycle(
+                        session_id=session_id,
+                        task=task,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                    )
+                    maybe_terminal = _finalize_executed_tool(
+                        index=index,
+                        tool_call=tool_call,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                        cache_key=None,
+                    )
+                    if maybe_terminal is not None:
+                        return maybe_terminal
+                    index += 1
+                    continue
+                if not self._provider_turn_allows_tool(tool_spec, tool_policy_decision):
+                    tool_result = self._blocked_unavailable_tool_result(
+                        tool_spec,
+                        tool_policy_decision=tool_policy_decision,
+                    )
+                    self._publish_blocked_tool_lifecycle(
+                        session_id=session_id,
+                        task=task,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                    )
+                    maybe_terminal = _finalize_executed_tool(
+                        index=index,
+                        tool_call=tool_call,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                        cache_key=None,
+                    )
+                    if maybe_terminal is not None:
+                        return maybe_terminal
+                    index += 1
+                    continue
+                defaulted_tool_result = self._defaulted_ask_user_question_tool_result(
+                    tool_spec,
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    context=context,
+                )
+                if defaulted_tool_result is not None:
+                    self._publish_defaulted_tool_lifecycle(
+                        session_id=session_id,
+                        task=task,
+                        tool_spec=tool_spec,
+                        tool_result=defaulted_tool_result,
+                    )
+                    maybe_terminal = _finalize_executed_tool(
+                        index=index,
+                        tool_call=tool_call,
+                        tool_spec=tool_spec,
+                        tool_result=defaulted_tool_result,
                         cache_key=None,
                     )
                     if maybe_terminal is not None:
@@ -1552,161 +1895,6 @@ class ReactRunnerMixin:
             visibility="panel",
         )
 
-    def _should_require_workspace_evidence_before_final(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        tool_results: list[dict[str, Any]],
-    ) -> bool:
-        contract = self._react_workspace_evidence_contract(task=task, context=context)
-        if contract.get("required") is not True:
-            return False
-        if self._react_has_workspace_change_evidence(tool_results=tool_results):
-            return False
-        return not self._react_has_read_only_workspace_evidence(
-            tool_results=tool_results,
-            required_tools=self._workspace_evidence_required_tools_from_contract(contract),
-        )
-
-    def _react_has_workspace_change_evidence(self, *, tool_results: list[dict[str, Any]]) -> bool:
-        for item in tool_results:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name") or "").strip()
-            if name not in {"apply_patch", "write_file"}:
-                continue
-            result = item.get("result") if isinstance(item.get("result"), dict) else {}
-            status = str(result.get("status") or "").strip().lower()
-            if status in {"failed", "error", "timeout", "blocked", "validation_failed"}:
-                continue
-            if name == "write_file":
-                return True
-            changed_paths = result.get("changedPaths")
-            if isinstance(changed_paths, list) and any(str(path or "").strip() for path in changed_paths):
-                return True
-            patch = result.get("patch") if isinstance(result.get("patch"), dict) else {}
-            if patch.get("id") or patch.get("filesChanged") or result.get("filesChanged"):
-                return True
-            diff_text = result.get("diffText")
-            if isinstance(diff_text, str) and diff_text.strip():
-                return True
-        return False
-
-    def _react_workspace_evidence_contract(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        profile = context.get("_child_profile")
-        if not isinstance(profile, dict):
-            routing = task.get("routing")
-            if not isinstance(routing, dict):
-                routing = context.get("routing")
-            if isinstance(routing, dict):
-                profile = routing.get("profile")
-        if not isinstance(profile, dict):
-            return {"required": False}
-        raw = profile.get("workspaceEvidenceRequired")
-        if raw is None:
-            raw = profile.get("workspace_evidence_required")
-        if isinstance(raw, bool):
-            return {
-                "required": raw,
-                "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
-            }
-        if not isinstance(raw, dict):
-            return {"required": False}
-        required = raw.get("required")
-        if required is None:
-            required = raw.get("enabled")
-        result = dict(raw)
-        result["required"] = required if isinstance(required, bool) else True
-        return result
-
-    @staticmethod
-    def _workspace_evidence_required_tools_from_contract(contract: dict[str, Any]) -> list[str]:
-        raw_tools = contract.get("requiredTools")
-        if raw_tools is None:
-            raw_tools = contract.get("required_tools")
-        if not isinstance(raw_tools, list):
-            return ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"]
-        tools = [
-            str(item).strip()
-            for item in raw_tools
-            if str(item or "").strip()
-        ]
-        return tools or ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"]
-
-    def _workspace_evidence_required_tools(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-    ) -> list[str]:
-        return self._workspace_evidence_required_tools_from_contract(
-            self._react_workspace_evidence_contract(task=task, context=context),
-        )
-
-    def _react_has_read_only_workspace_evidence(
-        self,
-        *,
-        tool_results: list[dict[str, Any]],
-        required_tools: list[str],
-    ) -> bool:
-        allowed_tools = set(required_tools) if required_tools else {
-            "read_file",
-            "search_files",
-            "code_search",
-            "list_dir",
-            "list_directory",
-            "git_status",
-            "git_diff",
-            "run_command",
-        }
-        read_only_tools = {
-            "read_file",
-            "search_files",
-            "code_search",
-            "list_dir",
-            "list_directory",
-            "git_status",
-            "git_diff",
-        }
-        for item in tool_results:
-            if not isinstance(item, dict):
-                continue
-            result = item.get("result")
-            if isinstance(result, dict) and str(result.get("status") or "").lower() in {"failed", "error", "timeout", "blocked"}:
-                continue
-            name = str(item.get("name") or "").strip()
-            if name in read_only_tools and name in allowed_tools:
-                return True
-            if name == "run_command" and ("run_command" in allowed_tools or not required_tools):
-                command = str(item.get("command") or "")
-                checker = getattr(self, "_completion_command_is_read_only_workspace_evidence", None)
-                if callable(checker) and checker(command):
-                    return True
-        return False
-
-    @staticmethod
-    def _workspace_evidence_followup_prompt(*, task: dict[str, Any], context: dict[str, Any]) -> str:
-        workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
-        root_line = f"Workspace root: {workspace_root}\n" if workspace_root else ""
-        goal = str(task.get("goal") or context.get("goal") or "").strip()
-        return (
-            "[Workspace evidence required]\n"
-            f"{root_line}"
-            f"Goal: {goal}\n"
-            "Before giving the final answer, inspect the workspace with the smallest sufficient read-only evidence set. "
-            "For progress/status questions, start with git_status and only the most relevant README/TODO/task notes or files. "
-            "For document or source questions, search/read the likely source files instead of scanning the whole repository. "
-            "Do not run build, compile, or test commands unless the user explicitly asked for verification or a prior edit needs it. "
-            "Stop tool use once the evidence directly supports the answer, then synthesize from the observed files or command evidence. "
-            "Do not ask the user for low-risk output preferences."
-        )
-
     def _pause_react_for_user_question(
         self,
         *,
@@ -1935,12 +2123,16 @@ class ReactRunnerMixin:
         text = self._ask_user_question_text(question=question, reason=reason, policy_needs=policy_needs)
         if self._is_low_risk_cleanup_question(text=text, goal=goal, context=context):
             return False
+        if (
+            self._user_requested_no_followup_questions(goal=goal, context=context)
+            and not self._question_requires_user_blocking_input(text=text, reason_text=reason_text)
+        ):
+            return False
         required_reason_markers = (
             "missing_required",
             "required_information",
             "missing information",
             "missing_info",
-            "missing_context",
             "scope_unclear",
             "blocked",
             "auth",
@@ -1951,6 +2143,8 @@ class ReactRunnerMixin:
             "access",
         )
         if any(marker in reason_text for marker in required_reason_markers):
+            return True
+        if self._question_requires_user_blocking_input(text=text, reason_text=reason_text):
             return True
         low_risk_preference_markers = (
             "style",
@@ -1973,7 +2167,100 @@ class ReactRunnerMixin:
         )
         if any(marker in text for marker in low_risk_preference_markers):
             return False
-        return True
+        return False
+
+    def _user_requested_no_followup_questions(
+        self,
+        *,
+        goal: Any,
+        context: dict[str, Any] | None = None,
+    ) -> bool:
+        text_parts = [
+            str(goal or ""),
+        ]
+        if isinstance(context, dict):
+            for key in ("goal", "userGoal", "content", "originalUserMessage"):
+                value = context.get(key)
+                if value:
+                    text_parts.append(str(value))
+            messages = context.get("messages")
+            if isinstance(messages, list):
+                for message in messages[-4:]:
+                    if not isinstance(message, dict) or message.get("role") != "user":
+                        continue
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        text_parts.append(content)
+        combined = " ".join(text_parts).casefold()
+        markers = (
+            "do not ask",
+            "don't ask",
+            "dont ask",
+            "no need to ask",
+            "without asking",
+            "do not ask me",
+            "don't ask me",
+            "no questions",
+            "no follow-up",
+            "no follow up",
+            "\u4e0d\u8981\u8be2\u95ee",
+            "\u65e0\u9700\u8be2\u95ee",
+            "\u4e0d\u7528\u8be2\u95ee",
+            "\u4e0d\u9700\u8981\u8be2\u95ee",
+            "\u4e0d\u8981\u95ee\u6211",
+            "\u4e0d\u7528\u95ee\u6211",
+            "\u4e0d\u9700\u8981\u95ee\u6211",
+            "\u4e0d\u7528\u95ee",
+            "\u65e0\u9700\u786e\u8ba4",
+            "\u4e0d\u8981\u786e\u8ba4",
+            "\u4e0d\u7528\u786e\u8ba4",
+        )
+        return any(marker in combined for marker in markers)
+
+    @staticmethod
+    def _question_requires_user_blocking_input(*, text: str, reason_text: str) -> bool:
+        combined = f"{reason_text} {text}".casefold()
+        blocking_markers = (
+            "auth",
+            "credential",
+            "api key",
+            "token",
+            "secret",
+            "password",
+            "login",
+            "permission",
+            "approval",
+            "access",
+            "destructive",
+            "danger",
+            "irreversible",
+            "data loss",
+            "delete production",
+            "external account",
+            "billing",
+            "payment",
+            "which path",
+            "what path",
+            "target path",
+            "repository path",
+            "repo path",
+            "\u51ed\u8bc1",
+            "\u5bc6\u94a5",
+            "\u5bc6\u7801",
+            "\u767b\u5f55",
+            "\u6743\u9650",
+            "\u6388\u6743",
+            "\u5ba1\u6279",
+            "\u8bbf\u95ee",
+            "\u54ea\u4e2a\u8def\u5f84",
+            "\u4ec0\u4e48\u8def\u5f84",
+            "\u76ee\u6807\u8def\u5f84",
+            "\u5371\u9669",
+            "\u4e0d\u53ef\u9006",
+            "\u6570\u636e\u4e22\u5931",
+            "\u4ed8\u8d39",
+        )
+        return any(marker in combined for marker in blocking_markers)
 
     def _ask_user_question_text(self, *, question: Any, reason: Any, policy_needs: Any) -> str:
         text_parts = [str(question or "")]
@@ -2015,6 +2302,7 @@ class ReactRunnerMixin:
                 (context or {}).get("content") if isinstance(context, dict) else "",
             )
         ).casefold()
+        combined_all = f"{combined_goal} {text}".casefold()
         cleanup_goal_markers = (
             "delete",
             "remove",
@@ -2029,10 +2317,12 @@ class ReactRunnerMixin:
         )
         generated_path_markers = (
             "%systemdrive%",
+            "systemdrive",
             "__pycache__",
             ".pyc",
             ".pytest_cache",
             ".idea/workspace.xml",
+            ".idea\\workspace.xml",
             "memory.md",
             "memory.local.md",
             "yuanbao.md",
@@ -2060,9 +2350,9 @@ class ReactRunnerMixin:
             "\u672a\u8ddf\u8e2a",
         )
         return (
-            any(marker in combined_goal for marker in cleanup_goal_markers)
-            and any(marker in text for marker in generated_path_markers)
-            and any(marker in text for marker in cleanup_question_markers)
+            any(marker in combined_all for marker in cleanup_goal_markers)
+            and any(marker in combined_all for marker in generated_path_markers)
+            and any(marker in combined_all for marker in cleanup_question_markers)
         )
 
     def _default_answer_for_low_risk_question(self, *, question: Any, policy_needs: Any, goal: Any = None) -> str:

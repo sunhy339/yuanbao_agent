@@ -24,8 +24,47 @@ function trace(
   };
 }
 
+function flatToolFrames(
+  toolUseId: string,
+  toolName: string,
+  sequence: number,
+  target: string,
+  resultSummary: string,
+): TraceEventRecord[] {
+  return [
+    trace(`evt_${toolUseId}_content_start`, "content_start", {
+      blockType: "tool_use",
+      toolUseId,
+      toolName,
+      target,
+      inputSummary: target,
+      _chatCompat: true,
+      _bridge: { persistTraceMirror: true },
+    }, sequence, "chat"),
+    trace(`evt_${toolUseId}_tool_use_complete`, "tool_use_complete", {
+      toolUseId,
+      toolName,
+      input: { target },
+      target,
+      inputSummary: target,
+      _chatCompat: true,
+      _bridge: { persistTraceMirror: true },
+    }, sequence + 1, "chat"),
+    trace(`evt_${toolUseId}_tool_result`, "tool_result", {
+      toolUseId,
+      toolName,
+      content: { status: "completed" },
+      target,
+      inputSummary: target,
+      resultSummary,
+      _chatCompat: true,
+      _bridge: { persistTraceMirror: true },
+    }, sequence + 2, "chat"),
+  ];
+}
+
 describe("chat trace replay", () => {
-  it("restores tool activity blocks from persisted trace events", () => {
+  it("restores tool activity blocks from persisted haha-style flat frames", () => {
     const current: ChatMessageView[] = [
       {
         id: "stored_user",
@@ -38,21 +77,45 @@ describe("chat trace replay", () => {
       },
     ];
     const traces = [
-      trace("evt_tool_start", "tool.started", {
-        toolCallId: "tool_read",
+      trace("evt_content_start", "content_start", {
+        blockType: "tool_use",
+        toolUseId: "tool_read",
         toolName: "read_file",
-        arguments: { path: "snake_game/README.md" },
         target: "snake_game/README.md",
         inputSummary: "snake_game/README.md",
-      }, 2),
-      trace("evt_tool_done", "tool.completed", {
-        toolCallId: "tool_read",
+        _chatCompat: true,
+        _bridge: { persistTraceMirror: true },
+      }, 2, "chat"),
+      trace("evt_tool_complete", "tool_use_complete", {
+        toolUseId: "tool_read",
         toolName: "read_file",
+        input: { path: "snake_game/README.md" },
+        target: "snake_game/README.md",
+        inputSummary: "snake_game/README.md",
+        _chatCompat: true,
+        _bridge: { persistTraceMirror: true },
+      }, 3, "chat"),
+      trace("evt_tool_output", "content_delta", {
+        toolUseId: "tool_read",
+        toolName: "read_file",
+        target: "snake_game/README.md",
+        inputSummary: "snake_game/README.md",
+        toolOutput: "read snake_game/README.md",
+        outputStream: "result_preview",
+        _chatCompat: true,
+        _bridge: { persistTraceMirror: true },
+      }, 5, "chat"),
+      trace("evt_tool_result", "tool_result", {
+        toolUseId: "tool_read",
+        toolName: "read_file",
+        content: { path: "snake_game/README.md", bytes: 42 },
         target: "snake_game/README.md",
         inputSummary: "snake_game/README.md",
         resultSummary: "read snake_game/README.md",
         durationMs: 12,
-      }, 3),
+        _chatCompat: true,
+        _bridge: { persistTraceMirror: true },
+      }, 6, "chat"),
     ];
 
     const first = replayTraceEventsToChatMessages(current, traces);
@@ -72,6 +135,23 @@ describe("chat trace replay", () => {
         durationMs: 12,
       },
     });
+  });
+
+  it("does not restore raw trace-only tool lifecycle rows into chat", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_tool_start", "tool.started", {
+        toolCallId: "tool_raw",
+        toolName: "read_file",
+        arguments: { path: "debug.json" },
+      }, 1, "trace"),
+      trace("evt_tool_done", "tool.completed", {
+        toolCallId: "tool_raw",
+        toolName: "read_file",
+        resultSummary: "raw lifecycle should stay in trace",
+      }, 2, "trace"),
+    ]);
+
+    expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
   it("does not append streamed tool output again when traces are replayed repeatedly", () => {
@@ -113,18 +193,7 @@ describe("chat trace replay", () => {
         text: "I will inspect the project first. ",
         source: "provider_reasoning_delta",
       }, 1, "chat"),
-      trace("evt_tool_start", "tool.started", {
-        toolCallId: "tool_read",
-        toolName: "read_file",
-        arguments: { path: "snake_game/README.md" },
-        target: "snake_game/README.md",
-        inputSummary: "snake_game/README.md",
-      }, 2, "chat"),
-      trace("evt_tool_done", "tool.completed", {
-        toolCallId: "tool_read",
-        toolName: "read_file",
-        resultSummary: "read snake_game/README.md",
-      }, 3, "chat"),
+      ...flatToolFrames("tool_read", "read_file", 2, "snake_game/README.md", "read snake_game/README.md"),
       trace("evt_progress", "assistant_progress", {
         text: "正在合并候选文档。",
       }, 4, "chat"),
@@ -135,11 +204,11 @@ describe("chat trace replay", () => {
       trace("evt_final_delta", "content_delta", {
         text: "下面是下一步优化路线图。",
         messageId: "assistant_1",
-      }, 6, "chat"),
+      }, 7, "chat"),
       trace("evt_complete", "message_complete", {
         messageId: "assistant_1",
         content: "下面是下一步优化路线图。",
-      }, 7, "chat"),
+      }, 8, "chat"),
     ];
 
     const first = replayTraceEventsToChatMessages([], traces);
@@ -164,6 +233,38 @@ describe("chat trace replay", () => {
     expect(visible.filter((message) => message.id === "assistant_1")).toHaveLength(1);
   });
 
+  it("replays chat-compat message.delta as the canonical assistant text stream", () => {
+    const traces = [
+      trace("evt_msg_delta_1", "message.delta", {
+        messageId: "msg_1",
+        delta: "hello ",
+        _chatCompat: true,
+      }, 1, "chat"),
+      trace("evt_msg_delta_2", "message.delta", {
+        messageId: "msg_1",
+        delta: "world",
+        _chatCompat: true,
+      }, 2, "chat"),
+      trace("evt_legacy_token", "assistant.token", {
+        messageId: "msg_1",
+        delta: " ignored",
+        _chatCompat: true,
+      }, 3, "chat"),
+      trace("evt_complete", "message_complete", {
+        messageId: "msg_1",
+        content: "hello world",
+      }, 4, "chat"),
+    ];
+
+    const first = replayTraceEventsToChatMessages([], traces);
+    const second = replayTraceEventsToChatMessages(first, traces);
+    const visible = getVisibleChatMessages(second, "sess_1");
+
+    expect(visible.map((message) => message.id)).toEqual(["msg_1"]);
+    expect(visible[0]?.content).toBe("hello world");
+    expect(visible[0]?.streaming).toBe(false);
+  });
+
   it("keeps replay idempotent under repeated thinking/tool/progress cycles", () => {
     const traces: TraceEventRecord[] = [];
     let sequence = 1;
@@ -172,17 +273,11 @@ describe("chat trace replay", () => {
         text: `Thinking step ${index}.`,
         source: "provider_reasoning_delta",
       }, sequence += 1, "chat"));
-      traces.push(trace(`evt_tool_start_${index}`, "tool.started", {
-        toolCallId: `tool_${index}`,
-        toolName: index % 2 === 0 ? "read_file" : "search_files",
-        target: index % 2 === 0 ? `snake_game/file_${index}.py` : "snake_game",
-        inputSummary: `context ${index}`,
-      }, sequence += 1, "chat"));
-      traces.push(trace(`evt_tool_done_${index}`, "tool.completed", {
-        toolCallId: `tool_${index}`,
-        toolName: index % 2 === 0 ? "read_file" : "search_files",
-        resultSummary: `completed ${index}`,
-      }, sequence += 1, "chat"));
+      const toolName = index % 2 === 0 ? "read_file" : "search_files";
+      const target = index % 2 === 0 ? `snake_game/file_${index}.py` : "snake_game";
+      const toolFrames = flatToolFrames(`tool_${index}`, toolName, sequence + 1, target, `completed ${index}`);
+      traces.push(...toolFrames);
+      sequence += toolFrames.length;
       traces.push(trace(`evt_progress_${index}`, "assistant_progress", {
         text: `Merged evidence ${index}.`,
       }, sequence += 1, "chat"));

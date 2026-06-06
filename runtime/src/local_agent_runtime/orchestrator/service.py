@@ -104,7 +104,7 @@ class Orchestrator(
         self._worktree_service = worktree_service
         self._task_state_machine = TaskStateMachine()
         self._meta_router = meta_router or MetaRouter(
-            provider=provider,
+            provider=None,
             decision_advisor=decision_advisor,
         )
         self._memory_manager = memory_manager
@@ -265,18 +265,6 @@ class Orchestrator(
                 and isinstance(routing_dict.get("toolContinuation"), dict)
             ):
                 proposal_payload["toolContinuation"] = routing_dict["toolContinuation"]
-            routing_profile = routing_dict.get("profile") if isinstance(routing_dict.get("profile"), dict) else {}
-            workspace_evidence = (
-                routing_profile.get("workspaceEvidenceRequired")
-                if isinstance(routing_profile, dict)
-                else None
-            )
-            if (
-                "workspace_evidence_required" not in proposal_payload
-                and "workspaceEvidenceRequired" not in proposal_payload
-                and isinstance(workspace_evidence, dict)
-            ):
-                proposal_payload["workspaceEvidenceRequired"] = workspace_evidence
             source = {
                 "type": advice.source,
                 "confidence": advice.confidence,
@@ -318,7 +306,6 @@ class Orchestrator(
                     "scenario": routing.scenario.value,
                     "strategy": routing.strategy.value,
                     "toolContinuation": routing_dict.get("toolContinuation"),
-                    "workspaceEvidenceRequired": workspace_evidence,
                     "source": advice.source,
                     "confidence": advice.confidence,
                     "rationale": advice.rationale,

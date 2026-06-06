@@ -59,13 +59,18 @@ class SubagentService:
 
         request = ChildTaskRequest(
             prompt=prompt,
-            title=self._optional_string(params, "title") or self._title_from_prompt(prompt),
+            title=(
+                self._optional_string(params, "description")
+                or self._optional_string(params, "title")
+                or self._title_from_prompt(prompt)
+            ),
             planning_prompt=self._optional_string(params, "planningPrompt"),
             skill_id=(
                 self._optional_string(params, "skillId")
                 or self._optional_string(params, "skill_id")
             ),
             agent_type=self._optional_string(params, "agentType")
+            or self._optional_string(params, "subagent_type")
             or self._optional_string(params, "agent_type")
             or "explorer",
             priority=self._priority(params.get("priority", 3)),

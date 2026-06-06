@@ -487,7 +487,7 @@ export interface DiffLine {
 
 export interface RuntimeTimelineItem {
   id: string;
-  kind: "approval" | "patch" | "trace" | "tool" | "command" | "task" | "memory";
+  kind: "approval" | "patch" | "trace" | "tool" | "command" | "task" | "memory" | "completion";
   sourceId?: string;
   patchId?: string;
   toolUseId?: string;

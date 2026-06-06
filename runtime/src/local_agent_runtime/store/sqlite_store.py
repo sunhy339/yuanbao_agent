@@ -497,7 +497,11 @@ class SQLiteStore(
             "sequence": row["sequence"],
             "visibility": row.get("visibility", "chat"),
         }
-        if isinstance(payload, dict) and not _suppresses_flat_bridge(payload):
+        if (
+            record["visibility"] != "trace"
+            and isinstance(payload, dict)
+            and not _suppresses_flat_bridge(payload)
+        ):
             yuanbao = to_yuanbao_server_message(
                 RuntimeEvent(
                     event_id=str(row["id"]),

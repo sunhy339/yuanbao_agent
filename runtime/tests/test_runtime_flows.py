@@ -24,6 +24,29 @@ def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
     return response["result"][key]
 
 
+def _force_orchestrator_route(
+    runtime_harness: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scenario: Scenario,
+    strategy: ExecutionStrategy,
+    enable_planning: bool = True,
+    enable_reflection: bool = True,
+) -> None:
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator,
+        "_route_goal",
+        lambda _goal: RoutingDecision(
+            scenario=scenario,
+            strategy=strategy,
+            confidence=0.99,
+            enable_planning=enable_planning,
+            enable_reflection=enable_reflection,
+            reasoning="forced explicit orchestration route for flow test",
+        ),
+    )
+
+
 def test_default_mock_message_flow_does_not_probe_workspace_without_model_tool_call(
     runtime_harness: Any,
     tmp_path: Path,
@@ -1181,6 +1204,12 @@ def test_plan_approval_strict_mode(runtime_harness: Any, tmp_path: Path, monkeyp
         "decompose",
         lambda **_kwargs: fake_plan,
     )
+    _force_orchestrator_route(
+        runtime_harness,
+        monkeypatch,
+        scenario=Scenario.MULTI_STEP_TASK,
+        strategy=ExecutionStrategy.PLAN_THEN_EXECUTE,
+    )
 
     workspace = _call_result(
         runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
@@ -1278,6 +1307,12 @@ def test_plan_approval_approved_resumes_dag(runtime_harness: Any, tmp_path: Path
         runtime_harness.server._orchestrator._decomposer,
         "decompose",
         lambda **_kwargs: fake_plan,
+    )
+    _force_orchestrator_route(
+        runtime_harness,
+        monkeypatch,
+        scenario=Scenario.MULTI_STEP_TASK,
+        strategy=ExecutionStrategy.PLAN_THEN_EXECUTE,
     )
 
     # Patch DAG executor to return success immediately (mock the full subagent pipeline)
@@ -2077,6 +2112,12 @@ def test_supervisor_plan_approval_reject(runtime_harness: Any, tmp_path: Path, m
         "decompose",
         lambda **_kwargs: fake_plan,
     )
+    _force_orchestrator_route(
+        runtime_harness,
+        monkeypatch,
+        scenario=Scenario.SUPERVISED_TASK,
+        strategy=ExecutionStrategy.PLAN_SUPERVISE,
+    )
 
     workspace = _call_result(
         runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
@@ -2143,6 +2184,12 @@ def test_supervisor_plan_approval_approved_resumes(runtime_harness: Any, tmp_pat
         "decompose",
         lambda **_kwargs: fake_plan,
     )
+    _force_orchestrator_route(
+        runtime_harness,
+        monkeypatch,
+        scenario=Scenario.SUPERVISED_TASK,
+        strategy=ExecutionStrategy.PLAN_SUPERVISE,
+    )
 
     # Mock supervisor.execute to return success
     monkeypatch.setattr(
@@ -2191,8 +2238,12 @@ def test_supervisor_plan_approval_approved_resumes(runtime_harness: Any, tmp_pat
     assert final_task["status"] == "completed"
 
 
-def test_swarm_plan_approval_reject(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """In strict mode, swarm plan requires approval; rejection fails the task."""
+def test_swarm_keyword_uses_model_tool_loop_instead_of_fixed_plan_approval(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A swarm request exposes agent tools first; it does not generate a fixed plan before the model acts."""
     from local_agent_runtime.planner.types import PlanResult, Subtask
 
     workspace_root = tmp_path / "workspace"
@@ -2210,10 +2261,16 @@ def test_swarm_plan_approval_reject(runtime_harness: Any, tmp_path: Path, monkey
         dag={"sub-0": []},
         execution_order=["sub-0"],
     )
+    decomposer_called = {"value": False}
+
+    def _unexpected_decompose(**_kwargs: Any) -> PlanResult:
+        decomposer_called["value"] = True
+        return fake_plan
+
     monkeypatch.setattr(
         runtime_harness.server._orchestrator._decomposer,
         "decompose",
-        lambda **_kwargs: fake_plan,
+        _unexpected_decompose,
     )
 
     workspace = _call_result(
@@ -2234,26 +2291,18 @@ def test_swarm_plan_approval_reject(runtime_harness: Any, tmp_path: Path, monkey
         {"sessionId": session["id"], "content": "swarm 协作完成这个任务"},
     )
     task = _call_result(send_response, "task")
-    assert task["status"] == "waiting_approval"
+    assert task["status"] == "completed"
+    assert decomposer_called["value"] is False
 
     approval_events = [
         event for event in runtime_harness.events
         if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
     ]
-    assert len(approval_events) == 1
-    assert approval_events[0]["payload"]["request"].get("orchestrationMode") == "swarm"
-    approval_id = approval_events[0]["payload"]["approvalId"]
-
-    runtime_harness.call(
-        "approval.submit",
-        {"approvalId": approval_id, "decision": "rejected"},
-    )
-
-    final_task = _call_result(
-        runtime_harness.call("task.get", {"taskId": task["id"]}),
-        "task",
-    )
-    assert final_task["status"] == "failed"
+    assert approval_events == []
+    assert not [
+        event for event in runtime_harness.events
+        if event["type"] == "task.planning.started"
+    ]
 
 
 def test_graceful_shutdown_rejects_new_tasks(runtime_harness: Any, tmp_path: Path) -> None:
@@ -2317,8 +2366,8 @@ def test_graceful_shutdown_cancels_running_tasks(runtime_harness: Any, tmp_path:
     assert final_task["status"] == "cancelled"
 
 
-def test_skill_usage_is_recorded_when_skill_triggered(runtime_harness: Any, tmp_path: Path) -> None:
-    """When a message triggers a skill-based scenario, usage should be recorded."""
+def test_keyword_skill_hint_does_not_record_usage_without_explicit_skill(runtime_harness: Any, tmp_path: Path) -> None:
+    """Keyword hints should not become implicit skill usage in the default path."""
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     workspace = _call_result(
@@ -2333,7 +2382,6 @@ def test_skill_usage_is_recorded_when_skill_triggered(runtime_harness: Any, tmp_
         "session",
     )
 
-    # "review" keyword triggers CODE_REVIEW scenario with skill_id="code_reviewer"
     task = _call_result(
         runtime_harness.call(
             "message.send",
@@ -2341,17 +2389,13 @@ def test_skill_usage_is_recorded_when_skill_triggered(runtime_harness: Any, tmp_
         ),
         "task",
     )
+    assert task["routing"]["skill_id"] is None
+    assert task["routing"]["scenario"] == "free_form"
+    assert task["routing"]["intentHints"]["ruleCandidate"]["skill_id"] == "code_reviewer"
 
-    # Query skill usage
     usage_resp = runtime_harness.call("skill.usage", {"skillId": "code_reviewer"})
     assert "result" in usage_resp
-    usage_list = usage_resp["result"]["usage"]
-    assert len(usage_list) >= 1
-    entry = usage_list[0]
-    assert entry["skill_id"] == "code_reviewer"
-    assert entry["task_id"] == task["id"]
-    assert entry["session_id"] == session["id"]
-    assert entry["triggered_by"] == "routing"
+    assert usage_resp["result"]["usage"] == []
 
 
 def test_skill_usage_empty_for_no_skill(runtime_harness: Any, tmp_path: Path) -> None:
@@ -2575,8 +2619,11 @@ def test_doc_expert_prompt_records_workflow_budget_from_routing(runtime_harness:
     )
 
     routing = task["routing"]
-    assert routing["scenario"] == "doc_write"
-    assert routing["skill_id"] == "doc_writer"
+    assert routing["scenario"] == "free_form"
+    assert routing["skill_id"] is None
+    candidate = routing["intentHints"]["ruleCandidate"]
+    assert candidate["scenario"] == "doc_write"
+    assert candidate["skill_id"] == "doc_writer"
     assert routing["max_steps"] >= 35
     workflow = routing["mainWorkflow"]
     assert workflow["budget"]["maxSteps"] == routing["max_steps"]
@@ -3005,7 +3052,7 @@ def test_streaming_emits_message_delta_with_message_id(runtime_harness: Any, tmp
     assert len(token_events) > 0, "Expected at least one assistant.token event"
     assert len(delta_events) > 0, "Expected at least one message.delta event"
     assert {event["visibility"] for event in delta_events} == {"chat"}
-    assert {event["visibility"] for event in token_events} == {"chat"}
+    assert {event["visibility"] for event in token_events} == {"trace"}
 
     # message.delta events should carry messageId matching the task's active assistant message
     active_msg_id = task.get("activeAssistantMessageId")

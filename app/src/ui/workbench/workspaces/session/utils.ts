@@ -501,6 +501,9 @@ export function getRuntimeKindLabel(kind: RuntimeTimelineItem["kind"]) {
   if (kind === "memory") {
     return "记忆";
   }
+  if (kind === "completion") {
+    return "完成审查";
+  }
   return kind;
 }
 

@@ -280,6 +280,7 @@ class ApprovalFlowMixin:
             if approval["decision"] == "approved":
                 resumed_task = self._resume_react_after_approval(task=task, approval=approval)
                 self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=resumed_task)
+                return {"approval": approval, "task": resumed_task}
             else:
                 failed_task = self._fail_task(
                     session_id=task["sessionId"],
@@ -288,7 +289,7 @@ class ApprovalFlowMixin:
                     error_code="APPROVAL_REJECTED",
                 )
                 self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=failed_task)
-            return {"approval": approval}
+                return {"approval": approval, "task": failed_task}
         if approval["decision"] == "rejected" and approval["kind"] in {"run_command", "advisor_tool"}:
             try:
                 request = json.loads(approval.get("requestJson") or "{}")

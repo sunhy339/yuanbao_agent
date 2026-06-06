@@ -864,20 +864,6 @@ class TaskLifecycleMixin:
                     "Fix the failed checks before marking the task completed."
                 ),
             }
-        advisor_gate = self._completion_advisor_gate(completion_evidence)
-        if advisor_gate is not None:
-            reviews_disabled = self._completion_reviews_disabled(context)
-            if reviews_disabled and advisor_gate.get("action") == "review":
-                return {
-                    "action": "complete",
-                    "decision": "advisor_review_recorded",
-                    "gateStatus": "advisor_review_recorded",
-                    "reason": (
-                        advisor_gate.get("reason")
-                        or "Completion advisor requested review, but approvals are disabled."
-                    ),
-                }
-            return advisor_gate
         if force_complete_after_review:
             return {"action": "complete", "reason": "Completion review was approved."}
         if context.get("_allow_summary_only_completion") is True:
@@ -893,6 +879,19 @@ class TaskLifecycleMixin:
         is_write_or_verification_task = self._is_write_or_verification_task(task=task, context=context)
         if not is_write_or_verification_task:
             return {"action": "complete", "reason": "Read-only completion is allowed."}
+        advisor_gate = self._completion_advisor_gate(completion_evidence)
+        if advisor_gate is not None:
+            if reviews_disabled and advisor_gate.get("action") == "review":
+                return {
+                    "action": "complete",
+                    "decision": "advisor_review_recorded",
+                    "gateStatus": "advisor_review_recorded",
+                    "reason": (
+                        advisor_gate.get("reason")
+                        or "Completion advisor requested review, but approvals are disabled."
+                    ),
+                }
+            return advisor_gate
         tool_failure_gate = self._completion_tool_failure_gate(completion_evidence)
         if tool_failure_gate is not None:
             if reviews_disabled and tool_failure_gate.get("action") == "review":
@@ -2180,7 +2179,13 @@ class TaskLifecycleMixin:
                     return True
             return bool(task.get("changedFiles") or task.get("commands") or task.get("verification"))
         scenario = str(routing.get("scenario") or context_routing.get("scenario") or "").strip().lower()
-        if scenario in {"code_edit", "debug", "test_write", "doc_write", "multi_step_task", "supervised_task", "swarm_task"}:
+        model_tool_orchestration = (
+            routing.get("orchestrationMode") == "model_tools"
+            or context_routing.get("orchestrationMode") == "model_tools"
+        )
+        if scenario in {"code_edit", "debug", "test_write", "doc_write", "multi_step_task", "supervised_task"}:
+            return True
+        if scenario == "swarm_task" and not model_tool_orchestration:
             return True
         if task.get("type") == "validate":
             return True
@@ -4383,6 +4388,8 @@ class TaskLifecycleMixin:
 
     def _should_skip_completion_advisor(self, task: dict[str, Any], context: dict[str, Any]) -> bool:
         if context.get("_skip_completion_advisor") is True:
+            return True
+        if not self._is_write_or_verification_task(task=task, context=context):
             return True
         if context.get("_child_worker") is True or task.get("role", "root") != "root":
             return not bool(self._advisor_config(context).get("enableChildCompletionAdvisor"))

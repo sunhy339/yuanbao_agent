@@ -841,6 +841,68 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-status")).toBe("cancelled");
   });
 
+  it("renders live haha-style team_update as an agent group panel", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_team_update",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "collab.task.created",
+        ts: 10,
+        visibility: "chat",
+        payload: { rawJson: { should: "not render" } },
+        hahaCc: {
+          type: "team_update",
+          teamName: "swarm",
+          members: [
+            {
+              agentId: "planner-1",
+              role: "planner",
+              status: "running",
+              currentTask: "Inspect backend flow",
+            },
+          ],
+        },
+      } as unknown as AgentEventEnvelope);
+    });
+
+    const row = screen.getByText("1 member");
+    expect(row.getAttribute("data-kind")).toBe("agent_task_group");
+    expect(row.getAttribute("data-status")).toBe("streaming");
+    expect(screen.queryByText(/rawJson/)).toBeNull();
+  });
+
+  it("renders live haha-style task_update without leaking envelope payload", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_task_update",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "task.updated",
+        ts: 10,
+        visibility: "chat",
+        payload: { rawJson: { should: "not render" } },
+        hahaCc: {
+          type: "task_update",
+          taskId: "task_1",
+          status: "running",
+          progress: "Inspect current workflow",
+        },
+      });
+    });
+
+    const row = screen.getByText("Inspect current workflow");
+    expect(row.getAttribute("data-kind")).toBe("task_summary");
+    expect(row.getAttribute("data-status")).toBe("streaming");
+    expect(screen.queryByText(/rawJson/)).toBeNull();
+  });
+
   it("drops pending and late chat output after task.cancelled", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());

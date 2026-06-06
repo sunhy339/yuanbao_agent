@@ -31,6 +31,12 @@ import {
   appendOrUpdateAssistantMessageDelta,
   type ChatMessageView,
 } from "./chatMessages";
+import {
+  applyYuanbaoServerMessageToChat,
+  shouldSuppressLegacyRenderingForYuanbaoMessage,
+  yuanbaoServerMessageFromEvent,
+  yuanbaoServerMessageProducesChat,
+} from "./yuanbaoServerMessages";
 
 const SPECIAL_EVENT_TYPES = new Set([
   "api_retry",
@@ -261,6 +267,17 @@ function replayTraceEvent(
   }
   if (!isReplayChatVisibleEvent(event, childTaskIds)) {
     return current;
+  }
+
+  const yuanbaoMessage = yuanbaoServerMessageFromEvent(event);
+  if (yuanbaoMessage && yuanbaoServerMessageProducesChat(yuanbaoMessage)) {
+    const applied = applyYuanbaoServerMessageToChat(current, event, {
+      stableThinkingEventId: true,
+    });
+    if (shouldSuppressLegacyRenderingForYuanbaoMessage(event, yuanbaoMessage)) {
+      return applied.messages;
+    }
+    current = applied.messages;
   }
 
   if (event.type === "content_start") {

@@ -60,6 +60,13 @@ import {
 } from "../state/eventRecordViews";
 import { shouldPromoteTaskToActive } from "../state/sessionDerivedViews";
 import { TRACE_CACHE_LIMIT } from "../state/providerConfig";
+import {
+  applyYuanbaoServerMessageToChat,
+  shouldFlushPendingTokensForYuanbaoMessage,
+  shouldSuppressLegacyRenderingForYuanbaoMessage,
+  yuanbaoServerMessageFromEvent,
+  yuanbaoServerMessageProducesChat,
+} from "../state/yuanbaoServerMessages";
 
 const runtimeClient = new RuntimeClient();
 
@@ -485,6 +492,27 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (shouldSuppressCancelledTaskEvent(event)) {
+          return;
+        }
+
+        const yuanbaoMessage = yuanbaoServerMessageFromEvent(event);
+        const yuanbaoMessageVisible =
+          Boolean(yuanbaoMessage) &&
+          yuanbaoServerMessageProducesChat(yuanbaoMessage!) &&
+          isChatVisibleEvent(event);
+        if (yuanbaoMessage && yuanbaoMessageVisible) {
+          if (shouldFlushPendingTokensForYuanbaoMessage(yuanbaoMessage)) {
+            flushPendingAssistantTokens();
+          }
+          setChatMessages((current) =>
+            applyYuanbaoServerMessageToChat(current, event).messages,
+          );
+        }
+        if (
+          yuanbaoMessage &&
+          yuanbaoMessageVisible &&
+          shouldSuppressLegacyRenderingForYuanbaoMessage(event, yuanbaoMessage)
+        ) {
           return;
         }
 

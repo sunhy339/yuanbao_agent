@@ -1678,6 +1678,7 @@ export function appendSpecialEventMessage(
   const content = contentCandidates
     .map((value) => value?.trim() ?? "")
     .find(Boolean) ?? (mergeExisting ? existingMessage?.content ?? "" : "");
+  const messageStatus = messageStatusFromSpecialEventStatus(payload.status);
   const nextMessage: ChatMessageView = {
     id: messageId,
     sessionId: payload.sessionId,
@@ -1688,7 +1689,7 @@ export function appendSpecialEventMessage(
     updatedAt: payload.now,
     streaming: false,
     placeholder: false,
-    status: payload.status && ["failed", "error"].includes(payload.status.toLowerCase()) ? "failed" : "completed",
+    status: messageStatus,
     metadata: {
       ...(mergeExisting ? existingMessage?.metadata ?? {} : {}),
       ...metadataSource,
@@ -1705,6 +1706,23 @@ export function appendSpecialEventMessage(
     return next;
   }
   return [...current, nextMessage];
+}
+
+function messageStatusFromSpecialEventStatus(status?: string | null): MessageStatus {
+  const normalized = status?.trim().toLowerCase() ?? "";
+  if (["running", "started", "planning", "verifying", "pending", "queued", "waiting", "waiting_approval", "active", "in_progress"].includes(normalized)) {
+    return "streaming";
+  }
+  if (["blocked"].includes(normalized)) {
+    return "blocked";
+  }
+  if (["cancelled", "canceled"].includes(normalized)) {
+    return "cancelled";
+  }
+  if (["failed", "error", "rejected"].includes(normalized)) {
+    return "failed";
+  }
+  return "completed";
 }
 
 export function resolveAskUserQuestionMessage(

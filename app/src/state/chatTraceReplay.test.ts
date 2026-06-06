@@ -512,6 +512,78 @@ describe("chat trace replay", () => {
     expect(visible[0]?.metadata?.previewSections).toEqual(previewSections);
   });
 
+  it("replays haha-style team_update as an agent group without raw json content", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      {
+        ...trace("evt_team", "collab.task.created", {
+          noisy: { raw: "do not render this object" },
+        }, 1, "chat"),
+        hahaCc: {
+          type: "team_update",
+          teamName: "swarm",
+          members: [
+            {
+              agentId: "planner-1",
+              role: "planner",
+              status: "running",
+              currentTask: "Inspect backend flow",
+            },
+            {
+              agentId: "worker-1",
+              role: "worker",
+              status: "completed",
+              currentTask: "Repair replay",
+            },
+          ],
+        },
+      },
+    ]);
+
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.metadata?.kind).toBe("agent_task_group");
+    expect(visible[0]?.metadata?.teamName).toBe("swarm");
+    expect(visible[0]?.metadata?.members).toEqual([
+      {
+        agentId: "planner-1",
+        role: "planner",
+        status: "running",
+        currentTask: "Inspect backend flow",
+      },
+      {
+        agentId: "worker-1",
+        role: "worker",
+        status: "completed",
+        currentTask: "Repair replay",
+      },
+    ]);
+    expect(visible[0]?.content).toBe("2 members");
+    expect(visible[0]?.content).not.toContain("raw");
+  });
+
+  it("replays haha-style task_update as a compact task summary", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      {
+        ...trace("evt_task_update", "task.updated", {
+          payload: { raw: "do not render" },
+        }, 1, "chat"),
+        hahaCc: {
+          type: "task_update",
+          taskId: "task_42",
+          status: "running",
+          progress: "Inspect current workflow",
+        },
+      },
+    ]);
+
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.metadata?.kind).toBe("task_summary");
+    expect(visible[0]?.metadata?.sourceType).toBe("task_update");
+    expect(visible[0]?.content).toBe("Inspect current workflow");
+    expect(visible[0]?.content).not.toContain("payload");
+  });
+
   it("hides child-worker trace events on session recovery unless they are explicitly chat-visible", () => {
     const replayed = replayTraceEventsToChatMessages(
       [],

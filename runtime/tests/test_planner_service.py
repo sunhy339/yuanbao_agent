@@ -65,7 +65,7 @@ def test_planner_skips_lifecycle_plan_for_model_tool_swarm_route() -> None:
     assert plan == []
 
 
-def test_planner_uses_lifecycle_plan_for_explicit_plan_request() -> None:
+def test_planner_skips_root_plan_for_plain_text_roadmap_request() -> None:
     planner = Planner()
 
     plan = planner.plan(
@@ -73,7 +73,7 @@ def test_planner_uses_lifecycle_plan_for_explicit_plan_request() -> None:
         context={"workspace_name": "test_pro", "routing": {"scenario": "free_form", "strategy": "react_standard"}},
     )
 
-    assert [step["id"] for step in plan] == ["clarify-goal", "draft-plan", "present-plan"]
+    assert plan == []
 
 
 def test_planner_does_not_treat_explaining_a_plan_as_plan_request() -> None:

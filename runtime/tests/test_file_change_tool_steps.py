@@ -45,6 +45,32 @@ def test_write_file_result_includes_runtime_steps(tmp_path: Path) -> None:
     assert result["steps"][-1]["summary"] == "6 byte(s)"
 
 
+def test_write_file_noop_skips_approval(tmp_path: Path) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="noop")
+        task = store.create_task(session_id=session["id"], task_type="edit", goal="noop write", plan=[])
+        target = tmp_path / "README.md"
+        target.write_text("same\n", encoding="utf-8")
+        tool = build_write_file_tool(PolicyGuard(approval_mode="on_request"), store)["handler"]
+
+        result = tool({
+            "workspaceRoot": str(tmp_path),
+            "taskId": task["id"],
+            "path": "README.md",
+            "content": "same\n",
+        })
+
+        assert result["status"] == "unchanged"
+        assert result["filesChanged"] == 0
+        assert result["changedPaths"] == []
+        assert result["bytesWritten"] == 0
+        assert not store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+    finally:
+        store.close()
+
+
 def test_apply_patch_result_includes_runtime_steps(tmp_path: Path) -> None:
     store, workspace_root, task_id = _runtime_context(tmp_path)
     target = workspace_root / "README.md"

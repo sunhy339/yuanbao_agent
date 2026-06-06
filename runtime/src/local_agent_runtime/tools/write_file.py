@@ -67,6 +67,22 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
         if file_path.is_file() and not overwrite:
             raise ValueError(f"File already exists and overwrite is false: {relative_path}")
 
+        if not is_new_file and not diff_text:
+            return {
+                "status": "unchanged",
+                "path": relative_path,
+                "filesChanged": 0,
+                "changedPaths": [],
+                "diffText": "",
+                "bytesWritten": 0,
+                "created": False,
+                "encoding": encoding,
+                "steps": [
+                    *steps,
+                    _step("write", "skipped", "content already matches"),
+                ],
+            }
+
         request = {
             "taskId": task_id,
             "workspaceRoot": str(workspace_root),

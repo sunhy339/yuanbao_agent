@@ -136,11 +136,11 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
     elif event.type == "assistant.token":
         if _is_chat_compat_payload(payload):
             return None
-        delta = payload.get("delta")
-        if isinstance(delta, str) and delta:
+        delta = _delta_text_value(payload.get("delta"))
+        if delta:
             message = {"type": "content_delta", "text": delta}
     elif event.type == "message.delta":
-        delta = _string_value(payload.get("delta"), payload.get("text"))
+        delta = _delta_text_value(payload.get("delta"), payload.get("text"))
         if delta:
             message = {"type": "content_delta", "text": delta}
     elif event.type == "message.completed":
@@ -334,6 +334,13 @@ def _raw_usage(payload: dict[str, Any]) -> Any:
 
 def _is_chat_compat_payload(payload: dict[str, Any]) -> bool:
     return payload.get("_chatCompat") is True
+
+
+def _delta_text_value(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _error_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[str, Any]:

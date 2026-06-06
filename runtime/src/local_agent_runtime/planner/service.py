@@ -5,29 +5,27 @@ from typing import Any
 
 
 class Planner:
-    """Produces UI-friendly steps and keeps step transitions deterministic."""
+    """Produces optional UI root-plan steps for explicit legacy orchestration.
 
-    # Keep root-task scaffolding out of normal ReAct turns. The model already
-    # decides which files, tools, and checks are needed; injecting a generic
-    # inspect/search/edit/verify plan makes that loop feel rigid and can push it
-    # toward unnecessary git/read/verify calls. Only explicit planning and real
-    # plan/supervisor/swarm strategies get visible root steps.
+    The default runtime path is model-first ReAct: the model decides whether it
+    needs a textual plan, file reads, tools, or an explicit plan-mode tool call.
+    This planner must not turn ordinary roadmap/task-list prompts into a fixed
+    backend plan.
+    """
+
     _PLAN_STRATEGIES: frozenset[str] = frozenset({"plan_execute", "plan_supervise", "plan_swarm"})
     _SCAFFOLDED_PLAN_SCENARIOS: frozenset[str] = frozenset({"multi_step_task", "supervised_task", "swarm_task"})
 
     def plan(self, goal: str, context: dict[str, Any] | None = None) -> list[dict[str, str]]:
         route = self._route_goal(goal)
-        if not self._should_create_visible_plan(goal, context, route):
+        if not self._should_create_visible_plan(context, route):
             return []
-        short_goal = self._short_goal(goal)
         localized = self._contains_cjk(goal)
         routing = self._routing_context(context)
 
         if self._is_orchestration_route(routing):
             return self._orchestration_plan(goal=goal, routing=routing, localized=localized)
 
-        if self._explicit_plan_request(goal):
-            return self._planning_only_plan(short_goal=short_goal, localized=localized)
         return []
 
     def _text(self, localized: bool, localized_text: str, english_text: str) -> str:
@@ -113,92 +111,21 @@ class Planner:
             },
         ]
 
-    def _planning_only_plan(self, *, short_goal: str, localized: bool) -> list[dict[str, str]]:
-        return [
-            {
-                "id": "clarify-goal",
-                "title": self._text(localized, r"\u786e\u8ba4\u76ee\u6807\u548c\u7ea6\u675f", "Confirm goal and constraints"),
-                "status": "active",
-                "detail": self._text(
-                    localized,
-                    rf"\u56f4\u7ed5\u201c{short_goal}\u201d\u6574\u7406\u53ef\u6267\u884c\u7684\u8ba1\u5212\u8303\u56f4\u3002",
-                    f"Frame an actionable plan for: {short_goal}",
-                ),
-            },
-            {
-                "id": "draft-plan",
-                "title": self._text(localized, r"\u6574\u7406\u8ba1\u5212", "Draft plan"),
-                "status": "pending",
-                "detail": self._text(
-                    localized,
-                    r"\u6309\u4f18\u5148\u7ea7\u548c\u4f9d\u8d56\u5173\u7cfb\u8f93\u51fa\u8def\u7ebf\uff0c\u4e0d\u9884\u8bbe\u5fc5\u987b\u8c03\u7528\u7684\u5de5\u5177\u3002",
-                    "Organize the route by priority and dependencies without preselecting required tools.",
-                ),
-            },
-            {
-                "id": "present-plan",
-                "title": self._text(localized, r"\u5448\u73b0\u65b9\u6848", "Present plan"),
-                "status": "pending",
-                "detail": self._text(
-                    localized,
-                    r"\u7ed9\u51fa\u8ba1\u5212\u548c\u5fc5\u8981\u7684\u53d6\u820d\uff0c\u7531\u540e\u7eed\u6267\u884c\u6d41\u51b3\u5b9a\u5de5\u5177\u3002",
-                    "Present the plan and trade-offs; the later execution flow decides tools.",
-                ),
-            },
-        ]
-
     def _should_create_visible_plan(
         self,
-        goal: str,
         context: dict[str, Any] | None,
         route: dict[str, str],
     ) -> bool:
         if route["kind"] != "search":
             return False
-        if self._explicit_plan_request(goal):
-            return True
         routing = context.get("routing") if isinstance(context, dict) else None
-        if isinstance(routing, dict):
-            if self._is_model_tool_orchestration_route(routing):
-                return False
-            strategy = str(routing.get("strategy") or "").strip()
-            scenario = str(routing.get("scenario") or "").strip()
-            if strategy in self._PLAN_STRATEGIES or scenario in self._SCAFFOLDED_PLAN_SCENARIOS:
-                return True
-        return False
-
-    @staticmethod
-    def _explicit_plan_request(goal: str) -> bool:
-        lowered = str(goal or "").casefold()
-        direct_markers = (
-            "roadmap",
-            "break down",
-            "decompose",
-            "task list",
-            "subtasks",
-            "execution plan",
-            "implementation plan",
-            "制定计划",
-            "做一个计划",
-            "做个计划",
-            "给我一个计划",
-            "生成计划",
-            "执行计划",
-            "实施计划",
-            "路线图",
-            "拆分",
-            "任务清单",
-            "子任务",
-        )
-        if any(marker in lowered for marker in direct_markers):
-            return True
-        if re.search(
-            r"\b(?:create|make|write|give|draft|propose|prepare|design|outline|generate|build)\s+"
-            r"(?:me\s+)?(?:a\s+|an\s+|the\s+)?(?:plan|roadmap)\b",
-            lowered,
-        ):
-            return True
-        return re.search(r"\b(?:plan|roadmap)\s+(?:for|to)\b", lowered) is not None
+        if not isinstance(routing, dict):
+            return False
+        if self._is_model_tool_orchestration_route(routing):
+            return False
+        strategy = str(routing.get("strategy") or "").strip()
+        scenario = str(routing.get("scenario") or "").strip()
+        return strategy in self._PLAN_STRATEGIES or scenario in self._SCAFFOLDED_PLAN_SCENARIOS
 
     def _route_goal(self, goal: str) -> dict[str, str]:
         lowered = goal.lower().strip()

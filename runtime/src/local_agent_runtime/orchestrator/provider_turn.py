@@ -773,21 +773,6 @@ class ProviderTurnMixin:
                         if isinstance(parent_tool_use_id, str) and parent_tool_use_id:
                             stream_state["parentToolUseId"] = parent_tool_use_id
                         stream_metadata = self._provider_stream_tool_metadata(stream_state.get("toolName"))
-                        if stream_state.get("toolUseId") or stream_state.get("toolName"):
-                            if not stream_state.get("started"):
-                                self._publish(
-                                    session_id=session_id,
-                                    task=task,
-                                    event_type="content_start",
-                                    payload={
-                                        "blockType": "tool_use",
-                                        "toolUseId": stream_state.get("toolUseId"),
-                                        "toolName": stream_state.get("toolName"),
-                                        **({"parentToolUseId": stream_state.get("parentToolUseId")} if stream_state.get("parentToolUseId") else {}),
-                                        **stream_metadata,
-                                    },
-                                )
-                                stream_state["started"] = True
                         arguments_delta = event.get("arguments_delta")
                         if isinstance(arguments_delta, str) and arguments_delta:
                             self._append_provider_trace(

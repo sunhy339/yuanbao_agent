@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.execution.tool_pipeline import _frontend_visible_tool_result
 from local_agent_runtime.main import build_server
 from local_agent_runtime.memory import MemoryManager, MemoryRetriever, MemoryStore
 from local_agent_runtime.orchestration.types import OrchestrationResult
@@ -269,6 +270,78 @@ def test_model_tool_swarm_summary_only_does_not_request_completion_review(tmp_pa
         if event["type"] == "approval.requested"
         and event["payload"].get("kind") == "completion_review"
     ]
+
+
+def test_subagent_visible_tool_result_hides_internal_completion_evidence() -> None:
+    visible = _frontend_visible_tool_result(
+        "agent",
+        {
+            "status": "completed",
+            "summary": "Child analysis finished.",
+            "childTaskId": "ctask_child",
+            "workerId": "agent_worker",
+            "result": {
+                "summary": "Internal result summary.",
+                "changedFiles": [{"path": "snake_game/game.py"}],
+                "completionEvidence": {"advisorRequestedEvidence": [{"summary": "internal"}]},
+                "completionGate": {"status": "needs_review"},
+                "workspaceRoot": "D:/py/test_pro",
+            },
+            "message": {
+                "id": "msg_child",
+                "kind": "result",
+                "body": "Child analysis finished.",
+                "payload": {
+                    "completionEvidence": {"status": "internal"},
+                    "visible": "kept",
+                },
+            },
+            "structuredResult": {
+                "summary": "Structured summary.",
+                "completionEvidence": {"status": "internal"},
+                "completionReview": {"decision": "internal"},
+            },
+            "completionEvidence": {"status": "internal"},
+            "workspaceRoot": "D:/py/test_pro",
+        },
+    )
+
+    encoded = json.dumps(visible, ensure_ascii=False)
+    assert visible["status"] == "completed"
+    assert visible["childTaskId"] == "ctask_child"
+    assert visible["message"]["body"] == "Child analysis finished."
+    assert "completionEvidence" not in encoded
+    assert "completionGate" not in encoded
+    assert "completionReview" not in encoded
+    assert "advisorRequestedEvidence" not in encoded
+    assert "workspaceRoot" not in encoded
+
+
+def test_file_change_visible_tool_result_hides_internal_patch_record() -> None:
+    visible = _frontend_visible_tool_result(
+        "apply_patch",
+        {
+            "status": "applied",
+            "summary": "Update README.md",
+            "filesChanged": 1,
+            "changedPaths": ["README.md"],
+            "diffText": "--- a/README.md\n+++ b/README.md\n@@\n-old\n+new",
+            "patch": {
+                "id": "patch_1",
+                "workspaceId": "D:/py/test_pro",
+                "taskId": "task_1",
+                "diffText": "--- a/README.md\n+++ b/README.md",
+            },
+        },
+    )
+
+    encoded = json.dumps(visible, ensure_ascii=False)
+    assert visible["status"] == "applied"
+    assert visible["summary"] == "Update README.md"
+    assert visible["changedPaths"] == ["README.md"]
+    assert visible["diffText"]["text"].startswith("--- a/README.md")
+    assert "workspaceId" not in encoded
+    assert '"patch"' not in encoded
 
 
 def test_trace_only_routing_event_does_not_emit_flat_chat_message(tmp_path: Path) -> None:

@@ -13,6 +13,32 @@ from .worker_health import (
 )
 
 
+_VISIBLE_INTERNAL_RESULT_KEYS = {
+    "acceptanceCriteria",
+    "advisorEvidenceExecutionSuggestions",
+    "advisorEvidenceExecutor",
+    "advisorRequestedEvidence",
+    "completionEvidence",
+    "completionEvidenceSnapshot",
+    "completionGate",
+    "completionReview",
+    "fullResultRef",
+    "outOfScope",
+    "policyDecision",
+    "providerRequest",
+    "raw",
+    "rawResultSizeChars",
+    "rawResultStored",
+    "requestJson",
+    "tool_policy_decision",
+    "workspaceRoot",
+    "workspace_root",
+}
+_VISIBLE_STRING_LIMIT = 1200
+_VISIBLE_STRING_PREVIEW = 260
+_VISIBLE_LIST_LIMIT = 30
+
+
 class CollaborationService:
     """Thin event-publishing wrapper around collaboration store methods."""
 
@@ -136,7 +162,7 @@ class CollaborationService:
                 task_id=session_id,
                 type="collab.team.created",
                 ts=self._store.now(),
-                payload={"teamName": session_id, "team": snapshot},
+                payload=self._public_visible_payload({"teamName": session_id, "team": snapshot}),
                 visibility="panel",
             )
         )
@@ -147,7 +173,7 @@ class CollaborationService:
                 task_id=session_id,
                 type="collab.task.updated",
                 ts=self._store.now(),
-                payload={"team": snapshot},
+                payload=self._public_visible_payload({"team": snapshot}),
                 visibility="panel",
             )
         )
@@ -425,10 +451,42 @@ class CollaborationService:
             task_id=task_id,
             type=event_type,
             ts=self._store.now(),
-            payload=payload,
+            payload=self._public_visible_payload(payload) if visibility in {"chat", "panel"} else payload,
             visibility=visibility,
         )
         self._event_bus.publish(event)
+
+    def _public_visible_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        public = self._public_visible_value(payload)
+        return public if isinstance(public, dict) else {}
+
+    def _public_visible_value(self, value: Any, *, depth: int = 0) -> Any:
+        if isinstance(value, str):
+            if len(value) <= _VISIBLE_STRING_LIMIT:
+                return value
+            return {
+                "omitted": True,
+                "chars": len(value),
+                "preview": value[:_VISIBLE_STRING_PREVIEW],
+            }
+        if isinstance(value, list):
+            items = [self._public_visible_value(item, depth=depth + 1) for item in value[:_VISIBLE_LIST_LIMIT]]
+            if len(value) > _VISIBLE_LIST_LIMIT:
+                items.append({"omitted": True, "items": len(value) - _VISIBLE_LIST_LIMIT})
+            return items
+        if not isinstance(value, dict):
+            return value
+        if depth >= 5:
+            return {"omitted": True, "type": "object", "keys": len(value)}
+        public: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in _VISIBLE_INTERNAL_RESULT_KEYS:
+                continue
+            if item in (None, "", [], {}):
+                continue
+            public[key_text] = self._public_visible_value(item, depth=depth + 1)
+        return public
 
     def _string_or_none(self, value: Any) -> str | None:
         return value if isinstance(value, str) and value else None

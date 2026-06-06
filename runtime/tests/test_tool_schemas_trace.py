@@ -320,6 +320,8 @@ def test_store_appends_trace_for_approval_patch_and_command_lifecycle(tmp_path: 
         assert events[2]["payload"]["filesChanged"] == 1
         assert events[2]["payload"]["changedPaths"] == ["README.md"]
         assert events[2]["payload"]["diffText"].startswith("diff --git a/README.md")
+        assert "workspaceId" not in events[2]["payload"]
+        assert "workspaceId" not in events[3]["payload"]
         assert events[4]["payload"]["toolUseId"] == "call_command"
         assert events[4]["payload"]["target"] == "python --version"
         assert events[4]["payload"]["inputSummary"] == "python --version"
@@ -588,5 +590,71 @@ def test_completion_review_internal_bridge_trace_events_do_not_emit_flat_history
         assert all(event["visibility"] == "trace" for event in events)
         assert all("hahaCc" not in event for event in events)
         assert all("yuanbao" not in event for event in events)
+    finally:
+        store.close()
+
+
+def test_approval_trace_uses_public_request_payload(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="Approval public payload")
+        task = store.create_task(session_id=session["id"], task_type="edit", goal="approval safety", plan=[])
+
+        patch_approval = store.create_approval(
+            task["id"],
+            "apply_patch",
+            {
+                "changedPaths": ["README.md"],
+                "diffText": "diff --git a/README.md b/README.md\n+" + ("x" * 1400),
+                "files": [{"path": "README.md", "content": "secret body" * 100}],
+                "filesChanged": 1,
+                "workspaceRoot": str(tmp_path),
+            },
+        )
+        store.resolve_approval(patch_approval["id"], "approved")
+        plan_approval = store.create_approval(
+            task["id"],
+            "plan",
+            {
+                "goal": "split work",
+                "plan": {
+                    "summary": "Plan summary",
+                    "steps": ["Inspect", "Patch"],
+                    "raw": {"providerOnly": True},
+                },
+                "steps": ["Inspect", "Patch"],
+                "subtasks": [{"id": "sub-0", "title": "Inspect"}],
+                "previewSections": [{"kind": "items", "title": "Subtasks", "items": [{"id": "sub-0", "title": "Inspect"}]}],
+            },
+        )
+
+        events = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        patch_requested = next(
+            event for event in events
+            if event["type"] == "approval.requested" and event["relatedId"] == patch_approval["id"]
+        )
+        patch_resolved = next(
+            event for event in events
+            if event["type"] == "approval.resolved" and event["relatedId"] == patch_approval["id"]
+        )
+        plan_requested = next(
+            event for event in events
+            if event["type"] == "approval.requested" and event["relatedId"] == plan_approval["id"]
+        )
+
+        for event in (patch_requested, patch_resolved):
+            request = event["payload"]["request"]
+            request_json = json.dumps(request, ensure_ascii=False)
+            assert "workspaceRoot" not in request
+            assert "secret body" not in request_json
+            assert event["payload"]["diffText"]["omitted"] is True
+            assert request["diffText"]["omitted"] is True
+            assert request["files"] == [{"path": "README.md"}]
+
+        plan_request_json = json.dumps(plan_requested["payload"]["request"], ensure_ascii=False)
+        assert '"raw"' not in plan_request_json
+        assert plan_requested["payload"]["request"]["plan"]["steps"] == ["Inspect", "Patch"]
+        assert plan_requested["payload"]["request"]["previewSections"][0]["items"][0]["title"] == "Inspect"
     finally:
         store.close()

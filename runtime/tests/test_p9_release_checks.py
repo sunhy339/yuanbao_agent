@@ -693,7 +693,10 @@ class TestEventCompatAssistantToken:
         assert chat_result.payload["content"]["truncated"] is True
         assert chat_result.payload["content"]["stdout"]["head"].startswith("start")
         assert chat_result.payload["content"]["stdout"]["tail"].endswith("end")
-        assert chat_result.payload["content"]["fullResultRef"]["commandLogId"] == "cmd_big"
+        encoded_visible = json.dumps(chat_result.payload["content"], ensure_ascii=False)
+        assert "fullResultRef" not in encoded_visible
+        assert "rawResultStored" not in encoded_visible
+        assert "rawResultSizeChars" not in encoded_visible
 
     def test_provider_request_emits_trace_only_thinking_status(self, tmp_path: Any) -> None:
         """Provider requests emit runtime status for trace, not flat chat thinking."""
@@ -964,7 +967,8 @@ class TestEventCompatAssistantToken:
         assert permission["preview"] == [{"label": "文件", "value": "src/new.ts"}]
         assert permission["filesChanged"] == 1
         assert permission["changedPaths"] == ["src/new.ts"]
-        assert permission["diffText"].startswith("--- /dev/null")
+        diff_text = permission["diffText"]
+        assert diff_text["preview"].startswith("--- /dev/null") if isinstance(diff_text, dict) else diff_text.startswith("--- /dev/null")
         assert permission["resolved"] is True
         assert permission["decision"] == "approved"
         assert permission["decidedBy"] == "user"

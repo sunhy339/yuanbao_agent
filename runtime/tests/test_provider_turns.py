@@ -1880,15 +1880,12 @@ class TestProviderTurnTransportAndUsage:
 
         assert response["tool_calls"][0]["parentToolUseId"] == "call_parent"
         starts = [event for event in runtime.events if event["type"] == "content_start"]
-        deltas = [event for event in runtime.events if event["type"] == "content_delta" and event["payload"].get("toolInput")]
-        assert starts[-1]["payload"]["blockType"] == "tool_use"
-        assert starts[-1]["payload"]["toolUseId"] == "call_child"
-        assert starts[-1]["payload"]["toolName"] == "read_file"
-        assert starts[-1]["payload"]["parentToolUseId"] == "call_parent"
-        assert starts[-1]["payload"]["toolCategory"] == "context_read"
-        assert starts[-1]["payload"]["toolPhaseId"] == "context_read"
-        assert starts[-1]["payload"]["toolPhaseLabel"] == "读取上下文"
-        assert starts[-1]["payload"]["toolSemanticParentId"] == "phase:context_read"
+        deltas = [
+            event
+            for event in runtime.events
+            if event["type"] == "content_delta" and event["payload"].get("toolInput")
+        ]
+        assert starts == []
         assert deltas == []
 
         trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
@@ -1931,17 +1928,18 @@ class TestProviderTurnTransportAndUsage:
             if event["type"] == "content_start" and event["payload"].get("blockType") == "text"
         ]
         deltas = [
-            event for event in runtime.events
-            if event["type"] == "content_delta" and event["payload"].get("text")
+            event
+            for event in runtime.events
+            if event.get("yuanbao", {}).get("type") == "content_delta"
         ]
         assert response["final_answer"] == "Hello there"
         assert len(starts) == 1
         assert starts[0]["payload"]["messageId"] == "msg_1"
-        assert [event["payload"]["text"] for event in deltas] == ["Hello", " there"]
+        assert [event["yuanbao"]["text"] for event in deltas] == ["Hello", " there"]
         statuses = [event for event in runtime.events if event["type"] == "status"]
         assert [event["payload"]["state"] for event in statuses[:2]] == ["thinking", "streaming"]
         assert statuses[1]["payload"]["verb"] == "model"
-        assert statuses[1]["yuanbao"] == {"type": "status", "state": "streaming", "verb": "model"}
+        assert "yuanbao" not in statuses[1]
 
     def test_stream_thinking_delta_emits_thinking_event(self, tmp_path: Any) -> None:
         provider = ThinkingDeltaStreamProvider()

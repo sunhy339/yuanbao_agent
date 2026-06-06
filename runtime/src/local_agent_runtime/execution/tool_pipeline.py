@@ -46,6 +46,36 @@ _TOOL_VISIBLE_TEXT_TAIL_CHARS = 800
 _TOOL_VISIBLE_COLLECTION_LIMIT = 12
 _TOOL_VISIBLE_SNIPPET_LIMIT = 600
 SUBAGENT_TOOL_NAMES = {"agent", "task"}
+_SUBAGENT_INTERNAL_RESULT_KEYS = {
+    "acceptanceCriteria",
+    "advisorEvidenceExecutionSuggestions",
+    "advisorEvidenceExecutor",
+    "advisorRequestedEvidence",
+    "completionEvidence",
+    "completionGate",
+    "completionReview",
+    "providerRequest",
+    "raw",
+    "requestJson",
+    "tool_policy_decision",
+    "workspaceRoot",
+    "workspace_root",
+}
+_PUBLIC_SUBAGENT_RESULT_KEYS = (
+    "status",
+    "summary",
+    "resultSummary",
+    "message",
+    "changedFiles",
+    "commands",
+    "verification",
+    "testsRun",
+    "risks",
+    "keyFindings",
+    "artifactIds",
+    "artifacts",
+    "error",
+)
 _MIN_MODEL_SUPPLIED_CHILD_TOKEN_BUDGET = 16000
 _DEFAULT_CHILD_TOOL_CALL_BUDGET = 12
 _MIN_MODEL_SUPPLIED_CHILD_TOOL_CALL_BUDGET = 12
@@ -123,26 +153,106 @@ def _compact_list_items(items: Any, *, limit: int = _TOOL_VISIBLE_COLLECTION_LIM
     return compacted
 
 
-def _tool_result_full_ref(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
-    refs: dict[str, Any] = {
-        "source": "trace",
-        "rawResultStored": True,
-        "rawResultSizeChars": _json_size(result),
-    }
-    command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
-    if command_log.get("id"):
-        refs["commandLogId"] = command_log.get("id")
-    for key in ("stdoutPath", "stderrPath"):
-        value = command_log.get(key) or result.get(key)
-        if value:
-            refs[key] = value
-    if tool_name in {"git_diff", "apply_patch", "write_file"}:
-        if result.get("patchId") or result.get("patch_id"):
-            refs["patchId"] = result.get("patchId") or result.get("patch_id")
-        if result.get("artifactId") or result.get("artifactIds"):
-            refs["artifactId"] = result.get("artifactId")
-            refs["artifactIds"] = result.get("artifactIds")
-    return {key: value for key, value in refs.items() if value not in (None, "", [])}
+def _public_nested_result(value: Any, *, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return _compact_snippet(value)
+    if isinstance(value, list):
+        return [_public_nested_result(item, depth=depth + 1) for item in value[:_TOOL_VISIBLE_COLLECTION_LIMIT]]
+    if not isinstance(value, dict):
+        return value
+    if depth >= 3:
+        return {
+            "omitted": True,
+            "type": "object",
+            "keys": len(value),
+        }
+    public: dict[str, Any] = {}
+    for key, item in value.items():
+        key_text = str(key)
+        if key_text in _SUBAGENT_INTERNAL_RESULT_KEYS:
+            continue
+        if item in (None, "", [], {}):
+            continue
+        public[key_text] = _public_nested_result(item, depth=depth + 1)
+    return public
+
+
+def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    public: dict[str, Any] = {}
+    for key in ("status", "summary", "resultSummary", "childTaskId", "workerId", "planningMode"):
+        value = result.get(key)
+        if value in (None, "", [], {}):
+            continue
+        public[key] = _compact_snippet(value)
+
+    approval = result.get("approval")
+    if isinstance(approval, dict):
+        public["approval"] = {
+            key: value
+            for key, value in {
+                "id": approval.get("id"),
+                "kind": approval.get("kind"),
+                "decision": approval.get("decision"),
+                "createdAt": approval.get("createdAt"),
+            }.items()
+            if value not in (None, "", [])
+        }
+
+    subagent = result.get("subagent")
+    if isinstance(subagent, dict):
+        public["subagent"] = {
+            key: _compact_snippet(value)
+            for key, value in subagent.items()
+            if key not in _SUBAGENT_INTERNAL_RESULT_KEYS and value not in (None, "", [], {})
+        }
+
+    worker = result.get("worker")
+    if isinstance(worker, dict):
+        public["worker"] = {
+            key: _compact_snippet(worker.get(key))
+            for key in ("id", "name", "role", "status")
+            if worker.get(key) not in (None, "", [], {})
+        }
+
+    task = result.get("task")
+    if isinstance(task, dict):
+        public["task"] = {
+            key: _compact_snippet(task.get(key))
+            for key in ("id", "title", "status", "description")
+            if task.get(key) not in (None, "", [], {})
+        }
+
+    message = result.get("message")
+    if isinstance(message, dict):
+        public_message = {
+            key: _compact_snippet(message.get(key))
+            for key in ("id", "kind", "body", "taskId", "senderWorkerId")
+            if message.get(key) not in (None, "", [], {})
+        }
+        if public_message:
+            public["message"] = public_message
+
+    structured = result.get("structuredResult")
+    if not isinstance(structured, dict):
+        structured = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if isinstance(structured, dict):
+        public_structured = {
+            key: _public_nested_result(structured.get(key))
+            for key in _PUBLIC_SUBAGENT_RESULT_KEYS
+            if structured.get(key) not in (None, "", [], {})
+        }
+        if public_structured:
+            public["result"] = public_structured
+
+    steps = result.get("steps")
+    if isinstance(steps, list) and steps:
+        public["steps"] = _compact_list_items(steps)
+
+    if not public:
+        summary = _compact_snippet(result.get("summary") or result.get("resultSummary") or result.get("status") or "")
+        if summary:
+            public["summary"] = summary
+    return public
 
 
 def _visible_tool_result(
@@ -156,12 +266,18 @@ def _visible_tool_result(
 ) -> Any:
     """Return a model/frontend visible tool result.
 
-    Small results stay byte-for-byte compatible. Oversized results keep the
-    useful routing fields plus compact previews and full-result references.
+    Small ordinary results stay byte-for-byte compatible. Subagent results are
+    always projected because child tasks can carry internal completion evidence.
     """
     if not isinstance(result, dict):
         return result
+    if tool_name in SUBAGENT_TOOL_NAMES:
+        return _public_subagent_tool_result(result)
+    if result.get("truncated") is True and tool_name in {"apply_patch", "write_file", "git_diff"}:
+        return result
     force_compact = (
+        tool_name in {"apply_patch", "write_file"}
+        or
         str(result.get("status") or "").strip().lower() == "approval_required"
         or isinstance(result.get("approval"), dict)
     )
@@ -176,7 +292,6 @@ def _visible_tool_result(
         "preview": preview_rows,
         "target": target or result.get("path") or result.get("url") or result.get("command") or result.get("query"),
         "truncated": True,
-        "fullResultRef": _tool_result_full_ref(tool_name, result),
     }
     approval = result.get("approval")
     if isinstance(approval, dict):
@@ -1287,6 +1402,8 @@ def _tool_result_summary(tool_name: str, result: dict[str, Any] | None, target: 
         scope = "staged" if result.get("staged") else "worktree"
         return _compact_text(f"{scope} diff: {count} file(s){f': {preview}' if preview else ''}", 180)
     if tool_name == "apply_patch":
+        if result.get("summary"):
+            return _compact_text(result.get("summary"), 180)
         files_changed = result.get("filesChanged")
         return _compact_text(f"{status or 'patch'} {files_changed or ''} file(s) {target}".strip(), 180)
     if tool_name in {"web_fetch", "browser"}:

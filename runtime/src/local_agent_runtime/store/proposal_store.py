@@ -173,6 +173,135 @@ def _approval_preview(kind: str, request: dict[str, Any]) -> list[dict[str, str]
     return [row for row in rows if row is not None][:5]
 
 
+def _compact_approval_value(value: Any, *, max_chars: int = 1000) -> Any:
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value
+        return {"chars": len(value), "omitted": True, "preview": value[:240]}
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_approval_value(child)
+            for key, child in value.items()
+            if str(key) not in {"workspaceRoot", "workspace_root", "requestJson"}
+        }
+    if isinstance(value, list):
+        return [_compact_approval_value(item) for item in value[:20]]
+    return value
+
+
+def _public_plan_approval_request(request: dict[str, Any]) -> dict[str, Any]:
+    plan = request.get("plan") if isinstance(request.get("plan"), dict) else {}
+    steps = request.get("steps") if isinstance(request.get("steps"), list) else plan.get("steps")
+    subtasks = request.get("subtasks") if isinstance(request.get("subtasks"), list) else plan.get("subtasks")
+    risks = request.get("risks") if isinstance(request.get("risks"), list) else plan.get("risks")
+    summary = request.get("summary") or plan.get("summary") or plan.get("title")
+    public: dict[str, Any] = {}
+    for key in (
+        "goal",
+        "mode",
+        "orchestrationMode",
+        "source",
+        "decompositionFallback",
+        "decompositionFallbackReason",
+    ):
+        value = request.get(key)
+        if value not in (None, "", [], {}):
+            public[key] = _compact_approval_value(value)
+    if summary not in (None, ""):
+        public["summary"] = _compact_approval_value(summary)
+    if isinstance(steps, list) and steps:
+        public["steps"] = _compact_approval_value(steps)
+        public["stepCount"] = request.get("stepCount") if request.get("stepCount") is not None else len(steps)
+    elif request.get("stepCount") is not None:
+        public["stepCount"] = request.get("stepCount")
+    if isinstance(subtasks, list) and subtasks:
+        public["subtasks"] = _compact_approval_value(subtasks)
+        public["subtaskCount"] = request.get("subtaskCount") if request.get("subtaskCount") is not None else len(subtasks)
+    elif request.get("subtaskCount") is not None:
+        public["subtaskCount"] = request.get("subtaskCount")
+    if isinstance(risks, list) and risks:
+        public["risks"] = _compact_approval_value(risks)
+    for key in ("executionOrder", "previewRows", "previewSections"):
+        value = request.get(key)
+        if value not in (None, "", [], {}):
+            public[key] = _compact_approval_value(value)
+    public_plan = {
+        key: value
+        for key, value in {
+            "summary": summary,
+            "steps": steps,
+            "subtasks": subtasks,
+            "risks": risks,
+        }.items()
+        if value not in (None, "", [], {})
+    }
+    if public_plan:
+        public["plan"] = _compact_approval_value(public_plan)
+    return public
+
+
+def _public_approval_request(kind: str, request: dict[str, Any]) -> dict[str, Any]:
+    if kind == "plan":
+        return _public_plan_approval_request(request)
+    public: dict[str, Any] = {}
+    allowed_keys = (
+        "command",
+        "cwd",
+        "shell",
+        "reason",
+        "risk",
+        "policyReason",
+        "summary",
+        "description",
+        "target",
+        "path",
+        "url",
+        "method",
+        "action",
+        "permission",
+        "app",
+        "application",
+        "selector",
+        "changedPaths",
+        "filesChanged",
+        "patchMode",
+        "dryRun",
+        "previewRows",
+        "previewSections",
+    )
+    for key in allowed_keys:
+        value = request.get(key)
+        if value in (None, "", [], {}):
+            continue
+        public[key] = _compact_approval_value(value)
+    diff_text = request.get("diffText") or request.get("patchText")
+    if isinstance(diff_text, str) and diff_text.strip():
+        public["diffText"] = _compact_approval_value(diff_text)
+    files = request.get("files")
+    if isinstance(files, list):
+        public["files"] = [
+            {
+                key: _compact_approval_value(value)
+                for key, value in item.items()
+                if isinstance(item, dict) and key in {"path", "operation", "summary"}
+            }
+            for item in files[:20]
+            if isinstance(item, dict)
+        ]
+    return public
+
+
+def _public_patch_trace_payload(patch: dict[str, Any], changed_paths: list[str]) -> dict[str, Any]:
+    return {
+        "patchId": patch["id"],
+        "summary": patch["summary"],
+        "status": patch["status"],
+        "filesChanged": patch["filesChanged"],
+        "changedPaths": changed_paths,
+        "diffText": patch["diffText"],
+    }
+
+
 class ProposalStoreMixin:
     def resolve_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
         now = self.now()
@@ -208,14 +337,15 @@ class ProposalStoreMixin:
             changed_paths = _changed_paths_from_diff_text(str(request.get("diffText") or request.get("patchText") or ""))
         diff_text = request.get("diffText")
         files_changed = request.get("filesChanged")
+        public_request = _public_approval_request(str(approval["kind"] or ""), request)
         resolved_payload = {
             "approvalId": approval["id"],
             "taskId": approval["taskId"],
             "kind": approval["kind"],
-            "request": request,
+            "request": public_request,
             "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
             "changedPaths": changed_paths,
-            "diffText": diff_text if isinstance(diff_text, str) else "",
+            "diffText": _compact_approval_value(diff_text) if isinstance(diff_text, str) and diff_text else "",
             "preview": _approval_preview(approval["kind"], request),
             "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
             "decision": approval["decision"],
@@ -280,15 +410,7 @@ class ProposalStoreMixin:
             event_type="patch.proposed" if patch["status"] == "proposed" else f"patch.{patch['status']}",
             source="patch",
             related_id=patch["id"],
-            payload={
-                "patchId": patch["id"],
-                "workspaceId": patch["workspaceId"],
-                "summary": patch["summary"],
-                "status": patch["status"],
-                "filesChanged": patch["filesChanged"],
-                "changedPaths": changed_paths,
-                "diffText": patch["diffText"],
-            },
+            payload=_public_patch_trace_payload(patch, changed_paths),
             created_at=patch["createdAt"],
         )
         patch["changedPaths"] = changed_paths
@@ -335,15 +457,7 @@ class ProposalStoreMixin:
             event_type=f"patch.{patch['status']}",
             source="patch",
             related_id=patch["id"],
-            payload={
-                "patchId": patch["id"],
-                "workspaceId": patch["workspaceId"],
-                "summary": patch["summary"],
-                "status": patch["status"],
-                "filesChanged": patch["filesChanged"],
-                "changedPaths": changed_paths,
-                "diffText": patch["diffText"],
-            },
+            payload=_public_patch_trace_payload(patch, changed_paths),
             created_at=patch["updatedAt"],
         )
         patch["changedPaths"] = changed_paths
@@ -379,6 +493,7 @@ class ProposalStoreMixin:
             changed_paths = _changed_paths_from_diff_text(str(request.get("diffText") or request.get("patchText") or ""))
         diff_text = request.get("diffText")
         files_changed = request.get("filesChanged")
+        public_request = _public_approval_request(str(approval["kind"] or ""), request)
         self.append_trace_event(
             task_id=approval["taskId"],
             event_type="approval.requested",
@@ -388,10 +503,10 @@ class ProposalStoreMixin:
                 "approvalId": approval["id"],
                 "taskId": approval["taskId"],
                 "kind": approval["kind"],
-                "request": request,
+                "request": public_request,
                 "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
                 "changedPaths": changed_paths,
-                "diffText": diff_text if isinstance(diff_text, str) else "",
+                "diffText": _compact_approval_value(diff_text) if isinstance(diff_text, str) and diff_text else "",
                 "preview": _approval_preview(approval["kind"], request),
                 "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
             },

@@ -391,13 +391,14 @@ class PublishingMixin:
         payload: dict[str, Any],
         visibility: str,
     ) -> dict[str, Any]:
-        if visibility in {"chat", "panel"} and event_type in {
-            "task.started",
-            "task.completed",
-            "task.failed",
-            "task.cancelled",
-        }:
+        if (
+            visibility in {"chat", "panel"}
+            and event_type.startswith("task.")
+            and not event_type.startswith(("task.planning.", "task.subtask.", "task.child.", "task.runtime_", "task.worktree."))
+        ):
             return cls._visible_task_lifecycle_payload(event_type, payload)
+        if visibility in {"chat", "panel"} and event_type in {"approval.requested", "approval.resolved"}:
+            return cls._visible_approval_payload(event_type, payload)
         if event_type not in _VISIBLE_TOOL_PAYLOAD_EVENT_TYPES:
             return payload
         safe_payload = dict(payload)
@@ -433,6 +434,7 @@ class PublishingMixin:
             "summary",
             "resultSummary",
             "detail",
+            "plan",
             "errorCode",
             "businessErrorCode",
             "retryable",
@@ -447,6 +449,117 @@ class PublishingMixin:
         if "summary" not in safe and isinstance(payload.get("message"), str) and payload.get("message").strip():
             safe["summary"] = cls._sanitize_visible_payload_value("summary", payload["message"])
         return safe
+
+    @classmethod
+    def _visible_approval_payload(cls, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {}
+        for key in (
+            "approvalId",
+            "taskId",
+            "kind",
+            "summary",
+            "decision",
+            "decidedBy",
+            "decidedAt",
+            "ignored",
+            "deferred",
+            "taskStatus",
+            "comment",
+            "internal",
+            "_bridge",
+        ):
+            value = payload.get(key)
+            if value in (None, "", [], {}):
+                continue
+            safe[key] = cls._sanitize_visible_payload_value(key, value)
+        request = payload.get("request")
+        kind = str(payload.get("kind") or "")
+        if isinstance(request, dict):
+            public_request = cls._public_permission_request_input(kind, request)
+            if public_request:
+                safe["request"] = public_request
+        for key in ("preview", "previewSections", "filesChanged", "changedPaths", "diffText"):
+            value = payload.get(key)
+            if value in (None, "", [], {}):
+                continue
+            safe[key] = cls._sanitize_visible_payload_value(key, value)
+        return safe
+
+    @classmethod
+    def _public_permission_request_input(cls, kind: str, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            return {}
+        if str(kind or "") == "plan":
+            return cls._public_plan_request_input(request)
+        safe: dict[str, Any] = {}
+        for key, value in request.items():
+            if key in {"requestJson", "workspaceRoot", "workspace_root"}:
+                continue
+            if value in (None, "", [], {}):
+                continue
+            safe[str(key)] = cls._sanitize_visible_payload_value(str(key), value)
+        return safe
+
+    @classmethod
+    def _public_plan_request_input(cls, request: dict[str, Any]) -> dict[str, Any]:
+        plan = request.get("plan") if isinstance(request.get("plan"), dict) else {}
+        steps = request.get("steps") if isinstance(request.get("steps"), list) else plan.get("steps")
+        subtasks = request.get("subtasks") if isinstance(request.get("subtasks"), list) else plan.get("subtasks")
+        risks = request.get("risks") if isinstance(request.get("risks"), list) else plan.get("risks")
+        summary = request.get("summary") or plan.get("summary") or plan.get("title")
+        safe: dict[str, Any] = {}
+        for key in (
+            "goal",
+            "mode",
+            "orchestrationMode",
+            "source",
+            "decompositionFallback",
+            "decompositionFallbackReason",
+        ):
+            value = request.get(key)
+            if value in (None, "", [], {}):
+                continue
+            safe[key] = cls._sanitize_visible_payload_value(key, value)
+        if summary not in (None, ""):
+            safe["summary"] = cls._sanitize_visible_payload_value("summary", summary)
+        if isinstance(steps, list) and steps:
+            safe["steps"] = cls._sanitize_visible_payload_value("steps", steps)
+            safe["stepCount"] = request.get("stepCount") if request.get("stepCount") is not None else len(steps)
+        elif request.get("stepCount") is not None:
+            safe["stepCount"] = request.get("stepCount")
+        if isinstance(subtasks, list) and subtasks:
+            safe["subtasks"] = cls._sanitize_visible_payload_value("subtasks", subtasks)
+            safe["subtaskCount"] = request.get("subtaskCount") if request.get("subtaskCount") is not None else len(subtasks)
+        elif request.get("subtaskCount") is not None:
+            safe["subtaskCount"] = request.get("subtaskCount")
+        if isinstance(risks, list) and risks:
+            safe["risks"] = cls._sanitize_visible_payload_value("risks", risks)
+        for key in ("executionOrder", "previewRows", "previewSections"):
+            value = request.get(key)
+            if value in (None, "", [], {}):
+                continue
+            safe[key] = cls._sanitize_visible_payload_value(key, value)
+        public_plan = {
+            key: value
+            for key, value in {
+                "summary": summary,
+                "steps": steps,
+                "subtasks": subtasks,
+                "risks": risks,
+            }.items()
+            if value not in (None, "", [], {})
+        }
+        if public_plan:
+            safe["plan"] = cls._sanitize_visible_payload_value("plan", public_plan)
+        return safe
+
+    @classmethod
+    def _public_tool_input(cls, tool_name: str, arguments: Any) -> Any:
+        if not isinstance(arguments, dict):
+            return arguments if arguments is not None else {}
+        if str(tool_name or "") == "exit_plan_mode":
+            return cls._public_plan_request_input(arguments)
+        return arguments
 
     @classmethod
     def _sanitize_visible_payload_value(cls, key: str, value: Any, *, depth: int = 0) -> Any:
@@ -1050,6 +1163,7 @@ class PublishingMixin:
             tool_call_id = payload.get("toolCallId")
             tool_name = payload.get("toolName")
             arguments = payload.get("arguments")
+            visible_arguments = self._public_tool_input(str(tool_name or ""), arguments)
             parent_tool_use_id = payload.get("parentToolUseId")
             if not self._chat_tool_start_seen(task=task, tool_use_id=tool_call_id):
                 self._publish_chat_compat_event(
@@ -1079,7 +1193,7 @@ class PublishingMixin:
                     payload={
                         "toolUseId": tool_call_id,
                         "toolName": tool_name,
-                        "input": arguments if arguments is not None else {},
+                        "input": visible_arguments,
                         **({"target": payload.get("target")} if payload.get("target") else {}),
                         **({"inputSummary": payload.get("inputSummary")} if payload.get("inputSummary") else {}),
                         **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
@@ -1299,6 +1413,10 @@ class PublishingMixin:
             request = payload.get("request")
             request_id = payload.get("approvalId")
             tool_name = payload.get("kind") or "approval"
+            visible_request = self._public_permission_request_input(
+                str(tool_name or ""),
+                request if isinstance(request, dict) else {},
+            )
             if tool_name == "completion_review":
                 self._publish_chat_status(
                     session_id=session_id,
@@ -1336,12 +1454,12 @@ class PublishingMixin:
                 payload={
                     "requestId": request_id,
                     "toolName": tool_name,
-                    "input": request if request is not None else {},
+                    "input": visible_request,
                     "description": payload.get("summary"),
                     "preview": payload.get("preview"),
                     "previewSections": (
-                        request.get("previewSections")
-                        if isinstance(request, dict) and isinstance(request.get("previewSections"), list)
+                        visible_request.get("previewSections")
+                        if isinstance(visible_request, dict) and isinstance(visible_request.get("previewSections"), list)
                         else payload.get("previewSections")
                     ),
                     "filesChanged": payload.get("filesChanged"),
@@ -1370,6 +1488,10 @@ class PublishingMixin:
                 )
                 tool_name = payload.get("kind") or (
                     approval_request.get("kind") if isinstance(approval_request, dict) else None
+                )
+                visible_request = self._public_permission_request_input(
+                    str(tool_name or ""),
+                    request if isinstance(request, dict) else {},
                 )
                 if tool_name == "completion_review":
                     self._publish_chat_status(
@@ -1413,12 +1535,12 @@ class PublishingMixin:
                         payload={
                             "requestId": approval_id,
                             "toolName": tool_name,
-                            "input": request if isinstance(request, dict) else {},
+                            "input": visible_request,
                             "description": payload.get("summary"),
                             "preview": payload.get("preview"),
                             "previewSections": (
-                                request.get("previewSections")
-                                if isinstance(request, dict) and isinstance(request.get("previewSections"), list)
+                                visible_request.get("previewSections")
+                                if isinstance(visible_request, dict) and isinstance(visible_request.get("previewSections"), list)
                                 else payload.get("previewSections")
                             ),
                             "filesChanged": payload.get("filesChanged"),

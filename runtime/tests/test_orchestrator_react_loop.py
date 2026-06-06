@@ -543,6 +543,8 @@ def test_task_updated_bridges_plan_update_once(tmp_path: Any) -> None:
     task_events = [event for event in runtime.events if event["type"] == "task.updated"]
     assert len(task_events) == 2
     assert all("hahaCc" not in event and "yuanbao" not in event for event in task_events)
+    assert all("acceptanceCriteria" not in event["payload"] for event in task_events)
+    assert all("context" not in event["payload"] for event in task_events)
 
 
 def test_task_updated_without_plan_does_not_bridge_plan_update(tmp_path: Any) -> None:
@@ -566,6 +568,8 @@ def test_task_updated_without_plan_does_not_bridge_plan_update(tmp_path: Any) ->
     assert not [event for event in runtime.events if event["type"] == "plan_update"]
     task_events = [event for event in runtime.events if event["type"] == "task.updated"]
     assert all("hahaCc" not in event and "yuanbao" not in event for event in task_events)
+    assert all("acceptanceCriteria" not in event["payload"] for event in task_events)
+    assert all("context" not in event["payload"] for event in task_events)
 
 
 def test_tool_completed_bridge_preserves_structured_summaries(tmp_path: Any) -> None:
@@ -6318,6 +6322,8 @@ def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any)
     approval_request = approval_event["payload"]["request"]
     assert approval_request["stepCount"] == 3
     assert approval_request["subtaskCount"] == 3
+    assert "raw" not in approval_request
+    assert "raw" not in approval_request.get("plan", {})
     assert approval_request["previewRows"] == [
         {"label": "目标", "value": "plan then update readme"},
         {"label": "模式", "value": "plan"},
@@ -6335,6 +6341,22 @@ def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any)
             ],
         }
     ]
+    tool_complete = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool_use_complete" and event["payload"].get("toolUseId") == "call_exit"
+    )
+    assert tool_complete["payload"]["input"]["stepCount"] == 3
+    assert "raw" not in tool_complete["payload"]["input"]
+    assert "raw" not in tool_complete["payload"]["input"].get("plan", {})
+    permission = next(
+        event
+        for event in runtime.events
+        if event["type"] == "permission_request" and event["payload"].get("requestId") == approval_id
+    )
+    assert permission["payload"]["input"]["subtaskCount"] == 3
+    assert "raw" not in permission["payload"]["input"]
+    assert "raw" not in permission["payload"]["input"].get("plan", {})
 
     _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
     final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -254,6 +255,77 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     }
     legacy_team_snapshot = runtime_harness.call("events.hahaCcTeamSnapshot", {"sessionId": session["id"]})["result"]
     assert legacy_team_snapshot == team_snapshot
+
+
+def test_collaboration_visible_events_hide_internal_completion_evidence(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _result(runtime_harness.call("workspace.open", {"path": str(workspace_root)}), "workspace")
+    session = _result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "clean panels"}),
+        "session",
+    )
+    worker = _result(
+        runtime_harness.call(
+            "collab.worker.upsert",
+            {
+                "workerId": "agent_clean_worker",
+                "name": "Clean Worker",
+                "role": "worker",
+                "capabilities": ["collab"],
+            },
+        ),
+        "worker",
+    )
+    task = _result(
+        runtime_harness.call(
+            "collab.task.create",
+            {
+                "sessionId": session["id"],
+                "title": "Inspect output",
+                "description": "Inspect public event projection.",
+                "metadata": {"agentType": "planner"},
+            },
+        ),
+        "task",
+    )
+
+    runtime_harness.call(
+        "collab.message.send",
+        {
+            "senderWorkerId": worker["id"],
+            "taskId": task["id"],
+            "kind": "result",
+            "body": "Output inspected.",
+            "payload": {
+                "structuredResult": {
+                    "summary": "Output inspected.",
+                    "completionEvidence": {"status": "internal"},
+                    "completionGate": {"status": "needs_review"},
+                    "workspaceRoot": "D:/py/test_pro",
+                },
+                "completionEvidence": {"status": "internal"},
+                "visible": "kept",
+            },
+        },
+    )
+
+    message_event = [event for event in runtime_harness.events if event["type"] == "collab.message.sent"][-1]
+    encoded = json.dumps(message_event["payload"], ensure_ascii=False)
+    assert message_event["visibility"] == "panel"
+    assert message_event["payload"]["message"]["payload"]["visible"] == "kept"
+    assert "completionEvidence" not in encoded
+    assert "completionGate" not in encoded
+    assert "workspaceRoot" not in encoded
+
+    yuanbao_after = runtime_harness.call(
+        "events.yuanbaoAfter",
+        {"sessionId": session["id"], "afterSeq": 0},
+    )["result"]["messages"]
+    encoded_replay = json.dumps(yuanbao_after, ensure_ascii=False)
+    assert "completionEvidence" not in encoded_replay
+    assert "completionGate" not in encoded_replay
+    assert "workspaceRoot" not in encoded_replay
 
 
 def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtime_harness: Any, tmp_path: Path) -> None:

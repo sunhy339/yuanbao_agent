@@ -4,6 +4,7 @@ import {
   appendOrUpdateAssistantMessageDelta,
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdateAssistantToolInputDelta,
+  appendOrUpdateAssistantToolOutputDelta,
   appendOrUpdateAssistantToolStartMessage,
   appendOrUpdatePermissionRequestMessage,
   appendSpecialEventMessage,
@@ -165,6 +166,30 @@ export function applyYuanbaoServerMessageToChat(
           sessionId: event.sessionId,
           taskId,
           delta: message.toolInput,
+          now,
+        });
+      }
+      if (typeof message.toolOutput === "string" && message.toolOutput) {
+        next = appendOrUpdateAssistantToolOutputDelta(closeThinking(next), {
+          toolUseId: readString(payload.toolUseId) || readString(payload.toolCallId) || `pending_${taskId}`,
+          toolName: readString(payload.toolName),
+          parentToolUseId: readString(payload.parentToolUseId),
+          target: readString(payload.target),
+          inputSummary: readString(payload.inputSummary),
+          toolGroupId: readString(payload.toolGroupId),
+          toolIndex: readNumber(payload.toolIndex),
+          toolTotal: readNumber(payload.toolTotal),
+          toolOperationId: readString(payload.toolOperationId),
+          toolOperationLabel: readString(payload.toolOperationLabel),
+          toolCategory: readString(payload.toolCategory),
+          toolPhaseId: readString(payload.toolPhaseId),
+          toolPhaseLabel: readString(payload.toolPhaseLabel),
+          toolSemanticParentId: readString(payload.toolSemanticParentId),
+          toolSemanticParentLabel: readString(payload.toolSemanticParentLabel),
+          sessionId: event.sessionId,
+          taskId,
+          delta: message.toolOutput,
+          stream: readString(payload.outputStream),
           now,
         });
       }

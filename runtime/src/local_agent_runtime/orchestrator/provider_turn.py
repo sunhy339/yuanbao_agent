@@ -107,6 +107,18 @@ class ProviderTurnMixin:
                 if isinstance(result_context.get("_provider_preflight"), dict):
                     result_context["_provider_preflight"]["providerSwitch"] = switch_result["switch"]
         split_plan = self._provider_preflight_split_plan_payload(advice=advice)
+        if runtime_action == "execute_split":
+            runtime_action = "proceed"
+            split_plan = None
+            result_context["_provider_preflight_runtime_action"] = runtime_action
+            result_context.pop("_provider_preflight_split_plan", None)
+            if isinstance(result_context.get("_provider_preflight"), dict):
+                result_context["_provider_preflight"]["runtimeAction"] = runtime_action
+                result_context["_provider_preflight"]["splitSuppressed"] = True
+                result_context["_provider_preflight"]["reason"] = (
+                    "Provider preflight split advice is advisory only; "
+                    "model tool calls drive delegation."
+                )
         if runtime_action == "execute_split" and split_plan is not None:
             result_context["_provider_preflight_split_plan"] = split_plan
             applied = True
@@ -265,16 +277,15 @@ class ProviderTurnMixin:
             "preflight_facts": facts,
             "runtime_limits": {
                 "autoActions": ["proceed", "compact_context"],
-                "executableActions": ["propose_split", "switch_provider"],
-                "advisoryOnlyActions": ["ask_user", "abort"],
-                "splitExecution": "validated split plans run through the existing root planning/DAG path",
+                "executableActions": ["switch_provider"],
+                "advisoryOnlyActions": ["ask_user", "abort", "propose_split"],
+                "splitExecution": "split advice is advisory; the model must call agent/task tools to delegate",
                 "switchProviderExecution": "validated provider profile switches apply only to this provider turn context",
                 "runtimeWillNotCallProviderAfterTransportFailureForAdvice": True,
             },
             "available_actions": [
                 "proceed",
                 "compact_context",
-                "propose_split",
                 "ask_user",
                 "switch_provider",
                 "abort",
@@ -586,7 +597,7 @@ class ProviderTurnMixin:
         if isinstance(provider_switch, dict):
             payload["providerSwitch"] = provider_switch
         split_plan = self._provider_preflight_split_plan_payload(advice=advice)
-        if split_plan is not None:
+        if payload["runtimeAction"] == "execute_split" and split_plan is not None:
             payload["splitPlan"] = split_plan
         if advice is not None:
             payload["advisor"] = {
@@ -699,12 +710,40 @@ class ProviderTurnMixin:
         _delta_count = 0
         _content_block_started = False
         _active_tool_streams: dict[int, dict[str, Any]] = {}
+        _thinking_parts: list[str] = []
+        _thinking_source: str | None = None
+
+        def _flush_streaming_thinking(*, force: bool = False) -> None:
+            nonlocal _thinking_source
+            if not _thinking_parts:
+                return
+            if not force and not self._should_flush_streaming_thinking(_thinking_parts):
+                return
+            text = self._streaming_thinking_text(_thinking_parts)
+            _thinking_parts.clear()
+            if not text:
+                return
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="thinking",
+                payload={
+                    "text": text,
+                    "messageId": task.get("activeAssistantMessageId"),
+                    "source": _thinking_source or "provider_reasoning_delta",
+                    "step": provider_context.get("step"),
+                },
+            )
+            _thinking_source = None
+
         for _stream_attempt in range(_max_stream_retries + 1):
             final_response = None
             streamed_content = False
             _stream_text_parts = []
             _content_block_started = False
             _active_tool_streams = {}
+            _thinking_parts = []
+            _thinking_source = None
             try:
                 for event in self._provider.stream(goal, provider_context):
                     self._raise_if_provider_task_cancelled(task)
@@ -712,6 +751,7 @@ class ProviderTurnMixin:
                     if event_type == "content_delta":
                         delta = event.get("delta")
                         if isinstance(delta, str) and delta:
+                            _flush_streaming_thinking(force=True)
                             streamed_content = True
                             _delta_count += 1
                             if _delta_count <= 3 or _delta_count % 50 == 0:
@@ -750,6 +790,7 @@ class ProviderTurnMixin:
                                 payload={"delta": delta, "step": provider_context.get("step")},
                             )
                     elif event_type == "final":
+                        _flush_streaming_thinking(force=True)
                         response = event.get("response")
                         if isinstance(response, dict):
                             final_response = response
@@ -759,17 +800,11 @@ class ProviderTurnMixin:
                         delta = event.get("delta")
                         if isinstance(delta, str) and delta:
                             self._append_provider_trace(task=task, event_type="provider.stream.thinking_delta", payload=event)
-                            self._publish(
-                                session_id=session_id,
-                                task=task,
-                                event_type="thinking",
-                                payload={
-                                    "text": delta,
-                                    "messageId": task.get("activeAssistantMessageId"),
-                                    "source": self._thinking_source(event.get("source"), streaming=True),
-                                },
-                            )
+                            _thinking_parts.append(delta)
+                            _thinking_source = _thinking_source or self._thinking_source(event.get("source"), streaming=True)
+                            _flush_streaming_thinking()
                     elif event_type == "tool_call_delta":
+                        _flush_streaming_thinking(force=True)
                         index = event.get("index")
                         if not isinstance(index, int):
                             continue
@@ -801,6 +836,7 @@ class ProviderTurnMixin:
                     "Stream completed for task=%s: deltas=%d streamed=%s has_final=%s",
                     task["id"], _delta_count, streamed_content, final_response is not None,
                 )
+                _flush_streaming_thinking(force=True)
                 self._raise_if_provider_task_cancelled(task)
                 if _stream_text_parts:
                     _active_msg_id = task.get("activeAssistantMessageId")
@@ -973,6 +1009,23 @@ class ProviderTurnMixin:
             payload={**self._provider_response_trace(response), "stream": True},
         )
         return response
+
+    @staticmethod
+    def _streaming_thinking_text(parts: list[str], *, limit: int = 1200) -> str:
+        text = "".join(parts).strip()
+        if not text:
+            return ""
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit].rstrip()}..."
+
+    @staticmethod
+    def _should_flush_streaming_thinking(parts: list[str]) -> bool:
+        text = "".join(parts)
+        if len(text) >= 900:
+            return True
+        stripped = text.rstrip()
+        return len(stripped) >= 320 and stripped.endswith((".", "!", "?", "。", "！", "？", "\n"))
 
     def _should_stream_provider(self, provider_context: dict[str, Any]) -> bool:
         if not hasattr(self._provider, "stream"):

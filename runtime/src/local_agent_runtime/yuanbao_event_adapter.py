@@ -52,11 +52,32 @@ _SYSTEM_NOTIFICATION_SUBTYPES = {
     "session_state_changed",
 }
 
+_TOOL_MESSAGE_METADATA_FIELDS = {
+    "durationMs",
+    "inputSummary",
+    "parentToolUseId",
+    "resultPreview",
+    "resultSummary",
+    "target",
+    "toolCategory",
+    "toolGroupId",
+    "toolIndex",
+    "toolName",
+    "toolOperationId",
+    "toolOperationLabel",
+    "toolPhaseId",
+    "toolPhaseLabel",
+    "toolSemanticParentId",
+    "toolSemanticParentLabel",
+    "toolTotal",
+    "toolUseId",
+}
+
 _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
-    "content_start": {"type", "blockType", "toolName", "toolUseId", "parentToolUseId"},
-    "content_delta": {"type", "text", "toolInput"},
-    "tool_use_complete": {"type", "toolName", "toolUseId", "input", "parentToolUseId"},
-    "tool_result": {"type", "toolUseId", "content", "isError", "parentToolUseId"},
+    "content_start": {"type", "blockType", *_TOOL_MESSAGE_METADATA_FIELDS},
+    "content_delta": {"type", "text", "toolInput", "toolOutput", "outputStream", *_TOOL_MESSAGE_METADATA_FIELDS},
+    "tool_use_complete": {"type", "input", *_TOOL_MESSAGE_METADATA_FIELDS},
+    "tool_result": {"type", "content", "isError", *_TOOL_MESSAGE_METADATA_FIELDS},
     "permission_request": {
         "type",
         "requestId",
@@ -320,7 +341,9 @@ def _server_message_shape(message: dict[str, Any]) -> dict[str, Any] | None:
             return None
         if isinstance(shaped[key], str) and not shaped[key]:
             return None
-    if event_type == "content_delta" and "text" not in shaped and "toolInput" not in shaped:
+    if event_type == "content_delta" and not any(
+        key in shaped for key in ("text", "toolInput", "toolOutput")
+    ):
         return None
     return shaped
 
@@ -807,7 +830,8 @@ def _truncate_text(value: str, max_length: int = 500) -> str:
 
 
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    value = _public_payload_value(payload)
+    return value if isinstance(value, dict) else {}
 
 
 def _progress_notification_data(payload: dict[str, Any]) -> dict[str, Any]:
@@ -818,6 +842,72 @@ def _progress_notification_data(payload: dict[str, Any]) -> dict[str, Any]:
             data[key] = _truncate_text(value)
             data[f"{key}Truncated"] = True
     return data
+
+
+_PUBLIC_PAYLOAD_DENY_KEYS = {
+    "activeWorktree",
+    "activeWorktreeId",
+    "active_worktree",
+    "active_worktree_id",
+    "apiKey",
+    "api_key",
+    "auth",
+    "authorization",
+    "headers",
+    "originalWorkspaceRoot",
+    "original_workspace_root",
+    "providerRequest",
+    "requestJson",
+    "raw",
+    "secret",
+    "sessionId",
+    "session_id",
+    "taskId",
+    "task_id",
+    "token",
+    "workspaceRoot",
+    "workspace_root",
+    "worktreePath",
+    "worktree_path",
+}
+
+_PUBLIC_PAYLOAD_MAX_DEPTH = 3
+_PUBLIC_PAYLOAD_LIST_LIMIT = 12
+_PUBLIC_PAYLOAD_TEXT_LIMIT = 500
+
+
+def _public_payload_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    key_text = str(key)
+    if key_text.startswith("_") or key_text in _PUBLIC_PAYLOAD_DENY_KEYS:
+        return None
+    folded = key_text.replace("-", "_").casefold()
+    if any(marker in folded for marker in ("token", "secret", "apikey", "api_key", "authorization")):
+        return None
+    if isinstance(value, str):
+        return _truncate_text(value, _PUBLIC_PAYLOAD_TEXT_LIMIT) if len(value) > _PUBLIC_PAYLOAD_TEXT_LIMIT else value
+    if isinstance(value, list):
+        if depth >= _PUBLIC_PAYLOAD_MAX_DEPTH:
+            return {"omitted": True, "type": "array", "items": len(value)}
+        return [
+            item
+            for item in (
+                _public_payload_value(child, key=key_text, depth=depth + 1)
+                for child in value[:_PUBLIC_PAYLOAD_LIST_LIMIT]
+            )
+            if item not in (None, "", [], {})
+        ]
+    if isinstance(value, dict):
+        if depth >= _PUBLIC_PAYLOAD_MAX_DEPTH:
+            return {"omitted": True, "type": "object", "keys": len(value)}
+        public: dict[str, Any] = {}
+        for child_key, child_value in value.items():
+            child_key_text = str(child_key)
+            public_value = _public_payload_value(child_value, key=child_key_text, depth=depth + 1)
+            if public_value in (None, "", [], {}):
+                continue
+            public[child_key_text] = public_value
+        return public
+    return value
 
 
 def _field_changed(payload: dict[str, Any], field_name: str) -> bool:

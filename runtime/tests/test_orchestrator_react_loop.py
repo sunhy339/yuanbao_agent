@@ -408,6 +408,36 @@ def test_simple_query_uses_minimal_context_without_tools(tmp_path: Any) -> None:
     assert task["routing"]["contextMode"] == "minimal"
 
 
+def test_direct_chat_capability_prompt_uses_minimal_context_without_tools(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "I can help with coding tasks, repo inspection, and concise answers."}])
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    workspace_root = Path(session["workspaceRoot"])
+    (workspace_root / "README.md").write_text("secret project details\n" * 100, encoding="utf-8")
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "\u4f60\u597d\uff0c\u7b80\u5355\u8bf4\u660e\u4e00\u4e0b\u4f60\u80fd\u505a\u4ec0\u4e48\u3002",
+            },
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert task["routing"]["scenario"] == "simple_query"
+    assert task["routing"]["strategy"] == "react_fast"
+    assert task["routing"]["contextMode"] == "minimal"
+    assert [event for event in runtime.events if event["type"] == "tool.started"] == []
+    context = provider.calls[0]["context"]
+    assert context["minimal"] is True
+    assert context["openai_tools"] == []
+    assert "secret project details" not in "\n".join(str(message.get("content") or "") for message in context["messages"])
+
+
 def test_explicit_no_tools_constraint_hides_tools_from_provider(tmp_path: Any) -> None:
     provider = ScriptedProvider([{"final": "连接正常。"}])
     runtime = _make_builtin_runtime(tmp_path, provider)
@@ -432,6 +462,38 @@ def test_explicit_no_tools_constraint_hides_tools_from_provider(tmp_path: Any) -
     turns = runtime.store.list_provider_turns(task["id"])
     assert turns[0]["request_tool_count"] == 0
     assert [event for event in runtime.events if event["type"] == "tool.started"] == []
+
+
+def test_read_only_workspace_request_hides_write_and_command_tools_from_provider(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "已基于可读上下文整理完成。"}])
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    workspace_root = Path(session["workspaceRoot"])
+    (workspace_root / "README.md").write_text("project notes\n", encoding="utf-8")
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "\u8bf7\u8bfb\u53d6 README.md \u5e76\u603b\u7ed3\uff0c\u4e0d\u8981\u7f16\u8f91\u6587\u4ef6\uff0c\u4e0d\u8981\u8fd0\u884c\u547d\u4ee4\u3002",
+            },
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    context = provider.calls[0]["context"]
+    allowed_names = {tool["name"] for tool in context["openai_tools"]}
+    assert {"read_file", "search_files", "list_dir"}.issubset(allowed_names)
+    assert "apply_patch" not in allowed_names
+    assert "write_file" not in allowed_names
+    assert "run_command" not in allowed_names
+    policy = context["tool_policy_decision"]
+    assert "read-only user constraint limits tool visibility" in policy["reasons"]["*"]
+    turns = runtime.store.list_provider_turns(task["id"])
+    assert "apply_patch" not in {name for turn in turns for name in (turn.get("tool_policy_decision") or {}).get("allowedToolNames", [])}
 
 
 def test_computer_use_approval_emits_dedicated_permission_events(tmp_path: Any) -> None:

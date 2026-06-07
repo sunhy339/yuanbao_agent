@@ -317,6 +317,27 @@ def test_subagent_visible_tool_result_hides_internal_completion_evidence() -> No
     assert "workspaceRoot" not in encoded
 
 
+def test_small_visible_tool_result_is_public_scrubbed() -> None:
+    visible = _frontend_visible_tool_result(
+        "custom_tool",
+        {
+            "status": "completed",
+            "summary": "Done",
+            "workspaceRoot": "D:/py/test_pro",
+            "requestJson": {"token": "secret"},
+            "raw": {"providerRequest": {"apiKey": "sk-hidden"}},
+            "items": [{"name": "public"}],
+        },
+    )
+
+    encoded = json.dumps(visible, ensure_ascii=False)
+    assert visible["status"] == "completed"
+    assert visible["summary"] == "Done"
+    assert visible["items"] == [{"name": "public"}]
+    for marker in ("workspaceRoot", "requestJson", "providerRequest", "apiKey", "secret", "sk-hidden"):
+        assert marker not in encoded
+
+
 def test_file_change_visible_tool_result_hides_internal_patch_record() -> None:
     visible = _frontend_visible_tool_result(
         "apply_patch",
@@ -506,6 +527,134 @@ def test_chat_compat_tool_frames_persist_for_session_replay(tmp_path: Path) -> N
     assert completed_raw
     assert all(event.get("yuanbao") is None for event in completed_raw)
     assert all(event["payload"].get("_bridge", {}).get("suppressRealtimeFlat") is True for event in completed_raw)
+
+
+def test_late_tool_lifecycle_after_terminal_task_stays_trace_only(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="already done",
+        plan=[],
+        status="completed",
+    )
+
+    start_index = len(runtime.events)
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "tool.started",
+        {
+            "toolCallId": "call_late",
+            "toolName": "read_file",
+            "arguments": {"path": "README.md"},
+        },
+    )
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "tool.progress",
+        {
+            "toolUseId": "call_late",
+            "toolName": "read_file",
+            "message": "late progress",
+        },
+    )
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "tool.completed",
+        {
+            "toolCallId": "call_late",
+            "toolName": "read_file",
+            "result": {"status": "completed", "summary": "late done"},
+            "resultSummary": "late done",
+        },
+    )
+
+    emitted = runtime.events[start_index:]
+    assert [event["type"] for event in emitted] == ["tool.started", "tool.progress", "tool.completed"]
+    assert all(event["visibility"] == "trace" for event in emitted)
+    assert not any(
+        event["type"] in {"content_start", "content_delta", "tool_use_complete", "tool_result"}
+        for event in emitted
+    )
+
+
+def test_tool_progress_and_output_chat_deltas_hide_internal_payload_text(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="inspect",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "tool.progress",
+        {
+            "toolUseId": "call_safe",
+            "toolName": "read_file",
+            "message": "Checked the README summary.",
+        },
+    )
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "tool.progress",
+        {
+            "toolUseId": "call_internal",
+            "toolName": "read_file",
+            "message": '{"requestJson":{"workspaceRoot":"D:/py/test_pro","token":"secret"}}',
+        },
+    )
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "command.output",
+        {
+            "toolUseId": "call_command",
+            "toolName": "run_command",
+            "chunk": "workspaceRoot=D:/py/test_pro token=secret\n",
+        },
+    )
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "tool.completed",
+        {
+            "toolCallId": "call_result",
+            "toolName": "custom_tool",
+            "result": {
+                "status": "completed",
+                "steps": [
+                    {"label": "public", "summary": "Public activity"},
+                    {"label": "internal", "summary": "workspaceRoot D:/py/test_pro token secret"},
+                ],
+            },
+            "resultPreview": [
+                {"label": "requestJson", "value": '{"workspaceRoot":"D:/py/test_pro"}'},
+            ],
+            "resultSummary": "workspaceRoot D:/py/test_pro token secret",
+        },
+    )
+
+    tool_output_text = "\n".join(
+        str(event["payload"].get("toolOutput") or "")
+        for event in runtime.events
+        if event["type"] == "content_delta"
+    )
+    assert "Checked the README summary." in tool_output_text
+    assert "Public activity" in tool_output_text
+    assert "requestJson" not in tool_output_text
+    assert "workspaceRoot" not in tool_output_text
+    assert "D:/py/test_pro" not in tool_output_text
+    assert "secret" not in tool_output_text
+    assert "token" not in tool_output_text
 
 
 def test_write_file_approval_is_waiting_node_without_raw_request_json(tmp_path: Path) -> None:

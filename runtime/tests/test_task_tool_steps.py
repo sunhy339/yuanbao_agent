@@ -120,3 +120,7 @@ def test_agent_tool_is_registered_with_builtin_schema() -> None:
     assert schema["input_schema"]["required"] == ["prompt"]
     assert "agent_type" in schema["input_schema"]["properties"]
     assert "tool_allowlist" in schema["input_schema"]["properties"]
+    assert "budget" not in schema["input_schema"]["properties"]
+    task_schema = BUILTIN_TOOL_SCHEMAS_BY_NAME["task"]
+    assert task_schema["input_schema"]["required"] == ["prompt"]
+    assert "budget" not in task_schema["input_schema"]["properties"]

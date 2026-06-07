@@ -1046,3 +1046,54 @@ Yuanbao corrections:
 - Backend contracts now cover 429/concurrency and 401/auth provider failures
   with a real `MemoryManager`, and long replay with more than one trace page
   before the final flat message.
+
+## 2026-06-07 AskUserQuestion And Model-Tool Boundary
+
+This pass rechecked the haha-cc AskUserQuestion implementation before changing
+Yuanbao's backend behavior:
+
+- `docs/cc-haha-main/src/tools.ts`
+- `docs/cc-haha-main/src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx`
+- `docs/cc-haha-main/src/tools/AskUserQuestionTool/prompt.ts`
+- `docs/cc-haha-main/src/hooks/toolPermission/handlers/interactiveHandler.ts`
+
+Confirmed reference behavior:
+
+- AskUserQuestion is a normal model-visible tool in the base tool set.
+- It is read-only but `requiresUserInteraction()`, so a real model tool use
+  becomes an interactive permission/question boundary.
+- The backend does not use a business router to ask style, ordering, or output
+  format questions before the provider turn. The model asks only by emitting a
+  tool use.
+- The tool result is fed back into the same assistant trajectory; it is not a
+  new user goal and should not create duplicate final answers.
+
+Yuanbao decisions:
+
+- Keep `ask_user_question` as a model-visible tool so the provider can still
+  ask for genuinely blocking information.
+- Treat low-risk preference questions as an internal defaulted tool result:
+  style, ordering, output format, read order, and read-only continuation do not
+  create a visible question card or pause the task.
+- After one low-risk AskUserQuestion has been defaulted, hide
+  `ask_user_question` from the next provider turn unless context explicitly
+  requires user input. This prevents repeated preference questions while keeping
+  true blocking questions available.
+- Explicit requirements such as missing credentials, permission, destructive
+  choices, ambiguous target paths, and plan-mode clarification still pause the
+  same task and resume through the normal supplement/tool-result path.
+
+Validation:
+
+- Contract tests now lock the post-default suppression and the explicit
+  user-input override in `runtime/tests/test_tool_policy_resolver.py`.
+- ReAct tests already verify low-risk AskUserQuestion calls do not emit visible
+  `ask_user_question` or `tool_result` chat frames.
+- A real Responses-streaming LLM probe using `gpt-5.4-mini` confirmed:
+  simple chat uses no tools; read-only summary uses only read tools; plain
+  roadmap does not enter plan mode; explicit plan mode waits for plan approval;
+  explicit multi-agent read-only uses `read_file/read_file/agent/agent` without
+  repeated AskUserQuestion; write tasks wait on permission and duplicate
+  approval submit is ignored. For every case, direct flat events,
+  `events.yuanbaoAfter`, and `events.hahaCcAfter` matched exactly, with no raw
+  JSON leak detected.

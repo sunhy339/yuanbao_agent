@@ -192,7 +192,7 @@ export type HahaCcTeamMemberStatus = YuanbaoTeamMemberStatus;
 export type YuanbaoServerMessage =
   | { type: "connected"; sessionId: string }
   | { type: "content_start"; blockType: "text" | "tool_use"; toolName?: string; toolUseId?: string; parentToolUseId?: string }
-  | { type: "content_delta"; text?: string; toolInput?: string }
+  | { type: "content_delta"; text?: string; toolInput?: string; toolOutput?: string; outputStream?: "stdout" | "stderr" | "activity" | "result_preview" | string }
   | { type: "tool_use_complete"; toolName: string; toolUseId: string; input: unknown; parentToolUseId?: string }
   | { type: "tool_result"; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string }
   | { type: "permission_request"; requestId: string; toolName: string; toolUseId?: string; input: unknown; description?: string }

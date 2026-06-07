@@ -93,6 +93,15 @@ _DIRECT_ANSWER_RE = re.compile(
     r"\b(?:reply|answer|respond|say|explain|summari[sz]e)\b|回答|回复|解释|总结",
     re.IGNORECASE,
 )
+_DIRECT_CHAT_RE = re.compile(
+    r"\b(?:what can you do|who are you|your capabilities|capabilities|"
+    r"introduce yourself|tell me about yourself)\b|"
+    r"\u4f60\u80fd\u505a\u4ec0\u4e48|\u4f60\u4f1a\u505a\u4ec0\u4e48|\u4f60\u662f\u8c01|"
+    r"\u4ecb\u7ecd\u4e00\u4e0b\u4f60\u81ea\u5df1|\u8bf4\u660e\u4e00\u4e0b\u4f60\u7684\u80fd\u529b|"
+    r"\u7b80\u5355\u8bf4\u660e(?:\u4e00\u4e0b)?\u4f60(?:\u7684)?\u80fd\u529b|"
+    r"\u7b80\u5355\u8bf4\u660e(?:\u4e00\u4e0b)?\u4f60\u80fd\u505a\u4ec0\u4e48",
+    re.IGNORECASE,
+)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -134,6 +143,12 @@ class MetaRouter:
                 scenario=Scenario.SIMPLE_QUERY,
                 confidence=max(rule_result.confidence, 0.92),
                 reasoning=f"rule-match: explicit-no-workspace-direct-answer; {rule_result.reasoning}",
+            )
+        if self._is_direct_chat_route(goal, rule_result):
+            return self._build_decision(
+                scenario=Scenario.SIMPLE_QUERY,
+                confidence=max(rule_result.confidence, 0.92),
+                reasoning=f"rule-match: direct-chat-no-workspace; {rule_result.reasoning}",
             )
         if self._is_greeting_only_route(goal, rule_result):
             return rule_result
@@ -273,6 +288,28 @@ class MetaRouter:
             rule_result.scenario == Scenario.SIMPLE_QUERY
             and rule_result.confidence >= 0.95
             and _GREETING_ONLY_RE.match(goal) is not None
+        )
+
+    @staticmethod
+    def _is_direct_chat_route(goal: str, rule_result: RoutingDecision) -> bool:
+        if _CODE_FILE_RE.search(goal) is not None:
+            return False
+        if (
+            _CODE_EDIT_INTENT_RE.search(goal) is not None
+            or _CODE_GENERATION_INTENT_RE.search(goal) is not None
+            or _TEST_COMMAND_RE.search(goal) is not None
+        ):
+            return False
+        if _GREETING_ONLY_RE.match(goal):
+            return True
+        if _DIRECT_CHAT_RE.search(goal):
+            return True
+        if _DOC_SIGNAL_RE.search(goal) is not None:
+            return False
+        return (
+            rule_result.scenario == Scenario.FREE_FORM
+            and rule_result.confidence <= 0.45
+            and _DIRECT_ANSWER_RE.search(goal) is not None
         )
 
     @staticmethod

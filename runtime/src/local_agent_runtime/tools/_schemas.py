@@ -528,18 +528,6 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "tool_allowlist": _child_tool_allowlist_property(),
                 "toolAllowlist": _child_tool_allowlist_property(),
-                "budget": {
-                    "type": "object",
-                    "description": "Optional advisory budget for the child agent.",
-                    "additionalProperties": True,
-                    "properties": {
-                        "maxTokens": {"type": "integer", "minimum": 1},
-                        "remainingTokens": {"type": "integer", "minimum": 0},
-                        "maxToolCalls": {"type": "integer", "minimum": 1},
-                        "tool_allowlist": _child_tool_allowlist_property(),
-                        "toolAllowlist": _child_tool_allowlist_property(),
-                    },
-                },
                 "plan_mode_required": {
                     "type": "boolean",
                     "description": "Whether the child agent should plan before writing. Stored as child profile metadata.",
@@ -657,28 +645,6 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "minimum": 0,
                             "maximum": 600000,
                             "default": 0,
-                        },
-                    },
-                },
-                "budget": {
-                    "type": "object",
-                    "description": "Optional advisory resource budget for the child task.",
-                    "additionalProperties": True,
-                    "properties": {
-                        "maxTokens": {
-                            "type": "integer",
-                            "description": "Maximum model tokens allocated to the child task.",
-                            "minimum": 1,
-                        },
-                        "remainingTokens": {
-                            "type": "integer",
-                            "description": "Remaining model tokens available to the child task.",
-                            "minimum": 0,
-                        },
-                        "maxToolCalls": {
-                            "type": "integer",
-                            "description": "Maximum tool calls allocated to the child task.",
-                            "minimum": 1,
                         },
                     },
                 },

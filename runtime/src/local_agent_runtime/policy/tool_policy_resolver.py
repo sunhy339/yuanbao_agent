@@ -192,6 +192,14 @@ class ToolPolicyResolver:
                 "phaseDecision": "allowed" if phase_allowed else "denied",
             }
             if phase_allowed:
+                ask_suppression_reason = self._ask_user_question_suppressed_reason(name, context, tool_results)
+                if ask_suppression_reason:
+                    denied_names.append(name)
+                    reasons[name] = ask_suppression_reason
+                    detail["finalDecision"] = "denied"
+                    detail["reason"] = ask_suppression_reason
+                    decision_details.append(detail)
+                    continue
                 if name in SUBAGENT_TOOLS:
                     detail["toolContinuationPolicy"] = self.tool_continuation_policy(context)
                 continuation_reason = self._task_tool_continuation_block_reason(name, context, tool_results)
@@ -352,11 +360,30 @@ class ToolPolicyResolver:
         if not tool_results:
             routing = context.get("routing")
             strategy = routing.get("strategy") if isinstance(routing, dict) else None
-            if strategy in self.TASK_TOOL_STRATEGIES:
+            if (
+                isinstance(routing, dict)
+                and strategy in self.TASK_TOOL_STRATEGIES
+                and self._legacy_planning_phase_enabled(routing)
+            ):
                 return "planning"
         if self._last_tool_failed(tool_results):
             return "recovery"
         return "investigation"
+
+    @staticmethod
+    def _legacy_planning_phase_enabled(routing: dict[str, Any]) -> bool:
+        for key in (
+            "legacyPlanner",
+            "legacy_planner",
+            "legacyPlanExecution",
+            "legacy_plan_execution",
+            "useLegacyPlanner",
+            "use_legacy_planner",
+            "providerPreflightSplit",
+        ):
+            if routing.get(key) is True:
+                return True
+        return False
 
     def _child_worker_execution_enabled(self, context: dict[str, Any]) -> bool:
         if context.get("_child_worker") is not True:
@@ -431,7 +458,14 @@ class ToolPolicyResolver:
                 names.update({"enter_plan_mode", "exit_plan_mode"})
             routing = context.get("routing")
             strategy = routing.get("strategy") if isinstance(routing, dict) else None
-            if phase == "planning" and runtime_role in {"root", "planner"} and strategy in self.TASK_TOOL_STRATEGIES:
+            if (
+                runtime_role in {"root", "planner"}
+                and strategy in self.TASK_TOOL_STRATEGIES
+                and (
+                    phase == "planning"
+                    or (isinstance(routing, dict) and routing.get("orchestrationMode") == "model_tools")
+                )
+            ):
                 names.update(SUBAGENT_TOOLS)
             if phase == "plan_mode":
                 names.add("exit_plan_mode")
@@ -445,7 +479,14 @@ class ToolPolicyResolver:
         names = set(READ_ONLY_TOOLS)
         routing = context.get("routing")
         strategy = routing.get("strategy") if isinstance(routing, dict) else None
-        if phase == "planning" and runtime_role in {"root", "planner"} and strategy in self.TASK_TOOL_STRATEGIES:
+        if (
+            runtime_role in {"root", "planner"}
+            and strategy in self.TASK_TOOL_STRATEGIES
+            and (
+                phase == "planning"
+                or (isinstance(routing, dict) and routing.get("orchestrationMode") == "model_tools")
+            )
+        ):
             names.update(SUBAGENT_TOOLS)
 
         if phase in {"execution", "recovery"} and runtime_role in {"root", "worker"}:
@@ -475,6 +516,33 @@ class ToolPolicyResolver:
             return True
         if self._explicit_plan_mode_tools_enabled(context):
             return True
+        return False
+
+    def _ask_user_question_suppressed_reason(
+        self,
+        tool_name: str,
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> str | None:
+        if tool_name != "ask_user_question":
+            return None
+        if self._ask_user_question_enabled(context):
+            return None
+        if not self._low_risk_ask_user_question_defaulted(tool_results):
+            return None
+        return "ask_user_question is hidden after a low-risk question was defaulted; continue with sensible defaults"
+
+    @staticmethod
+    def _low_risk_ask_user_question_defaulted(tool_results: list[dict[str, Any]]) -> bool:
+        for item in reversed(tool_results):
+            if item.get("name") != "ask_user_question":
+                continue
+            result = item.get("result")
+            if not isinstance(result, dict):
+                continue
+            if result.get("defaulted") is True and result.get("reason") == "low_risk_preference_defaulted":
+                return True
+            return False
         return False
 
     @staticmethod

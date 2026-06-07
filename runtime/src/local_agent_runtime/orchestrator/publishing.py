@@ -1173,11 +1173,28 @@ class PublishingMixin:
         seen: set[str] = set()
         for item in activity_items[:8]:
             text = self._tool_result_activity_item_text(item)
-            if not text or text in seen or self._tool_activity_text_is_internal(text):
+            if (
+                not text
+                or text in seen
+                or self._tool_activity_text_is_internal(text)
+                or self._visible_text_has_internal_payload(text)
+            ):
                 continue
             seen.add(text)
             deltas.append(f"{text}\n")
         return deltas
+
+    def _public_tool_output_delta_text(self, value: Any, *, limit: int = 8000) -> str:
+        if not isinstance(value, str):
+            return ""
+        text = value
+        if not text.strip():
+            return ""
+        if self._tool_activity_text_is_internal(text) or self._visible_text_has_internal_payload(text):
+            return ""
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit].rstrip()}..."
 
     @staticmethod
     def _tool_activity_text_is_internal(text: str) -> bool:
@@ -1365,7 +1382,7 @@ class PublishingMixin:
                     },
                     visibility=effective_visibility,
                 )
-            output_delta = self._tool_started_output_delta_text(payload)
+            output_delta = self._public_tool_output_delta_text(self._tool_started_output_delta_text(payload))
             if tool_call_id and output_delta:
                 if self._mark_tool_output_delta_seen(task["id"], tool_call_id, "activity", output_delta):
                     output_delta = ""
@@ -1407,6 +1424,9 @@ class PublishingMixin:
             if not tool_use_id or not isinstance(chunk, str) or not chunk:
                 return
             visible_chunk = _visible_command_output_chunk(chunk)
+            visible_chunk = self._public_tool_output_delta_text(visible_chunk)
+            if not visible_chunk:
+                return
             self._publish_chat_compat_event(
                 session_id=session_id,
                 task=task,
@@ -1440,6 +1460,9 @@ class PublishingMixin:
                 or payload.get("text")
             )
             if not tool_use_id or not isinstance(chunk, str) or not chunk:
+                return
+            chunk = self._public_tool_output_delta_text(chunk)
+            if not chunk:
                 return
             stream = payload.get("outputStream") or payload.get("stream")
             if not isinstance(stream, str) or not stream.strip():
@@ -1479,6 +1502,9 @@ class PublishingMixin:
             activity_deltas = self._tool_result_activity_delta_texts(payload)
             if activity_deltas and payload.get("toolName") != "run_command":
                 for activity_delta in activity_deltas:
+                    activity_delta = self._public_tool_output_delta_text(activity_delta)
+                    if not activity_delta:
+                        continue
                     if self._mark_tool_output_delta_seen(task["id"], tool_call_id, "activity", activity_delta):
                         continue
                     self._publish_chat_compat_event(
@@ -1501,7 +1527,7 @@ class PublishingMixin:
                     },
                     visibility=effective_visibility,
                 )
-            output_delta = self._tool_result_output_delta_text(payload)
+            output_delta = self._public_tool_output_delta_text(self._tool_result_output_delta_text(payload))
             already_streamed_result_preview = self._mark_tool_stream_seen(
                 task["id"],
                 tool_call_id,
@@ -2055,13 +2081,21 @@ class PublishingMixin:
             token_delta_payload = {**visible_payload}
             token_delta_payload.setdefault("messageId", active_msg_id or "")
         chat_compat_visibility = self._chat_compat_event_visibility(event_type, task, effective_visibility)
-        self._publish_chat_compat_for_event(
-            session_id=session_id,
+        if event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES and self._should_drop_event_after_terminal_task(
             task=task,
             event_type=event_type,
-            payload=visible_payload,
+            payload=payload,
             effective_visibility=chat_compat_visibility,
-        )
+        ):
+            pass
+        else:
+            self._publish_chat_compat_for_event(
+                session_id=session_id,
+                task=task,
+                event_type=event_type,
+                payload=visible_payload,
+                effective_visibility=chat_compat_visibility,
+            )
         if token_delta_payload is not None:
             delta_event = RuntimeEvent(
                 event_id=self._store.new_id("evt"),

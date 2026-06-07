@@ -138,7 +138,6 @@ _PUBLIC_SUBAGENT_RESULT_KEYS = (
     "error",
 )
 _MIN_MODEL_SUPPLIED_CHILD_TOKEN_BUDGET = 16000
-_DEFAULT_CHILD_TOOL_CALL_BUDGET = 12
 _MIN_MODEL_SUPPLIED_CHILD_TOOL_CALL_BUDGET = 12
 _VERIFY_COMMAND_RE = _re.compile(
     r"\b("
@@ -349,7 +348,7 @@ def _visible_tool_result(
     if tool_name in SUBAGENT_TOOL_NAMES:
         return _public_subagent_tool_result(result)
     if result.get("truncated") is True and tool_name in {"apply_patch", "write_file", "git_diff"}:
-        return result
+        return _public_nested_result(result)
     force_compact = (
         tool_name in {"apply_patch", "write_file"}
         or
@@ -357,7 +356,7 @@ def _visible_tool_result(
         or isinstance(result.get("approval"), dict)
     )
     if not force_compact and _json_size(result) <= max_chars:
-        return result
+        return _public_nested_result(result)
 
     summary_text = summary or _tool_result_summary(tool_name, result, target)
     preview_rows = preview if preview is not None else _tool_result_preview(tool_name, result, target)
@@ -1273,6 +1272,8 @@ def _task_dispatch_steps(arguments: dict[str, Any], result: dict[str, Any]) -> l
 
 def _normalize_subagent_budget(arguments: dict[str, Any]) -> dict[str, Any]:
     budget = dict(arguments.get("budget")) if isinstance(arguments.get("budget"), dict) else {}
+    if not budget:
+        return arguments
     if "maxTokens" in budget or "max_tokens" in budget or "remainingTokens" in budget or "remaining_tokens" in budget:
         raw_limit = budget.get("maxTokens", budget.get("max_tokens"))
         raw_remaining = budget.get("remainingTokens", budget.get("remaining_tokens"))
@@ -1314,11 +1315,7 @@ def _normalize_subagent_budget(arguments: dict[str, Any]) -> dict[str, Any]:
         budget["maxToolCalls"] = effective_calls
         budget["remainingToolCalls"] = max(effective_calls, remaining or 0)
         budget["normalizedByRuntime"] = True
-    else:
-        budget.setdefault("maxToolCalls", _DEFAULT_CHILD_TOOL_CALL_BUDGET)
-        budget.setdefault("remainingToolCalls", _DEFAULT_CHILD_TOOL_CALL_BUDGET)
-    if budget:
-        arguments["budget"] = budget
+    arguments["budget"] = budget
     return arguments
 
 

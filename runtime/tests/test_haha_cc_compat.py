@@ -57,12 +57,17 @@ def test_haha_cc_message_keeps_only_server_message_fields() -> None:
     ) == {
         "type": "content_delta",
         "text": "hello",
+        "toolOutput": "stdout stays on the local envelope only",
+        "target": "npm test",
     }
 
 
 def test_haha_cc_message_rejects_incomplete_server_messages() -> None:
     assert to_haha_cc_server_message(_event("content_start", {"toolName": "read_file"})) is None
-    assert to_haha_cc_server_message(_event("content_delta", {"toolOutput": "stdout only"})) is None
+    assert to_haha_cc_server_message(_event("content_delta", {"toolOutput": "stdout only"})) == {
+        "type": "content_delta",
+        "toolOutput": "stdout only",
+    }
     assert (
         to_haha_cc_server_message(
             _event("permission_request", {"requestId": "approval_1", "toolName": "run_command"})
@@ -475,14 +480,26 @@ def test_trace_list_and_events_after_include_haha_cc_message(tmp_path) -> None:
         payload={"text": "hello", "toolOutput": "kept only on local payload"},
     )
 
-    assert trace["yuanbao"] == {"type": "content_delta", "text": "hello"}
+    assert trace["yuanbao"] == {
+        "type": "content_delta",
+        "text": "hello",
+        "toolOutput": "kept only on local payload",
+    }
     assert trace["hahaCc"] == trace["yuanbao"]
     listed = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
-    assert listed[0]["yuanbao"] == {"type": "content_delta", "text": "hello"}
+    assert listed[0]["yuanbao"] == {
+        "type": "content_delta",
+        "text": "hello",
+        "toolOutput": "kept only on local payload",
+    }
     assert listed[0]["hahaCc"] == listed[0]["yuanbao"]
     assert listed[0]["payload"]["toolOutput"] == "kept only on local payload"
     after = store.events_after(session["id"], 0)["events"]
-    assert after[0]["yuanbao"] == {"type": "content_delta", "text": "hello"}
+    assert after[0]["yuanbao"] == {
+        "type": "content_delta",
+        "text": "hello",
+        "toolOutput": "kept only on local payload",
+    }
     assert after[0]["hahaCc"] == after[0]["yuanbao"]
 
 

@@ -4435,7 +4435,7 @@ class TaskLifecycleMixin:
                 return value
             if value is not None:
                 return str(value).strip().casefold() not in {"0", "false", "no", "off", "never"}
-        return advisor_configured
+        return False
 
     def _build_completion_evidence(
         self,

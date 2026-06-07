@@ -172,6 +172,27 @@ class ThinkingDeltaStreamProvider:
         raise AssertionError("streaming test should not fall back to generate")
 
 
+class ManyThinkingDeltaStreamProvider:
+    def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        for index in range(40):
+            yield {"type": "thinking_delta", "delta": f"step {index}. ", "source": "reasoning_summary"}
+        yield {
+            "type": "content_delta",
+            "delta": "Done",
+        }
+        yield {
+            "type": "final",
+            "response": {
+                "message": {"role": "assistant", "content": "Done", "tool_calls": []},
+                "finish_reason": "completed",
+                "raw": {},
+            },
+        }
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("streaming test should not fall back to generate")
+
+
 class TextDeltaStreamProvider:
     def stream(self, prompt: str, context: dict[str, Any]) -> Any:
         yield {"type": "content_delta", "delta": "Hello"}
@@ -1545,7 +1566,7 @@ class TestAdvisorGuidedProviderPreflight:
         assert secondary["switchEligible"] is False
         assert "providerSwitch" not in preflight_trace["payload"]
 
-    def test_provider_preflight_split_executes_existing_planning_path(
+    def test_provider_preflight_split_advice_stays_advisory(
         self,
         tmp_path: Any,
         monkeypatch: pytest.MonkeyPatch,
@@ -1564,55 +1585,11 @@ class TestAdvisorGuidedProviderPreflight:
             }
         })
         dispatched: list[dict[str, Any]] = []
-
-        def fake_dispatch(params: dict[str, Any]) -> dict[str, Any]:
-            dispatched.append(dict(params))
-            title = str(params.get("title") or "Subtask")
-            result = {
-                "summary": f"{title} completed",
-                "changedFiles": [
-                    {
-                        "path": "runtime/src/local_agent_runtime/orchestrator/message_execution.py",
-                        "status": "modified",
-                        "reason": f"{title} exercised provider preflight split planning",
-                    }
-                ],
-                "verification": [
-                    {
-                        "name": "provider preflight split fixture",
-                        "command": "pytest runtime/tests/test_provider_turns.py::TestAdvisorGuidedProviderPreflight",
-                        "status": "passed",
-                        "summary": f"{title} verification passed",
-                    }
-                ],
-                "testsRun": [
-                    {
-                        "name": "provider preflight split fixture",
-                        "command": "pytest runtime/tests/test_provider_turns.py::TestAdvisorGuidedProviderPreflight",
-                        "status": "passed",
-                    }
-                ],
-            }
-            child = runtime.store.create_collaboration_task({
-                "sessionId": params.get("sessionId"),
-                "parentTaskId": params.get("taskId"),
-                "title": title,
-                "description": params.get("prompt"),
-                "metadata": {"agentType": params.get("agentType")},
-            })["task"]
-            runtime.store.update_collaboration_task({
-                "taskId": child["id"],
-                "status": "completed",
-                "result": result,
-            })
-            return {
-                "status": "completed",
-                "childTaskId": child["id"],
-                "summary": result["summary"],
-                "result": result,
-            }
-
-        monkeypatch.setattr(runtime.orchestrator._subagent_service, "dispatch", fake_dispatch)
+        monkeypatch.setattr(
+            runtime.orchestrator._subagent_service,
+            "dispatch",
+            lambda params: dispatched.append(dict(params)) or {"status": "completed", "summary": "unexpected dispatch"},
+        )
 
         session = _open_session(runtime, tmp_path)
         task = _call_result(
@@ -1631,23 +1608,12 @@ class TestAdvisorGuidedProviderPreflight:
         )
 
         assert task["status"] == "completed"
-        assert len(provider.main_calls) == 0
+        assert len(provider.main_calls) == 1
         assert any("provider_preflight" in call["prompt"] for call in provider.advisor_calls)
-        assert [call["agentType"] for call in dispatched] == ["planner", "worker"]
-        assert [call["title"] for call in dispatched] == [
-            "Inspect provider preflight planning",
-            "Implement and verify provider preflight split",
-        ]
-        evidence = task["structuredResult"]["completionEvidence"]
-        assert evidence["evidenceLevel"] == "verified"
-        assert evidence["counts"]["childTasks"] == 2
-        assert evidence["counts"]["passedVerification"] >= 1
-        assert evidence["childTasks"][0]["source"] == "collaboration_task"
+        assert dispatched == []
 
         turns = runtime.store.list_provider_turns(task["id"])
         assert len(turns) == 1
-        assert turns[0]["response_finish_reason"] == "provider_preflight_split"
-        assert turns[0]["turn_decision"] == "continue"
 
         proposals = runtime.store.list_proposals({
             "taskId": task["id"],
@@ -1656,22 +1622,21 @@ class TestAdvisorGuidedProviderPreflight:
         llm_proposal = next(p for p in proposals if p["source"].get("type") == "llm")
         runtime_proposal = next(p for p in proposals if p["source"].get("type") == "runtime_provider_preflight")
         assert llm_proposal["proposal"]["action"] == "propose_split"
-        assert llm_proposal["proposal"]["runtimeAction"] == "execute_split"
-        assert runtime_proposal["proposal"]["action"] == "propose_split"
-        assert runtime_proposal["proposal"]["runtimeAction"] == "execute_split"
-        assert runtime_proposal["proposal"]["runtimeApplied"] is True
-        assert len(runtime_proposal["proposal"]["splitRecommendation"]["subtasks"]) == 2
+        assert llm_proposal["proposal"]["runtimeAction"] == "proceed"
+        assert runtime_proposal["proposal"]["action"] == "proceed"
+        assert runtime_proposal["proposal"]["runtimeAction"] == "proceed"
+        assert runtime_proposal["proposal"]["runtimeApplied"] is False
 
         trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
         preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
-        assert preflight_trace["payload"]["runtimeAction"] == "execute_split"
-        assert preflight_trace["payload"]["runtimeApplied"] is True
-        assert preflight_trace["payload"]["splitPlan"]["execution_order"] == ["sub-0", "sub-1"]
+        assert preflight_trace["payload"]["runtimeAction"] == "proceed"
+        assert preflight_trace["payload"]["runtimeApplied"] is False
+        assert "splitPlan" not in preflight_trace["payload"]
 
         event_types = [event["type"] for event in runtime.events]
-        assert "task.provider_preflight.split.started" in event_types
-        assert "task.planning.decomposed" in event_types
-        assert "task.planning.completed" in event_types
+        assert "task.provider_preflight.split.started" not in event_types
+        assert "task.planning.decomposed" not in event_types
+        assert "task.planning.completed" not in event_types
 
     def test_provider_preflight_split_advice_is_not_executed_without_runtime_need(
         self,
@@ -1969,12 +1934,49 @@ class TestProviderTurnTransportAndUsage:
         )
 
         thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
-        assert [event["payload"]["text"] for event in thinking_events] == ["Checking ", "files."]
+        assert [event["payload"]["text"] for event in thinking_events] == ["Checking files."]
         assert all(event["payload"]["source"] == "provider_reasoning_summary" for event in thinking_events)
         assert [event.get("hahaCc") for event in thinking_events] == [
-            {"type": "thinking", "text": "Checking "},
-            {"type": "thinking", "text": "files."},
+            {"type": "thinking", "text": "Checking files."},
         ]
+        assert response["final_answer"] == "Done"
+
+    def test_stream_thinking_delta_batches_chat_events_but_keeps_trace_deltas(self, tmp_path: Any) -> None:
+        provider = ManyThinkingDeltaStreamProvider()
+        runtime = _make_runtime(tmp_path, provider)
+        task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="think", plan=[])
+        config = {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-responses",
+                "streamingEnabled": True,
+                "model": "fake-stream",
+            }
+        }
+
+        response = runtime.orchestrator._request_provider_response(
+            session_id="sess_1",
+            task={**task, "role": "root", "activeAssistantMessageId": "msg_1"},
+            goal="think then answer",
+            provider_context={
+                "config": config,
+                "messages": [{"role": "user", "content": "think then answer"}],
+                "openai_tools": [],
+                "step": 1,
+            },
+        )
+
+        trace_thinking_deltas = [
+            event for event in runtime.store.list_trace_events({"taskId": task["id"], "limit": 200})["traceEvents"]
+            if event["type"] == "provider.stream.thinking_delta"
+        ]
+        chat_thinking_events = [
+            event for event in runtime.events
+            if event["type"] == "thinking"
+        ]
+        assert len(trace_thinking_deltas) == 40
+        assert 1 <= len(chat_thinking_events) < 10
+        assert "step 0." in chat_thinking_events[0]["payload"]["text"]
         assert response["final_answer"] == "Done"
 
     def test_anthropic_messages_format_uses_streaming_provider_path(self, tmp_path: Any) -> None:
@@ -2005,10 +2007,9 @@ class TestProviderTurnTransportAndUsage:
         assert len(provider.stream_calls) == 1
         assert provider.stream_calls[0]["context"]["config"]["provider"]["apiFormat"] == "anthropic-messages"
         thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
-        assert [event["payload"]["text"] for event in thinking_events] == ["Checking ", "files."]
+        assert [event["payload"]["text"] for event in thinking_events] == ["Checking files."]
         assert [event.get("hahaCc") for event in thinking_events] == [
-            {"type": "thinking", "text": "Checking "},
-            {"type": "thinking", "text": "files."},
+            {"type": "thinking", "text": "Checking files."},
         ]
         assert response["_response_transport"] == "stream"
         assert response["final_answer"] == "Done"

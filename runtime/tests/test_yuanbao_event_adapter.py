@@ -39,12 +39,17 @@ def test_yuanbao_adapter_keeps_only_server_message_fields() -> None:
     assert message == {
         "type": "content_delta",
         "text": "hello",
+        "toolOutput": "local envelope only",
+        "target": "npm test",
     }
 
 
 def test_yuanbao_adapter_rejects_missing_required_fields() -> None:
     assert to_yuanbao_server_message(_event("content_start", {"toolName": "read_file"})) is None
-    assert to_yuanbao_server_message(_event("content_delta", {"toolOutput": "stdout only"})) is None
+    assert to_yuanbao_server_message(_event("content_delta", {"toolOutput": "stdout only"})) == {
+        "type": "content_delta",
+        "toolOutput": "stdout only",
+    }
     assert (
         to_yuanbao_server_message(_event("tool_result", {"toolUseId": "call_1", "content": "ok"}))
         is None

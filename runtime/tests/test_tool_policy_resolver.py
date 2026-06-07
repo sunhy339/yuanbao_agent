@@ -201,16 +201,30 @@ def test_agent_result_continues_with_non_subagent_tools_by_default() -> None:
     assert set(decision.denied_tool_names) == {"agent", "task"}
 
 
-def test_plan_strategy_exposes_agent_and_task_during_planning() -> None:
+def test_plan_strategy_exposes_agent_and_task_during_legacy_planning() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "plan_swarm"}},
+        context={"routing": {"strategy": "plan_swarm", "legacyPlanExecution": True}},
         tool_results=[],
         registered_tools=_tools("agent", "task", "read_file", "write_file"),
     )
 
     assert decision.phase == "planning"
+    assert {"agent", "task", "read_file"}.issubset(set(decision.allowed_tool_names))
+    assert "write_file" in decision.allowed_tool_names
+
+
+def test_model_tools_plan_strategy_stays_investigation_phase() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"}},
+        tool_results=[],
+        registered_tools=_tools("agent", "task", "read_file", "write_file"),
+    )
+
+    assert decision.phase == "investigation"
     assert {"agent", "task", "read_file"}.issubset(set(decision.allowed_tool_names))
     assert "write_file" in decision.allowed_tool_names
 
@@ -742,7 +756,7 @@ def test_read_only_multi_agent_keeps_subagent_tools_without_write_tools() -> Non
         task={"id": "task_root", "role": "root"},
         context={
             "goal": "Use multiple agents for read-only analysis. Do not modify files.",
-            "routing": {"strategy": "plan_swarm"},
+            "routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
         },
         tool_results=[],
         registered_tools=_tools("agent", "task", "read_file", "write_file", "run_command", "ask_user_question"),
@@ -750,6 +764,60 @@ def test_read_only_multi_agent_keeps_subagent_tools_without_write_tools() -> Non
 
     assert set(decision.allowed_tool_names) == {"agent", "ask_user_question", "read_file", "task"}
     assert set(decision.denied_tool_names) == {"write_file", "run_command"}
+
+
+def test_low_risk_defaulted_ask_user_question_is_not_reoffered_by_default() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "goal": "Use multiple agents for read-only analysis. Do not modify files.",
+            "routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
+        },
+        tool_results=[
+            {
+                "name": "ask_user_question",
+                "result": {
+                    "status": "answered",
+                    "defaulted": True,
+                    "reason": "low_risk_preference_defaulted",
+                },
+            },
+        ],
+        registered_tools=_tools("agent", "task", "read_file", "write_file", "run_command", "ask_user_question"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"agent", "read_file", "task"}
+    assert set(decision.denied_tool_names) == {"ask_user_question", "write_file", "run_command"}
+    assert "low-risk question was defaulted" in decision.reasons["ask_user_question"]
+
+
+def test_explicit_user_input_requirement_reoffers_ask_user_question_after_default() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "goal": "Read-only analysis. Ask only if a blocking scope choice is missing.",
+            "routing": {
+                "strategy": "react_standard",
+                "requiresUserInput": True,
+            },
+        },
+        tool_results=[
+            {
+                "name": "ask_user_question",
+                "result": {
+                    "status": "answered",
+                    "defaulted": True,
+                    "reason": "low_risk_preference_defaulted",
+                },
+            },
+        ],
+        registered_tools=_tools("read_file", "ask_user_question"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"ask_user_question", "read_file"}
+    assert decision.denied_tool_names == []
 
 
 def test_explicit_plan_mode_keeps_plan_tools_under_read_only_constraint() -> None:

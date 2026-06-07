@@ -127,6 +127,15 @@ class TestModelFirstRouting:
         assert decision.enable_planning is False
         assert "explicit-no-workspace-direct-answer" in decision.reasoning
 
+    def test_direct_chat_capability_prompt_keeps_fast_path_without_tools(self) -> None:
+        decision = self.router.route("你好，简单说明一下你能做什么。")
+
+        assert decision.scenario == Scenario.SIMPLE_QUERY
+        assert decision.strategy == ExecutionStrategy.REACT_FAST
+        assert decision.skill_id is None
+        assert decision.enable_planning is False
+        assert "direct-chat-no-workspace" in decision.reasoning
+
     def test_explicit_multi_agent_uses_model_tool_orchestration(self) -> None:
         decision = self.router.route("\u8d77\u591a\u4e2a agent \u4f18\u5316\u8fd9\u4e2a\u9879\u76ee")
 

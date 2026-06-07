@@ -90,14 +90,13 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
                 "taskId",
                 "timeoutMs",
                 "retry",
-                "budget",
                 "cancellation",
                 "childToolAllowlist",
                 "child_tool_allowlist",
             }
             assert task_properties["timeoutMs"]["type"] == "integer"
             assert task_properties["retry"]["type"] == "object"
-            assert task_properties["budget"]["type"] == "object"
+            assert "budget" not in task_properties
             assert task_properties["cancellation"]["type"] == "object"
             assert set(task_properties["childToolAllowlist"]["items"]["enum"]) >= {
                 "run_command",

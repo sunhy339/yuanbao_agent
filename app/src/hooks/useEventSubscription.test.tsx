@@ -227,6 +227,64 @@ describe("useEventSubscription", () => {
     expect(screen.queryByText(/ignored/)).toBeNull();
   });
 
+  it("renders flat haha-style tool output deltas into the matching tool row", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_start",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "content_start",
+        ts: 10,
+        seq: 10,
+        visibility: "chat",
+        payload: {
+          blockType: "tool_use",
+          toolName: "read_file",
+          toolUseId: "call_read",
+          target: "README.md",
+        },
+        hahaCc: {
+          type: "content_start",
+          blockType: "tool_use",
+          toolName: "read_file",
+          toolUseId: "call_read",
+          target: "README.md",
+        } as any,
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_output",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "content_delta",
+        ts: 11,
+        seq: 11,
+        visibility: "chat",
+        payload: {
+          toolUseId: "call_read",
+          toolName: "read_file",
+          target: "README.md",
+          toolOutput: "read README.md\n",
+          outputStream: "result_preview",
+        },
+        hahaCc: {
+          type: "content_delta",
+          toolUseId: "call_read",
+          toolName: "read_file",
+          target: "README.md",
+          toolOutput: "read README.md\n",
+          outputStream: "result_preview",
+        } as any,
+      });
+    });
+
+    const row = screen.getByText(/read README.md/);
+    expect(row.getAttribute("data-kind")).toBe("tool_use");
+    expect(row.getAttribute("data-tool-use-id")).toBe("call_read");
+  });
+
   it("renders thinking events and preserves their source metadata", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());

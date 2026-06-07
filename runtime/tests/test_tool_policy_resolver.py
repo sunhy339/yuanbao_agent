@@ -766,6 +766,34 @@ def test_read_only_multi_agent_keeps_subagent_tools_without_write_tools() -> Non
     assert set(decision.denied_tool_names) == {"write_file", "run_command"}
 
 
+def test_local_read_only_child_guidance_does_not_hide_root_write_tools() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "goal": (
+                "Build a browser audio tuner. You may use multiple agents for read-only "
+                "design/review if useful, but keep actual file edits in the main task."
+            ),
+            "routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
+        },
+        tool_results=[],
+        registered_tools=_tools(
+            "agent",
+            "task",
+            "read_file",
+            "write_file",
+            "apply_patch",
+            "run_command",
+            "ask_user_question",
+        ),
+    )
+
+    assert {"write_file", "apply_patch", "run_command"}.issubset(set(decision.allowed_tool_names))
+    assert {"agent", "task"}.issubset(set(decision.allowed_tool_names))
+    assert "read-only user constraint" not in decision.reasons.get("*", "")
+
+
 def test_low_risk_defaulted_ask_user_question_is_not_reoffered_by_default() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(

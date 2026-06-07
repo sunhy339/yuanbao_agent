@@ -54,6 +54,59 @@ READ_ONLY_CONSTRAINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+READ_ONLY_PHRASE_RE = re.compile(r"\bread[-_\s]?only\b|\breadonly\b", re.IGNORECASE)
+GLOBAL_READ_ONLY_CONSTRAINT_RE = re.compile(
+    "|".join(
+        [
+            r"\bno\s+(?:write|edit|modify|changes?|mutation|file\s+changes?|command\s+execution)\b",
+            r"\bdo\s+not\s+(?:write|edit|modify|change)\s+(?:files?|the\s+workspace|the\s+repo|anything)\b",
+            r"\bdon't\s+(?:write|edit|modify|change)\s+(?:files?|the\s+workspace|the\s+repo|anything)\b",
+            r"\bdo\s+not\s+make\s+(?:any\s+)?changes?\b",
+            r"\bdon't\s+make\s+(?:any\s+)?changes?\b",
+            r"\bwithout\s+(?:writing|editing|modifying|changing)(?:\s+files?)?\b",
+            r"\bdo\s+not\s+run\s+(?:commands?|write\s+commands?)\b",
+            r"\bdon't\s+run\s+(?:commands?|write\s+commands?)\b",
+            "\u4e0d\u8981(?:\u4fee\u6539|\u7f16\u8f91|\u6539\u52a8|\u5199\u5165)(?:\u6587\u4ef6|\u4ed3\u5e93|\u5de5\u4f5c\u533a)?",
+            "\u4e0d\u8981\u8fd0\u884c(?:\u547d\u4ee4|\u5199\u547d\u4ee4)?",
+            "\u4e0d\u8981\u6267\u884c(?:\u547d\u4ee4|\u5199\u547d\u4ee4)?",
+            "\u4e0d(?:\u4fee\u6539|\u7f16\u8f91|\u6539\u52a8|\u5199\u5165)(?:\u6587\u4ef6|\u4ed3\u5e93|\u5de5\u4f5c\u533a)",
+            "\u53ea\u8bfb(?:\u5206\u6790|\u68c0\u67e5|\u67e5\u770b|\u5ba1\u67e5)?",
+            "\u4ec5\u8bfb(?:\u5206\u6790|\u68c0\u67e5|\u67e5\u770b|\u5ba1\u67e5)?",
+        ]
+    ),
+    re.IGNORECASE,
+)
+WRITE_INTENT_RE = re.compile(
+    "|".join(
+        [
+            r"\bbuild\b",
+            r"\bcreate\b",
+            r"\bimplement\b",
+            r"\bedit\b",
+            r"\bmodify\b",
+            r"\bupdate\b",
+            r"\badd\b",
+            r"\bwrite\b",
+            r"\bgenerate\b",
+            r"\bfile\s+edits?\b",
+            r"\bactual\s+file\s+edits?\b",
+            "\u5b9e\u73b0",
+            "\u521b\u5efa",
+            "\u65b0\u589e",
+            "\u4fee\u6539",
+            "\u7f16\u8f91",
+            "\u6539\u52a8",
+            "\u5199\u5165",
+            "\u751f\u6210",
+        ]
+    ),
+    re.IGNORECASE,
+)
+PLAN_BEFORE_EDIT_RE = re.compile(
+    r"\bbefore\s+(?:any\s+)?(?:edit|editing|change|modification)\b|"
+    "\u7f16\u8f91\u524d|\u4fee\u6539\u524d|\u6539\u52a8\u524d",
+    re.IGNORECASE,
+)
 NO_TOOL_CONSTRAINT_RE = re.compile(
     "("
     r"no\s+tools?|"
@@ -617,9 +670,48 @@ class ToolPolicyResolver:
             normalized = text.lower()
             if normalized in {"read_only", "readonly", "read-only", "inspect_only", "analysis_only"}:
                 return normalized
-            if READ_ONLY_CONSTRAINT_RE.search(text):
+            if self._is_global_read_only_constraint(text):
                 return "user_text"
         return ""
+
+    @staticmethod
+    def _is_global_read_only_constraint(text: str) -> bool:
+        if not READ_ONLY_CONSTRAINT_RE.search(text):
+            return False
+        if PLAN_BEFORE_EDIT_RE.search(text):
+            return True
+        if GLOBAL_READ_ONLY_CONSTRAINT_RE.search(text):
+            return not ToolPolicyResolver._has_write_intent_override(text)
+        if READ_ONLY_PHRASE_RE.search(text):
+            return not ToolPolicyResolver._has_write_intent_override(text)
+        return False
+
+    @staticmethod
+    def _has_write_intent_override(text: str) -> bool:
+        if not WRITE_INTENT_RE.search(text):
+            return False
+        normalized = " ".join(text.casefold().split())
+        local_read_only_markers = (
+            "read-only design",
+            "read-only review",
+            "read-only child",
+            "read-only subagent",
+            "read-only sub-agent",
+            "read-only agent",
+            "read-only analysis if useful",
+            "read-only design/review",
+            "keep actual file edits",
+            "actual file edits in the main task",
+            "main task",
+        )
+        if any(marker in normalized for marker in local_read_only_markers):
+            return True
+        if READ_ONLY_PHRASE_RE.search(text):
+            first_write = min((match.start() for match in WRITE_INTENT_RE.finditer(text)), default=-1)
+            first_read_only = min((match.start() for match in READ_ONLY_PHRASE_RE.finditer(text)), default=-1)
+            if first_write >= 0 and first_read_only >= 0 and first_write < first_read_only:
+                return True
+        return False
 
     def _no_tool_constraint(self, context: dict[str, Any]) -> str:
         for value in self._read_only_constraint_candidates(context):

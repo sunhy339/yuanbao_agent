@@ -6821,6 +6821,75 @@ def test_react_loop_approval_submit_returns_resumed_task_and_is_idempotent(tmp_p
     assert runtime.store.get_pending_react_state(task["id"]) is None
 
 
+def test_react_loop_approval_submit_returns_waiting_when_next_tool_needs_approval(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_first",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output first"},
+                    },
+                    {
+                        "id": "call_second",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output second"},
+                    },
+                ]
+            },
+            {"final": "Both commands completed."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        if not params.get("approvalId"):
+            approval = runtime.store.create_approval(
+                task_id=params["taskId"],
+                kind="run_command",
+                request={"command": params["command"]},
+            )
+            return {"status": "approval_required", "approval": approval, "command": params["command"]}
+        return {
+            "status": "completed",
+            "stdout": "approved\n",
+            "stderr": "",
+            "exitCode": 0,
+        }
+
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "run two commands after approval"},
+        ),
+        "task",
+    )
+    first_approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+
+    resumed = _call_result(
+        _rpc(runtime, "approval.submit", {"approvalId": first_approval_id, "decision": "approved"}),
+        "task",
+    )
+    approval_ids = [
+        event["payload"]["approvalId"]
+        for event in runtime.events
+        if event["type"] == "approval.requested"
+    ]
+
+    assert resumed["status"] == "waiting_approval"
+    assert runtime.store.get_task({"taskId": task["id"]})["task"]["status"] == "waiting_approval"
+    assert len(approval_ids) == 2
+    assert approval_ids[1] != first_approval_id
+    assert runtime.store.get_pending_react_state(task["id"]) is not None
+    assert len(provider.calls) == 1
+
+
 def test_react_loop_rejection_cleans_pending_state(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [

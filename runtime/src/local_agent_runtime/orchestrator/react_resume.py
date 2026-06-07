@@ -34,6 +34,7 @@ class ReactResumeMixin:
                 tool_spec=pending_spec,
                 budget=None,
             )
+            runtime_task = self._latest_runtime_task_snapshot(runtime_task)
             self._ensure_tool_result_operation(pending_spec, tool_result)
             if runtime_task["status"] == "waiting_approval":
                 state["pending_tool_spec"] = pending_spec
@@ -56,6 +57,7 @@ class ReactResumeMixin:
                     tool_spec=tool_spec,
                     budget=None,
                 )
+                runtime_task = self._latest_runtime_task_snapshot(runtime_task)
                 self._ensure_tool_result_operation(tool_spec, tool_result)
                 if runtime_task["status"] == "waiting_approval":
                     state["pending_tool_call"] = tool_call
@@ -86,7 +88,7 @@ class ReactResumeMixin:
                     tool_results=result.get("tool_results", []),
                     force_complete_after_review=True,
                 )
-            return runtime_task
+            return self._latest_runtime_task_snapshot(runtime_task)
         except Exception as exc:  # noqa: BLE001
             logger.error("Resume after approval failed for task=%s: %s", task["id"], exc, exc_info=True)
             return self._fail_task(
@@ -95,6 +97,18 @@ class ReactResumeMixin:
                 summary=str(exc),
                 error_code="LOOP_EXECUTION_FAILED",
             )
+
+    def _latest_runtime_task_snapshot(self, runtime_task: dict[str, Any]) -> dict[str, Any]:
+        task_id = runtime_task.get("id")
+        if not isinstance(task_id, str) or not task_id:
+            return runtime_task
+        try:
+            latest = self._store.get_task({"taskId": task_id})["task"]
+        except Exception:  # noqa: BLE001
+            return runtime_task
+        if latest.get("plan") is None and runtime_task.get("plan") is not None:
+            latest = {**latest, "plan": runtime_task.get("plan") or []}
+        return latest
 
     def _finalize_child_collaboration_after_approval(
         self,

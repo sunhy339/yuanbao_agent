@@ -1097,3 +1097,52 @@ Validation:
   approval submit is ignored. For every case, direct flat events,
   `events.yuanbaoAfter`, and `events.hahaCcAfter` matched exactly, with no raw
   JSON leak detected.
+
+## 2026-06-07 Complex Write Tool Visibility And Approval Resume
+
+This pass used a real Responses-streaming `gpt-5.4-mini` task to build a
+browser audio tuner in a minimal workspace. The prompt allowed read-only child
+design/review but required the main task to create files, run verification, and
+summarize changed files.
+
+Reference principle from haha-cc:
+
+- The model should see the ordinary tool surface for the current task. Runtime
+  permission is enforced when a tool is called, not by prematurely hiding write
+  tools because a local subtask or phase says "read-only".
+- Approval is a same-task pause. If approving one tool immediately reaches the
+  next approval boundary, the backend response and stored task state must both
+  be `waiting_approval` so the frontend can render the next permission card
+  without pretending the task is still freely running.
+
+Yuanbao corrections:
+
+- `runtime/src/local_agent_runtime/policy/tool_policy_resolver.py` now treats
+  read-only text as a global tool visibility boundary only when the user clearly
+  requested the whole task to avoid edits/commands. Local guidance such as
+  "use read-only design/review agents, but keep actual file edits in the main
+  task" no longer hides `write_file`, `apply_patch`, or `run_command` from the
+  root model loop.
+- `runtime/src/local_agent_runtime/orchestrator/react_resume.py` now refreshes
+  the task snapshot from the store after each resumed tool execution and after
+  the resumed ReAct loop. When a second approval is created during the same
+  resume, `approval.submit` returns the current `waiting_approval` task instead
+  of a stale `running` snapshot.
+
+Validation:
+
+- Unit contracts cover local read-only child guidance without hiding root write
+  tools, explicit global read-only prompts still hiding write/command tools, and
+  approval resume returning `waiting_approval` when the next queued tool also
+  needs approval.
+- The real audio tuner probe completed after five approvals. It created
+  `index.html`, `src/app.js`, `src/styles.css`, updated `README.md`, ran
+  `node --check src/app.js` successfully, had zero raw JSON leaks, and direct
+  flat events, `events.yuanbaoAfter`, and `events.hahaCcAfter` matched.
+- A second simple-prompt probe used only the product/stack requirement:
+  "make a browser audio tuner with plain HTML/CSS/JavaScript and Web Audio API,
+  usable page, microphone request, pitch, nearest note, cents offset, and
+  tuning needle." It stayed on normal `react_standard` routing, did not enter
+  swarm or a fixed plan, created the same app files, proactively ran
+  `node --check src/app.js`, completed after four approvals, had zero raw JSON
+  leaks, and live/replay/haha-compatible flat messages matched.

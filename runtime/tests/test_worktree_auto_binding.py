@@ -157,6 +157,38 @@ def test_read_only_readme_summary_does_not_require_worktree(tmp_path: Any) -> No
     assert not [event for event in runtime.events if event["type"] == "task.worktree.bind_failed"]
 
 
+def test_read_only_launch_worktree_session_does_not_fail_before_provider(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Demo\n", encoding="utf-8")
+    provider = ScriptedProvider([{"final": "README.md 存在。"}])
+    runtime = _make_runtime(tmp_path, provider, {})
+    runtime.server._orchestrator._worktree_service = FailingWorktreeService(runtime.store)
+
+    workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
+    session = _rpc(runtime, "session.create", {
+        "workspaceId": workspace["id"],
+        "title": "Read-only launch worktree",
+        "repository": {"branch": "main", "worktree": True},
+    })["result"]["session"]
+
+    response = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session["id"], "content": "只读检查：确认当前工作区 README.md 是否存在，然后用一句中文回答，不要修改文件。"},
+    )
+
+    assert "error" not in response
+    task = response["result"]["task"]
+    assert task["status"] == "completed"
+    assert task["routing"]["preferredWorktree"] is True
+    assert task["routing"].get("worktreeBindingRequired") is False
+    assert runtime.worktree_service.created == []
+    assert not [event for event in runtime.events if event["type"] == "task.worktree.bind_failed"]
+    assert runtime.store.list_provider_turns(task["id"])
+    assert provider._responses == []
+
+
 def test_model_tool_swarm_does_not_auto_bind_worktree(tmp_path: Any) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

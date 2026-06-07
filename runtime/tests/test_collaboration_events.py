@@ -473,3 +473,22 @@ def test_session_update_emits_haha_cc_title_event(runtime_harness: Any, tmp_path
     trace_events = runtime_harness.call("events.after", {"sessionId": session["id"], "afterSeq": 0})["result"]["events"]
     session_trace = [item for item in trace_events if item["type"] == "session.updated"]
     assert session_trace[-1]["hahaCc"] == event["hahaCc"]
+
+
+def test_session_create_emits_lifecycle_event_without_flat_chat_message(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _result(runtime_harness.call("workspace.open", {"path": str(workspace_root)}), "workspace")
+
+    session = _result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "new session"}),
+        "session",
+    )
+
+    event = _event(runtime_harness, "session.created")
+    assert event["sessionId"] == session["id"]
+    assert event["taskId"] == session["id"]
+    assert event["visibility"] == "panel"
+    assert event["payload"]["session"]["id"] == session["id"]
+    assert "yuanbao" not in event
+    assert "hahaCc" not in event

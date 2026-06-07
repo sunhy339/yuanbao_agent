@@ -513,7 +513,28 @@ class PublishingMixin:
             return cls._public_plan_request_input(request)
         safe: dict[str, Any] = {}
         for key, value in request.items():
-            if key in {"requestJson", "workspaceRoot", "workspace_root"}:
+            if key in {
+                "activeWorktreeId",
+                "originalWorkspaceRoot",
+                "parentToolUseId",
+                "requestJson",
+                "sessionId",
+                "taskId",
+                "toolCategory",
+                "toolGroupId",
+                "toolIndex",
+                "toolOperationId",
+                "toolOperationLabel",
+                "toolPhaseId",
+                "toolPhaseLabel",
+                "toolSemanticParentId",
+                "toolSemanticParentLabel",
+                "toolTotal",
+                "toolUseId",
+                "untrustedContentSignals",
+                "workspaceRoot",
+                "workspace_root",
+            }:
                 continue
             if value in (None, "", [], {}):
                 continue

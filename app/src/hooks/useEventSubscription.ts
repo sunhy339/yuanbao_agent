@@ -16,6 +16,7 @@ import type {
   ToolOutputPayload,
   ToolResultPayload,
   ToolUseCompletePayload,
+  SessionCreatedPayload,
   SessionUpdatedPayload,
   SessionRecord,
   TaskRecord,
@@ -155,7 +156,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     if (!event.taskId || !cancelledTaskIdsRef.current.has(event.taskId)) {
       return false;
     }
-    if (event.type.startsWith("task.") || event.type === "session.updated") {
+    if (event.type.startsWith("task.") || event.type === "session.created" || event.type === "session.updated") {
       return false;
     }
     if (event.type === "command.cancelled") {
@@ -1302,6 +1303,14 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         setEvents((current) => [...current, event].slice(-500));
+
+        if (event.type === "session.created") {
+          const payload = (event.payload ?? {}) as SessionCreatedPayload;
+          const nextSession = payload.session;
+          if (nextSession?.id) {
+            setSessions((current) => sortByUpdatedAtDesc(upsertRecord(current, nextSession)));
+          }
+        }
 
         if (event.type === "session.updated") {
           const payload = (event.payload ?? {}) as SessionUpdatedPayload;

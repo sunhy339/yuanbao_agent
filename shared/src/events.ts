@@ -10,11 +10,13 @@ import type {
   TaskVerificationRecord,
   TaskStatus,
   EventVisibility,
+  SessionRecord,
   SessionContextPreviewMetadata,
   WorktreeRecord,
 } from "./domain";
 
 export type AgentEventType =
+  | "session.created"
   | "session.updated"
   | "task.queued"
   | "task.started"
@@ -126,6 +128,10 @@ export interface SessionUpdatedPayload {
   summary?: string | null;
   title?: string;
   status?: string;
+}
+
+export interface SessionCreatedPayload {
+  session: SessionRecord;
 }
 
 export interface AssistantTokenPayload {

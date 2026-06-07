@@ -551,6 +551,19 @@ def test_write_file_approval_is_waiting_node_without_raw_request_json(tmp_path: 
     assert content["approval"]["id"].startswith("appr_")
     assert content["approval"]["kind"] == "write_file"
 
+    flat_permission = next(
+        event["yuanbao"]
+        for event in runtime.events
+        if event.get("yuanbao", {}).get("type") == "permission_request"
+        and event["yuanbao"].get("toolName") == "write_file"
+    )
+    permission_input_json = json.dumps(flat_permission["input"], ensure_ascii=False)
+    assert flat_permission["input"]["path"] == "todo.html"
+    assert "requestJson" not in permission_input_json
+    assert "workspaceRoot" not in permission_input_json
+    assert "taskId" not in permission_input_json
+    assert "sessionId" not in permission_input_json
+
     blocked = next(
         event["payload"]
         for event in runtime.events

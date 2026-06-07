@@ -248,6 +248,23 @@ describe("CleanConversation", () => {
     expect(detail).not.toHaveTextContent("**Priority**");
   });
 
+  it("renders collapsed thinking markdown inline instead of raw markers", () => {
+    const { container } = render(
+      <CleanThinkingBlock
+        message={{
+          id: "thinking-md-preview",
+          role: "assistant",
+          content: "**Inspecting files for README**",
+          metadata: { kind: "assistant_thinking" },
+        }}
+      />,
+    );
+
+    const preview = container.querySelector(".hc-thinking em") as HTMLElement;
+    expect(preview.querySelector("strong")).toHaveTextContent("Inspecting files for README");
+    expect(preview).not.toHaveTextContent("**Inspecting");
+  });
+
   it("renders slash command results as expandable detail nodes", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();

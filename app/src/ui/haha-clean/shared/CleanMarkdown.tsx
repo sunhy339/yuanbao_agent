@@ -13,6 +13,10 @@ function inlineHtml(value: string) {
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 }
 
+export const CleanInlineMarkdown = memo(function CleanInlineMarkdown({ content }: { content: string }) {
+  return <span dangerouslySetInnerHTML={{ __html: inlineHtml(content) }} />;
+});
+
 function isSafeImageUrl(url: string) {
   return /^(https?:|data:image\/|blob:|file:)/i.test(url) || url.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(url);
 }

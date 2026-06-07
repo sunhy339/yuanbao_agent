@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from ..provider.failure_recovery import classify_provider_failure
+from ..models import RuntimeEvent
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,17 @@ class Orchestrator(
             workspace_id=params["workspaceId"],
             title=params["title"],
             metadata=metadata,
+        )
+        self._event_bus.publish(
+            RuntimeEvent(
+                event_id=self._store.new_id("evt"),
+                session_id=str(session.get("id") or ""),
+                task_id=str(session.get("id") or ""),
+                type="session.created",
+                ts=self._store.now(),
+                payload={"session": session},
+                visibility="panel",
+            )
         )
         return {"session": session}
 

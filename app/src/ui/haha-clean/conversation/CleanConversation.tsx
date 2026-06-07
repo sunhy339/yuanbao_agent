@@ -36,7 +36,7 @@ import {
 } from "../../workbench/workspaces/session/utils";
 import { sanitizeAssistantStatusContent, stripAssistantRuntimeProgress } from "../../../state/chatMessages";
 import { attachmentsFromMetadata, CleanAttachmentGallery, imageAttachmentsFromText, uniqueAttachments } from "../shared/CleanAttachmentGallery";
-import { CleanMarkdown } from "../shared/CleanMarkdown";
+import { CleanInlineMarkdown, CleanMarkdown } from "../shared/CleanMarkdown";
 import {
   compactText,
   formatClock,
@@ -1233,7 +1233,7 @@ export const CleanThinkingBlock = memo(function CleanThinkingBlock({ message }: 
       <button type="button" aria-expanded={canExpand ? expanded : false} onClick={() => canExpand && setExpanded((open) => !open)}>
         {canExpand ? (expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : null}
         <span>{title}</span>
-        <em>{preview}</em>
+        <em><CleanInlineMarkdown content={preview} /></em>
       </button>
       {canExpand && expanded ? (
         <div className="hc-thinking-detail">

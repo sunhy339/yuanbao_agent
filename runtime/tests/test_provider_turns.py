@@ -1386,7 +1386,9 @@ class TestAdvisorGuidedProviderPreflight:
         assert compact_statuses
         assert compact_statuses[-1]["payload"]["verb"] == "provider_preflight"
         assert compact_statuses[-1]["payload"]["strategy"] == "compact_context"
-        assert compact_statuses[-1]["yuanbao"]["tokens"] == provider.main_calls[0]["context"]["_provider_preflight"]["originalTokenEstimate"]
+        assert compact_statuses[-1]["payload"]["tokens"] == provider.main_calls[0]["context"]["_provider_preflight"]["originalTokenEstimate"]
+        assert "yuanbao" not in compact_statuses[-1]
+        assert "hahaCc" not in compact_statuses[-1]
 
     def test_provider_preflight_switches_provider_profile_for_turn(self, tmp_path: Any) -> None:
         provider = PreflightSwitchProvider()

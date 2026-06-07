@@ -31,7 +31,7 @@ function Harness() {
   const [messages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [, setEvents] = useState<any[]>([]);
   const [, setSession] = useState<SessionRecord | null>(null);
-  const [, setSessions] = useState<SessionRecord[]>([]);
+  const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [, setTask] = useState<TaskRecord | null>(null);
   const [, setActiveTaskId] = useState<string | null>(null);
   const [, setTaskHistory] = useState<TaskRecord[]>([]);
@@ -98,6 +98,9 @@ function Harness() {
           {message.content}
           {typeof message.metadata?.resultText === "string" ? message.metadata.resultText : ""}
         </p>
+      ))}
+      {sessions.map((session) => (
+        <span key={session.id} data-testid="session-title">{session.title}</span>
       ))}
     </div>
   );
@@ -246,6 +249,36 @@ describe("useEventSubscription", () => {
     const row = screen.getByText("先确认相关文件。");
     expect(row.getAttribute("data-kind")).toBe("assistant_thinking");
     expect(row.getAttribute("data-source")).toBe("non_stream_thought_summary");
+  });
+
+  it("updates sessions from session.created without adding chat output", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_session_created",
+        sessionId: "sess_created",
+        taskId: "sess_created",
+        type: "session.created",
+        ts: 10,
+        seq: 2,
+        visibility: "panel",
+        payload: {
+          session: {
+            id: "sess_created",
+            workspaceId: "workspace_1",
+            title: "Created from backend",
+            status: "active",
+            createdAt: 10,
+            updatedAt: 10,
+          },
+        },
+      });
+    });
+
+    expect((await screen.findByTestId("session-title")).textContent).toBe("Created from backend");
+    expect(screen.queryByText("sess_created")).toBeNull();
   });
 
   it("keeps runtime status events out of the chat transcript", async () => {

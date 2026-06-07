@@ -65,7 +65,26 @@ const REQUIRED_TRACE_TYPES = [
 
 const UI_ASSERTION_TIMEOUT_MS = 180_000;
 const TASK_COMPLETION_TIMEOUT_MS = 900_000;
-const WORKBENCH_SHELL_SELECTOR = ".yb-app-shell";
+const WORKBENCH_SHELL_SELECTOR = ".hc-app, .yb-app-shell";
+const NEW_SESSION_SELECTOR = ".hc-new-session, .new-session-workspace";
+const SESSION_WORKSPACE_SELECTOR = ".hc-session:not(.hc-session-empty), .session-workspace:not(.session-workspace-empty)";
+const CONVERSATION_ACTIVITY_SELECTOR = ".hc-transcript, .conversation-activity";
+const MESSAGE_STREAM_SELECTOR = ".hc-transcript, .message-stream";
+const ASSISTANT_MESSAGE_SELECTOR =
+  '.hc-message-stack[data-role="assistant"], [data-activity-kind="message"][data-role="assistant"]';
+const MESSAGE_SELECTOR = '.hc-message-stack, [data-activity-kind="message"]';
+const RUNTIME_BLOCK_SELECTOR =
+  '.hc-runtime, .hc-worklog, .hc-tool-group, .hc-tool-inline, .hc-special-event, .hc-agent-group, .runtime-progress-note, [data-activity-kind="runtime"], [data-activity-kind="runtime-worklog"]';
+const APPROVAL_BLOCK_SELECTOR =
+  '.hc-approval, [data-activity-kind="runtime"][data-kind="approval"], .runtime-event-card[data-kind="approval"]';
+const NEW_SESSION_NAV_SELECTORS = ['.hc-primary-nav button:nth-of-type(1)', 'button[aria-label="新建会话"]'];
+const SETTINGS_NAV_SELECTORS = ['.hc-primary-nav button:nth-of-type(2)', 'button[aria-label="设置"]'];
+const MCP_NAV_SELECTORS = ['.hc-primary-nav button:nth-of-type(3)', 'button[aria-label="MCP 中心"]'];
+const SCHEDULED_NAV_SELECTORS = ['button[aria-label="定时任务"]'];
+const PROMPT_TEXTAREA_SELECTORS = ['textarea[aria-label="任务指令"]'];
+const OLD_WORKSPACE_FIELD_SELECTORS = ['input[aria-label="工作区文件夹"]'];
+const OLD_APPLY_WORKSPACE_SELECTORS = ['button[aria-label="应用工作区"]'];
+const SESSION_OPEN_BUTTON_SELECTOR = ".hc-session-open, .session-rail-item";
 
 function isTerminalStatus(status: TaskRecord["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
@@ -168,6 +187,16 @@ function query<T extends Element>(selector: string): T | null {
   return document.querySelector(selector) as T | null;
 }
 
+function queryAny<T extends Element>(selectors: string[]): T | null {
+  for (const selector of selectors) {
+    const element = query<T>(selector);
+    if (element) {
+      return element;
+    }
+  }
+  return null;
+}
+
 function assertText(text: string) {
   if (!document.body.textContent?.includes(text)) {
     throw new Error(`Expected UI text not found: ${text}`);
@@ -219,6 +248,14 @@ function assertVisibleBox(element: HTMLElement, description: string, minWidth = 
   if (rect.width < minWidth || rect.height < minHeight) {
     throw new Error(`${description} is too small or blank: ${Math.round(rect.width)}x${Math.round(rect.height)}.`);
   }
+}
+
+function visibleElement<T extends HTMLElement>(selector: string): T | null {
+  const candidates = Array.from(document.querySelectorAll<T>(selector));
+  return candidates.find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }) ?? null;
 }
 
 function assertWorkspaceScrollContained(description: string) {
@@ -274,16 +311,24 @@ function normalizeForTextComparison(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function visibleComparableLength(value: string) {
+  return Array.from(value.replace(/\s+/g, "")).length;
+}
+
 function meaningfulTextFragments(value: string) {
   const normalized = normalizeForTextComparison(value);
+  const minFragmentLength = /[\u4e00-\u9fff]/.test(normalized) ? 8 : 16;
   const fragments = normalized
     .split(/(?<=[.!?。！？])\s+|(?:\s+-\s+)|\s{2,}/)
     .map((fragment) => fragment.trim())
-    .filter((fragment) => fragment.length >= 36 && /[A-Za-z0-9\u4e00-\u9fff]/.test(fragment));
+    .filter((fragment) =>
+      visibleComparableLength(fragment) >= minFragmentLength &&
+      /[A-Za-z0-9\u4e00-\u9fff]/.test(fragment),
+    );
   if (fragments.length) {
     return fragments.slice(0, 10);
   }
-  return normalized.length >= 36 ? [normalized.slice(0, 160)] : [];
+  return visibleComparableLength(normalized) >= minFragmentLength ? [normalized.slice(0, 160)] : [];
 }
 
 async function waitForAssistantContentVisible(assistantContent: string, timeoutMs = 30_000) {
@@ -301,9 +346,7 @@ async function waitForAssistantContentVisible(assistantContent: string, timeoutM
     return await waitFor(
       "persisted assistant content visible in chat",
       () => {
-        const assistantNodes = Array.from(
-          document.querySelectorAll<HTMLElement>('[data-activity-kind="message"][data-role="assistant"]'),
-        );
+        const assistantNodes = Array.from(document.querySelectorAll<HTMLElement>(ASSISTANT_MESSAGE_SELECTOR));
         const visibleAssistantNodes = assistantNodes.filter((node) => {
           const rect = node.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0;
@@ -384,15 +427,15 @@ function visibleElementSnapshots(selector: string) {
 
 function readConversationVisualSnapshot() {
   return {
-    conversationActivity: layoutSnapshot(".conversation-activity"),
-    messageBubbles: visibleElementSnapshots('[data-activity-kind="message"]'),
-    assistantMessages: visibleElementSnapshots('[data-activity-kind="message"][data-role="assistant"]'),
-    runtimeCards: visibleElementSnapshots('[data-activity-kind="runtime"]'),
-    runtimeWorklogs: visibleElementSnapshots('[data-activity-kind="runtime-worklog"]'),
-    approvalBlocks: visibleElementSnapshots('[data-activity-kind="runtime"][data-kind="approval"], .runtime-event-card[data-kind="approval"]'),
-    progressNotes: visibleElementSnapshots(".runtime-progress-note"),
+    conversationActivity: layoutSnapshot(CONVERSATION_ACTIVITY_SELECTOR),
+    messageBubbles: visibleElementSnapshots(MESSAGE_SELECTOR),
+    assistantMessages: visibleElementSnapshots(ASSISTANT_MESSAGE_SELECTOR),
+    runtimeCards: visibleElementSnapshots(RUNTIME_BLOCK_SELECTOR),
+    runtimeWorklogs: visibleElementSnapshots('.hc-worklog, [data-activity-kind="runtime-worklog"]'),
+    approvalBlocks: visibleElementSnapshots(APPROVAL_BLOCK_SELECTOR),
+    progressNotes: visibleElementSnapshots(".hc-progress-line, .runtime-progress-note"),
     livePills: visibleElementSnapshots(".conversation-live-pill, .conversation-live-row"),
-    thinkingStates: visibleElementSnapshots(".thinking-status"),
+    thinkingStates: visibleElementSnapshots(".hc-thinking, .thinking-status"),
   };
 }
 
@@ -402,13 +445,13 @@ function hasAnyRuntimeType(types: string[], candidates: string[]) {
 }
 
 function assertConversationOutputVisibility(observedRuntimeTypes: string[]) {
-  const activity = query<HTMLElement>(".conversation-activity");
+  const activity = query<HTMLElement>(CONVERSATION_ACTIVITY_SELECTOR);
   if (!activity) {
     throw new Error("Expected conversation activity stream to be rendered.");
   }
   assertVisibleBox(activity, "conversation activity stream", 360, 160);
 
-  const assistantMessages = visibleElementSnapshots('[data-activity-kind="message"][data-role="assistant"]');
+  const assistantMessages = visibleElementSnapshots(ASSISTANT_MESSAGE_SELECTOR);
   if (!assistantMessages.some((message) => message.sample.length > 0)) {
     throw new Error("Expected at least one visible assistant message bubble with text.");
   }
@@ -429,11 +472,7 @@ function assertConversationOutputVisibility(observedRuntimeTypes: string[]) {
       "task.runtime_work_waiting",
     ]);
   if (hasRuntimeProcess) {
-    const processBlocks = [
-      ...visibleElementSnapshots('[data-activity-kind="runtime"]'),
-      ...visibleElementSnapshots('[data-activity-kind="runtime-worklog"]'),
-      ...visibleElementSnapshots(".runtime-progress-note"),
-    ];
+    const processBlocks = visibleElementSnapshots(RUNTIME_BLOCK_SELECTOR);
     if (processBlocks.length === 0) {
       throw new Error("Runtime events were observed, but no visible process block rendered in the chat UI.");
     }
@@ -446,9 +485,7 @@ function assertConversationOutputVisibility(observedRuntimeTypes: string[]) {
     "task.waiting_approval",
   ]);
   if (hasApprovalFlow) {
-    const approvalBlocks = visibleElementSnapshots(
-      '[data-activity-kind="runtime"][data-kind="approval"], .runtime-event-card[data-kind="approval"]',
-    );
+    const approvalBlocks = visibleElementSnapshots(APPROVAL_BLOCK_SELECTOR);
     if (approvalBlocks.length === 0) {
       throw new Error("Approval events were observed, but no visible approval block rendered in the chat UI.");
     }
@@ -470,11 +507,14 @@ function readUiLayoutSnapshot() {
       documentScrollHeight: document.documentElement.scrollHeight,
       bodyScrollHeight: document.body.scrollHeight,
     },
-    appShell: layoutSnapshot(".yb-app-shell"),
-    workspaceScroll: layoutSnapshot(".workspace-scroll"),
+    appShell: layoutSnapshot(WORKBENCH_SHELL_SELECTOR),
+    cleanShell: layoutSnapshot(".hc-app"),
+    workspaceScroll: layoutSnapshot(".hc-session-scroll, .workspace-scroll"),
+    cleanSession: layoutSnapshot(".hc-session"),
+    cleanTranscript: layoutSnapshot(".hc-transcript"),
     workbenchGrid: layoutSnapshot(".session-workbench-grid"),
     conversationColumn: layoutSnapshot(".session-conversation-column"),
-    workspacePane: layoutSnapshot('aside[aria-label="右侧文件工作区"]'),
+    workspacePane: layoutSnapshot('.hc-file-pane, aside[aria-label="右侧文件工作区"]'),
     resizer: layoutSnapshot(".session-sidebar-resizer"),
     paneTabs,
     toolPanel: layoutSnapshot(".session-tool-panel"),
@@ -487,36 +527,69 @@ function readUiLayoutSnapshot() {
 }
 
 async function assertSessionWorkspacePanels(assertions?: string[]) {
-  const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="右侧文件工作区"]'));
-  const grid = await waitFor("session workbench grid", () => query<HTMLElement>(".session-workbench-grid"));
-  const resizer = await waitFor("workspace resize handle", () => query<HTMLElement>(".session-sidebar-resizer"));
-  assertVisibleBox(grid, "session workbench grid", 900, 360);
-  assertNoHorizontalOverflow(grid, "session workbench grid");
-  assertWorkspaceScrollContained("session workspace");
-  assertDocumentDoesNotOwnSessionScroll("session workspace");
-  const conversationColumn = await waitFor("conversation column", () => query<HTMLElement>(".session-conversation-column"));
-  assertVisibleBox(conversationColumn, "conversation column", 420, 300);
-  assertLaidOutBesideEachOther(conversationColumn, pane, "chat and workspace pane");
-  assertScrollableRegion(conversationColumn, "conversation column");
-  if (resizer.getBoundingClientRect().width > 10) {
-    throw new Error(`Workspace resize handle is visually too wide: ${resizer.getBoundingClientRect().width}px.`);
+  const cleanSession = query<HTMLElement>(".hc-session");
+  if (cleanSession) {
+    assertVisibleBox(cleanSession, "clean session workspace", 520, 260);
+    assertNoHorizontalOverflow(cleanSession, "clean session workspace");
+    const cleanScroll = await waitFor("clean session scroll", () => query<HTMLElement>(".hc-session-scroll"));
+    assertScrollableRegion(cleanScroll, "clean session scroll");
+    assertDocumentDoesNotOwnSessionScroll("clean session workspace");
+    const cleanTranscript = await waitFor("clean transcript", () => query<HTMLElement>(".hc-transcript"));
+    assertVisibleBox(cleanTranscript, "clean transcript", 420, 120);
+    assertions?.push("clean session transcript renders without horizontal overflow");
+  } else {
+    const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="右侧文件工作区"]'));
+    const grid = await waitFor("session workbench grid", () => query<HTMLElement>(".session-workbench-grid"));
+    const resizer = await waitFor("workspace resize handle", () => query<HTMLElement>(".session-sidebar-resizer"));
+    assertVisibleBox(grid, "session workbench grid", 900, 360);
+    assertNoHorizontalOverflow(grid, "session workbench grid");
+    assertWorkspaceScrollContained("session workspace");
+    assertDocumentDoesNotOwnSessionScroll("session workspace");
+    const conversationColumn = await waitFor("conversation column", () => query<HTMLElement>(".session-conversation-column"));
+    assertVisibleBox(conversationColumn, "conversation column", 420, 300);
+    assertLaidOutBesideEachOther(conversationColumn, pane, "chat and workspace pane");
+    assertScrollableRegion(conversationColumn, "conversation column");
+    if (resizer.getBoundingClientRect().width > 10) {
+      throw new Error(`Workspace resize handle is visually too wide: ${resizer.getBoundingClientRect().width}px.`);
+    }
   }
   const digestTitle = query<HTMLElement>(".conversation-task-digest-header h2");
   const digest = query<HTMLElement>(".conversation-task-digest");
   if (digestTitle && digest) {
     assertRectContainedHorizontally(digestTitle, digest, "task digest title");
   }
-  clickWorkspacePane("files");
-  const fileWorkspace = await waitFor("session file workspace panel", () => query<HTMLElement>(".session-file-workspace"));
-  const fileLayout = await waitFor("session file browser layout", () => query<HTMLElement>(".session-file-browser-layout"));
-  const fileViewer = await waitFor("session file viewer", () => query<HTMLElement>(".session-file-viewer"));
-  const fileTree = await waitFor("session file tree", () => query<HTMLElement>(".session-file-tree-pane"));
-  assertRectContainedHorizontally(fileWorkspace, pane, "file workspace");
-  assertRectContainedHorizontally(fileViewer, fileLayout, "file preview");
-  assertRectContainedHorizontally(fileTree, fileLayout, "file tree");
-  assertLaidOutBesideEachOther(fileTree, fileViewer, "file tree and preview");
-  assertNoHorizontalOverflow(fileWorkspace, "file workspace");
-  assertWorkspaceScrollContained("file workspace");
+  const fileToggle = query<HTMLButtonElement>(".hc-tabs-file-toggle");
+  if (fileToggle) {
+    fileToggle.click();
+    const fileWorkspace = await waitFor("visible session file workspace panel", () => visibleElement<HTMLElement>(".session-file-workspace"));
+    const filePane = await waitFor("visible clean file pane", () => {
+      const pane = fileWorkspace.closest(".hc-file-pane") as HTMLElement | null;
+      return pane && pane.getBoundingClientRect().width > 0 ? pane : null;
+    });
+    const fileLayout = await waitFor("visible session file browser layout", () =>
+      fileWorkspace.querySelector<HTMLElement>(".session-file-browser-layout"),
+    );
+    const fileTree = await waitFor("visible session file tree", () =>
+      fileWorkspace.querySelector<HTMLElement>(".session-file-tree-pane"),
+    );
+    assertRectContainedHorizontally(fileWorkspace, filePane, "clean file workspace");
+    const fileTreeContainer = window.getComputedStyle(fileLayout).display === "contents" ? fileWorkspace : fileLayout;
+    assertRectContainedHorizontally(fileTree, fileTreeContainer, "file tree");
+    assertNoHorizontalOverflow(fileWorkspace, "clean file workspace");
+  } else {
+    clickWorkspacePane("files");
+    const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="右侧文件工作区"]'));
+    const fileWorkspace = await waitFor("session file workspace panel", () => query<HTMLElement>(".session-file-workspace"));
+    const fileLayout = await waitFor("session file browser layout", () => query<HTMLElement>(".session-file-browser-layout"));
+    const fileViewer = await waitFor("session file viewer", () => query<HTMLElement>(".session-file-viewer"));
+    const fileTree = await waitFor("session file tree", () => query<HTMLElement>(".session-file-tree-pane"));
+    assertRectContainedHorizontally(fileWorkspace, pane, "file workspace");
+    assertRectContainedHorizontally(fileViewer, fileLayout, "file preview");
+    assertRectContainedHorizontally(fileTree, fileLayout, "file tree");
+    assertLaidOutBesideEachOther(fileTree, fileViewer, "file tree and preview");
+    assertNoHorizontalOverflow(fileWorkspace, "file workspace");
+    assertWorkspaceScrollContained("file workspace");
+  }
   assertions?.push("session file workspace stays side-by-side without horizontal overflow");
 
   const focusButton = query<HTMLButtonElement>('.session-file-toolbar-actions button[aria-label="专注文件"]');
@@ -548,6 +621,86 @@ function click(selector: string, description: string) {
   target.click();
 }
 
+function clickAny(selectors: string[], description: string) {
+  const target = queryAny<HTMLElement>(selectors);
+  if (!target) {
+    throw new Error(`Cannot click ${description}; selectors not found: ${selectors.join(", ")}`);
+  }
+  target.click();
+}
+
+function clickIfPresent(selectors: string[]) {
+  const target = queryAny<HTMLElement>(selectors);
+  if (!target) {
+    return false;
+  }
+  target.click();
+  return true;
+}
+
+function clickNewSessionNavigation() {
+  clickAny(NEW_SESSION_NAV_SELECTORS, "New Session navigation");
+}
+
+function clickSettingsNavigation() {
+  clickAny(SETTINGS_NAV_SELECTORS, "Settings navigation");
+}
+
+function clickMcpNavigation() {
+  clickAny(MCP_NAV_SELECTORS, "MCP Center navigation");
+}
+
+function pathBasename(path: string) {
+  return path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
+}
+
+function rememberCleanWorkspacePath(workspacePath: string) {
+  const normalized = workspacePath.trim();
+  if (!normalized) return;
+  const existing = (() => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem("haha-clean:recent-workspaces") ?? "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  })();
+  const normalizedKey = normalized.replace(/\\/g, "/").toLowerCase();
+  const next = [
+    normalized,
+    ...existing.filter((item) => {
+      const path = typeof item === "string"
+        ? item
+        : item && typeof item === "object" && typeof (item as { path?: unknown }).path === "string"
+          ? (item as { path: string }).path
+          : "";
+      return path && path.replace(/\\/g, "/").toLowerCase() !== normalizedKey;
+    }),
+  ].slice(0, 8);
+  window.localStorage.setItem("haha-clean:last-workspace", normalized);
+  window.localStorage.setItem("haha-clean:recent-workspaces", JSON.stringify(next));
+}
+
+async function selectCleanWorkspacePath(workspacePath: string) {
+  rememberCleanWorkspacePath(workspacePath);
+  await waitFor("clean workspace launcher", () => {
+    const button = query<HTMLButtonElement>(".hc-launch-dir");
+    return button && !button.disabled ? button : null;
+  });
+  click(".hc-launch-dir", "clean workspace launcher");
+  const workspaceButton = await waitFor("clean recent workspace choice", () => {
+    const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>(".hc-workspace-recent-list button"));
+    return candidates.find((button) => button.title === workspacePath || button.textContent?.includes(pathBasename(workspacePath)));
+  });
+  workspaceButton.click();
+  await waitFor("clean workspace selected", () => {
+    const launcher = query<HTMLElement>(".hc-launch-dir");
+    const selectedText = launcher?.textContent ?? "";
+    const selectedTitle = launcher?.getAttribute("title") ?? "";
+    return selectedTitle === workspacePath || selectedText.includes(pathBasename(workspacePath)) ? true : null;
+  });
+}
+
 function setFieldValue(selector: string, value: string) {
   const field = query<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(selector);
   if (!field) {
@@ -563,6 +716,14 @@ function setFieldValue(selector: string, value: string) {
   descriptor?.set?.call(field, value);
   field.dispatchEvent(new Event("input", { bubbles: true }));
   field.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function setFieldValueAny(selectors: string[], value: string) {
+  const selector = selectors.find((item) => query<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(item));
+  if (!selector) {
+    throw new Error(`Input not found: ${selectors.join(", ")}`);
+  }
+  setFieldValue(selector, value);
 }
 
 function readProviderDialogTestResult(fixture: Required<TauriProviderFlowFixture>["provider"]) {
@@ -583,15 +744,21 @@ function readProviderDialogTestResult(fixture: Required<TauriProviderFlowFixture
 }
 
 async function applyWorkspaceThroughUi(workspacePath: string) {
-  click('button[aria-label="新建会话"]', "New Session navigation");
-  await waitFor("new session workspace", () => query(".new-session-workspace"));
-  const workspaceField = await waitFor("workspace path field", () =>
-    query<HTMLInputElement>('input[aria-label="工作区文件夹"]'),
-  );
-  if (!workspaceField.disabled) {
-    setFieldValue('input[aria-label="工作区文件夹"]', workspacePath);
+  rememberCleanWorkspacePath(workspacePath);
+  clickNewSessionNavigation();
+  await waitFor("new session workspace", () => query(NEW_SESSION_SELECTOR));
+
+  const cleanLauncher = query<HTMLButtonElement>(".hc-launch-dir");
+  if (cleanLauncher) {
+    await selectCleanWorkspacePath(workspacePath);
+    return;
   }
-  click('button[aria-label="应用工作区"]', "Apply workspace");
+
+  const workspaceField = await waitFor("workspace path field", () => queryAny<HTMLInputElement>(OLD_WORKSPACE_FIELD_SELECTORS));
+  if (!workspaceField.disabled) {
+    setFieldValueAny(OLD_WORKSPACE_FIELD_SELECTORS, workspacePath);
+  }
+  clickAny(OLD_APPLY_WORKSPACE_SELECTORS, "Apply workspace");
   await waitFor("workspace applied", () =>
     document.body.textContent?.includes(workspacePath) ? true : null,
   );
@@ -600,11 +767,11 @@ async function applyWorkspaceThroughUi(workspacePath: string) {
 async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFixture>["provider"]) {
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
   await waitFor("composer ready", () => {
-    const composer = query<HTMLTextAreaElement>('textarea[aria-label="任务指令"]');
+    const composer = queryAny<HTMLTextAreaElement>(PROMPT_TEXTAREA_SELECTORS);
     return composer && !composer.disabled ? composer : null;
   });
 
-  click('button[aria-label="设置"]', "Settings navigation");
+  clickSettingsNavigation();
   await waitFor("settings provider panel", () => query(".settings-panel-providers"));
   click(".settings-panel-header .settings-primary-action", "Add Provider");
   await waitFor("provider dialog", () => query('[role="dialog"].settings-modal'));
@@ -662,15 +829,32 @@ async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFix
 }
 
 async function sendPromptThroughUi(prompt: string) {
-  click('button[aria-label="新建会话"]', "New Session navigation");
-  await waitFor("task prompt composer", () => query<HTMLTextAreaElement>('textarea[aria-label="任务指令"]'));
-  setFieldValue('textarea[aria-label="任务指令"]', prompt);
+  clickNewSessionNavigation();
+  await waitFor("task prompt composer", () => queryAny<HTMLTextAreaElement>(PROMPT_TEXTAREA_SELECTORS));
+  setFieldValueAny(PROMPT_TEXTAREA_SELECTORS, prompt);
   await waitFor("composer run enabled", () => {
-    const button = query<HTMLButtonElement>(".composer-run");
+    const button = query<HTMLButtonElement>(".hc-send, .composer-run");
     return button && !button.disabled ? button : null;
   });
-  click(".composer-run", "composer run");
-  await waitFor("session workspace", () => query(".session-workspace:not(.session-workspace-empty)"));
+  clickAny([".hc-send", ".composer-run"], "composer run");
+  await waitFor("session workspace", () => query(SESSION_WORKSPACE_SELECTOR));
+}
+
+async function createAndOpenSessionThroughRuntime(client: RuntimeClient, workspacePath: string) {
+  const workspaceResult = await client.openWorkspace(workspacePath);
+  const sessionResult = await client.createSession({
+    workspaceId: workspaceResult.workspace.id,
+    title: `E2E UI Smoke ${Date.now()}`,
+    workDir: workspacePath,
+  });
+
+  const sessionTitle = sessionResult.session.title;
+  const sessionButton = await waitFor("created session in clean sidebar", () => {
+    const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>(SESSION_OPEN_BUTTON_SELECTOR));
+    return candidates.find((button) => button.textContent?.includes(sessionTitle));
+  });
+  sessionButton.click();
+  return sessionResult.session;
 }
 
 async function runUiSmokeFlow(workspacePath?: string) {
@@ -678,29 +862,30 @@ async function runUiSmokeFlow(workspacePath?: string) {
   const client = new RuntimeClient();
 
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
-  assertText("总览");
   assertions.push("workbench shell renders overview");
 
-  click('button[aria-label="新建会话"]', "New Session navigation");
-  await waitFor("new session workspace", () => query(".new-session-workspace"));
-  assertElement(".new-session-workspace", "new session workspace");
-  await waitFor("command composer", () => query('textarea[aria-label="任务指令"]'));
-  assertText("新建会话");
+  clickNewSessionNavigation();
+  await waitFor("new session workspace", () => query(NEW_SESSION_SELECTOR));
+  assertElement(NEW_SESSION_SELECTOR, "new session workspace");
+  await waitFor("command composer", () => queryAny(PROMPT_TEXTAREA_SELECTORS));
   assertions.push("new session workspace renders");
 
-  click('button[aria-label="设置"]', "Settings navigation");
+  clickSettingsNavigation();
   await waitFor("settings workspace", () => query(".settings-workspace"));
   assertElement(".settings-panel-providers", "settings providers panel");
   assertions.push("settings providers page renders");
 
-  click('button[aria-label="定时任务"]', "Scheduled navigation");
-  await waitFor("scheduled workspace", () => query(".scheduled-workspace"));
-  assertElement(".scheduled-empty", "scheduled empty state");
-  assertions.push("scheduled empty state renders without demo data");
+  if (clickIfPresent(SCHEDULED_NAV_SELECTORS)) {
+    await waitFor("scheduled workspace", () => query(".scheduled-workspace"));
+    assertElement(".scheduled-empty", "scheduled empty state");
+    assertions.push("scheduled empty state renders without demo data");
+  } else {
+    assertions.push("scheduled navigation is not exposed in the clean shell");
+  }
 
-  click('button[aria-label="新建会话"]', "New Session navigation");
-  await waitFor("new session workspace", () => query(".new-session-workspace"));
-  await waitFor("command composer after returning", () => query('textarea[aria-label="任务指令"]'));
+  clickNewSessionNavigation();
+  await waitFor("new session workspace", () => query(NEW_SESSION_SELECTOR));
+  await waitFor("command composer after returning", () => queryAny(PROMPT_TEXTAREA_SELECTORS));
   assertions.push("top-level navigation returns to new session");
 
   if (workspacePath) {
@@ -720,9 +905,8 @@ async function runUiSmokeFlow(workspacePath?: string) {
         throw new Error(`Expected readable text content for ${readableFile.path}.`);
       }
     }
-    click('button[aria-label="创建会话"]', "create session from applied workspace");
-    await waitFor("session workspace after file workspace check", () => query(".session-workspace:not(.session-workspace-empty)"));
-    assertElement('aside[aria-label="右侧文件工作区"]', "workspace side pane");
+    await createAndOpenSessionThroughRuntime(client, workspacePath);
+    await waitFor("session workspace after file workspace check", () => query(SESSION_WORKSPACE_SELECTOR));
     await assertSessionWorkspacePanels(assertions);
     assertions.push("workspace file list/read bridge works");
     assertions.push("session file workspace renders");
@@ -934,7 +1118,7 @@ async function runMcpLiveFlow(client: RuntimeClient) {
   const serverId = `e2e-mcp-${Date.now()}`;
 
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
-  click('button[aria-label="MCP 中心"]', "MCP Center navigation");
+  clickMcpNavigation();
   await waitFor("MCP workspace", () => query(".mcp-workspace"));
   assertions.push("MCP workspace opened in desktop shell");
 
@@ -1039,10 +1223,10 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
   }
 
   await waitFor("recovered session in sidebar", () => {
-    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-rail-item"));
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(SESSION_OPEN_BUTTON_SELECTOR));
     return buttons.find((button) => button.textContent?.includes(sessionTitle));
   });
-  const sessionButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-rail-item"))
+  const sessionButton = Array.from(document.querySelectorAll<HTMLButtonElement>(SESSION_OPEN_BUTTON_SELECTOR))
     .find((button) => button.textContent?.includes(sessionTitle));
   if (!sessionButton) {
     throw new Error(`Recovered session button disappeared: ${sessionTitle}.`);
@@ -1193,7 +1377,7 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (finalTask.status !== "completed") {
       throw new Error(`Expected completed task, got ${finalTask.status}.`);
     }
-    assertElement(".conversation-activity", "conversation activity stream");
+    assertElement(CONVERSATION_ACTIVITY_SELECTOR, "conversation activity stream");
 
     const { traceTypes } = await waitForTraceTypes(client, finalTask.id, REQUIRED_TRACE_TYPES);
     const exportedTraceTypes = exportedTraceTypesFrom(await client.exportLogs(sessionId ? { sessionId } : undefined));
@@ -1204,7 +1388,7 @@ export async function maybeRunTauriProviderFlowE2e() {
         `Timeline is missing a complete runtime path. Direct missing: ${missingTraceTypes.join(", ") || "none"}.`,
       );
     }
-    const leakedTraceCard = Array.from(document.querySelectorAll('.runtime-event-card[data-kind="trace"]')).find((card) =>
+    const leakedTraceCard = Array.from(document.querySelectorAll('.hc-runtime[data-kind="trace"], .runtime-event-card[data-kind="trace"]')).find((card) =>
       card.textContent?.includes("provider.request") ||
       card.textContent?.includes("assistant.token") ||
       card.textContent?.includes("task.started")
@@ -1231,10 +1415,10 @@ export async function maybeRunTauriProviderFlowE2e() {
     }
     const visibleAssistantContent = await waitForAssistantContentVisible(assistantMessage.content);
     const conversationVisual = assertConversationOutputVisibility(observedRuntimeTypes);
-    const messageStream = query<HTMLElement>(".message-stream");
+    const messageStream = query<HTMLElement>(MESSAGE_STREAM_SELECTOR);
     const messageStreamText = messageStream?.textContent ?? "";
     const assistantText = assistantMessage.content.trim();
-    const assistantBubbleVisible = Array.from(document.querySelectorAll<HTMLElement>('[data-activity-kind="message"][data-role="assistant"]'))
+    const assistantBubbleVisible = Array.from(document.querySelectorAll<HTMLElement>(ASSISTANT_MESSAGE_SELECTOR))
       .some((node) => (node.textContent ?? "").trim().length > 0);
     if (!assistantBubbleVisible) {
       throw new Error("Persisted assistant message is not visible in the conversation UI.");

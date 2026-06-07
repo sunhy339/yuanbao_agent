@@ -61,6 +61,29 @@ _SUBAGENT_INTERNAL_RESULT_KEYS = {
     "workspaceRoot",
     "workspace_root",
 }
+_INTERNAL_TOOL_ARGUMENT_KEYS = {
+    "activeWorktreeId",
+    "inputSummary",
+    "originalWorkspaceRoot",
+    "parentToolUseId",
+    "sessionId",
+    "target",
+    "taskId",
+    "toolCategory",
+    "toolGroupId",
+    "toolIndex",
+    "toolOperationId",
+    "toolOperationLabel",
+    "toolPhaseId",
+    "toolPhaseLabel",
+    "toolSemanticParentId",
+    "toolSemanticParentLabel",
+    "toolTotal",
+    "toolUseId",
+    "untrustedContentSignals",
+    "workspaceRoot",
+    "workspace_root",
+}
 _PUBLIC_SUBAGENT_RESULT_KEYS = (
     "status",
     "summary",
@@ -174,6 +197,20 @@ def _public_nested_result(value: Any, *, depth: int = 0) -> Any:
         if item in (None, "", [], {}):
             continue
         public[key_text] = _public_nested_result(item, depth=depth + 1)
+    return public
+
+
+def _public_tool_arguments(arguments: Any) -> Any:
+    if not isinstance(arguments, dict):
+        return arguments
+    public: dict[str, Any] = {}
+    for key, value in arguments.items():
+        key_text = str(key)
+        if key_text in _INTERNAL_TOOL_ARGUMENT_KEYS:
+            continue
+        if value in (None, "", [], {}):
+            continue
+        public[key_text] = _public_nested_result(value)
     return public
 
 
@@ -1909,7 +1946,7 @@ class ToolExecutionMixin:
                 **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
                 **tool_batch_metadata,
                 "toolName": tool_spec["name"],
-                "arguments": tool_arguments,
+                "arguments": _public_tool_arguments(tool_arguments),
                 "target": tool_target,
                 "inputSummary": tool_input_summary,
                 "toolCategory": tool_category,
@@ -2114,6 +2151,14 @@ class ToolExecutionMixin:
         def tool_event_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
             target = _tool_target(tool_spec["name"], tool_arguments, result if isinstance(result, dict) else None) or tool_target
             result_preview = _tool_result_preview(tool_spec["name"], result if isinstance(result, dict) else None, target)
+            result_summary = _tool_result_summary(tool_spec["name"], result if isinstance(result, dict) else None, target)
+            frontend_visible_result = _frontend_visible_tool_result(
+                tool_spec["name"],
+                result,
+                target,
+                summary=result_summary,
+                preview=result_preview,
+            )
             operation_metadata = _tool_metadata_with_result_operation(
                 tool_spec,
                 result if isinstance(result, dict) else None,
@@ -2124,19 +2169,23 @@ class ToolExecutionMixin:
                 **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
                 **operation_metadata,
                 "toolName": tool_spec["name"],
-                "arguments": tool_arguments,
+                "arguments": _public_tool_arguments(tool_arguments),
                 "target": target,
                 "inputSummary": tool_input_summary,
                 "toolCategory": tool_category,
                 **tool_phase_metadata,
                 **tool_semantic_parent_metadata,
                 "durationMs": tool_duration_ms,
-                "resultSummary": _tool_result_summary(tool_spec["name"], result if isinstance(result, dict) else None, target),
+                "resultSummary": result_summary,
                 **({"resultPreview": result_preview} if result_preview else {}),
                 **({"resultPreviewStreamed": True} if result_preview_streamed else {}),
             }
             if extra:
-                payload.update(extra)
+                visible_extra = {
+                    **extra,
+                    **({"result": frontend_visible_result} if "result" in extra else {}),
+                }
+                payload.update(visible_extra)
             return payload
 
         def provider_tool_result() -> dict[str, Any]:

@@ -23,6 +23,18 @@ _WRITE_WORKTREE_SCENARIOS = {
     "multi_step_task",
     "supervised_task",
 }
+_WRITE_INTENT_GOAL_RE = re.compile(
+    r"\b(?:fix|modify|change|implement|refactor|update|write|create|generate|build|edit|"
+    r"replace|append|add|delete|remove|commit|apply|run|execute|test)\b|"
+    r"修复|修改|实现|重构|更新|写入|编写|生成|创建|编辑|替换|追加|新增|删除|移除|提交|执行|运行|测试",
+    re.IGNORECASE,
+)
+_READ_ONLY_GOAL_RE = re.compile(
+    r"\b(?:read[- ]?only|do not modify|don't modify|without modifying|no changes?|do not edit|"
+    r"don't edit|don't change|no write|do not write|just answer|answer only)\b|"
+    r"只读|不要修改|不修改|不要改|不改动|不要写入|不要编辑|不要变更|一句话回答|直接回答",
+    re.IGNORECASE,
+)
 _WORKSPACE_EVIDENCE_GOAL_RE = re.compile(
     r"("
     r"当前(?:项目|仓库|工程|代码|进度|任务|清单)|"
@@ -578,13 +590,42 @@ class MessageRoutingMixin:
         worktree_config = self._worktree_config()
         if worktree_config.get("autoBindWriteTasks", False) is not True:
             return False
-        scenario = str(routing.get("scenario") or "")
-        return scenario in _WRITE_WORKTREE_SCENARIOS
+        return self._routing_has_write_worktree_intent(routing)
 
-    def _mark_worktree_binding_required(self, routing: dict[str, Any]) -> dict[str, Any]:
+    def _routing_has_write_worktree_intent(self, routing: dict[str, Any], goal: str | None = None) -> bool:
+        goal_text = str(goal or routing.get("goal") or routing.get("userGoal") or "").strip()
+        if goal_text and _READ_ONLY_GOAL_RE.search(goal_text):
+            return False
+        scenarios: set[str] = set()
+        scenario = str(routing.get("scenario") or "").strip()
+        if scenario:
+            scenarios.add(scenario)
+        intent_hints = routing.get("intentHints")
+        if isinstance(intent_hints, dict):
+            rule_candidate = intent_hints.get("ruleCandidate")
+            if isinstance(rule_candidate, dict):
+                candidate_scenario = str(rule_candidate.get("scenario") or "").strip()
+                if candidate_scenario:
+                    scenarios.add(candidate_scenario)
+        if scenarios & _WRITE_WORKTREE_SCENARIOS:
+            return True
+        if not goal_text:
+            return False
+        return _WRITE_INTENT_GOAL_RE.search(goal_text) is not None
+
+    def _mark_worktree_binding_required(self, routing: dict[str, Any], goal: str | None = None) -> dict[str, Any]:
         if getattr(self, "_worktree_service", None) is None:
             return routing
-        if not self._should_auto_bind_worktree(routing):
+        if routing.get("disableWorktreeBinding") is True:
+            return routing
+        if routing.get("orchestrationMode") == "model_tools" and routing.get("worktreeBindingRequired") is not True:
+            return routing
+        if routing.get("worktreeBindingRequired") is True:
+            return routing
+        worktree_config = self._worktree_config()
+        if worktree_config.get("autoBindWriteTasks", False) is not True:
+            return routing
+        if not self._routing_has_write_worktree_intent(routing, goal=goal):
             return routing
         return {**routing, "worktreeBindingRequired": True}
 
@@ -661,7 +702,7 @@ class MessageRoutingMixin:
             updated["worktreeBindingRequired"] = False
             updated["disableWorktreeBinding"] = True
         elif repository.get("worktree") is True:
-            updated["worktreeBindingRequired"] = True
+            updated["preferredWorktree"] = True
         return updated
 
     def _worktree_config(self) -> dict[str, Any]:
@@ -819,8 +860,8 @@ class MessageRoutingMixin:
                 routing = self._route_goal(goal)
                 routing = self._routing_with_requested_skill(routing, requested_skill_id)
                 routing_dict = self._routing_dict_from_decision(routing, context={"goal": goal})
-                routing_dict = self._mark_worktree_binding_required(routing_dict)
                 routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
+                routing_dict = self._mark_worktree_binding_required(routing_dict, goal=goal)
                 routing_dict = self._attach_main_workflow_state(
                     routing=routing_dict,
                     session=session,
@@ -845,24 +886,6 @@ class MessageRoutingMixin:
                     status="completed",
                     metadata=message_metadata,
                 )
-                worktree = self._maybe_bind_task_worktree(
-                    session=session,
-                    task=queued_task,
-                    routing=routing_dict,
-                )
-                if worktree is not None:
-                    routing_dict["activeWorktree"] = worktree
-                    queued_task = self._persist_task_routing(queued_task, routing_dict)
-                elif routing_dict.get("worktreeBindingRequired") is True:
-                    return self._return_worktree_binding_failed_task(
-                        session=session,
-                        task=queued_task,
-                        goal=goal,
-                        routing_dict=routing_dict,
-                        user_msg=user_msg,
-                        accepted_mode="queued",
-                        latency_ms=0,
-                    )
                 self._publish(session["id"], queued_task, "message.created", {"message": user_msg})
                 self._publish(session["id"], queued_task, "task.created", {"status": "queued", "goal": goal})
                 self._publish(session["id"], queued_task, "task.queued", {"status": "queued", "goal": goal})
@@ -886,8 +909,8 @@ class MessageRoutingMixin:
             raise
         _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
         routing_dict = self._routing_dict_from_decision(routing, context={"goal": goal})
-        routing_dict = self._mark_worktree_binding_required(routing_dict)
         routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
+        routing_dict = self._mark_worktree_binding_required(routing_dict, goal=goal)
         routing_dict = self._attach_main_workflow_state(
             routing=routing_dict,
             session=session,

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from copy import deepcopy
 from typing import Any
@@ -217,6 +218,7 @@ _VISIBLE_PAYLOAD_MAX_DEPTH = 4
 _INTERNAL_VISIBLE_PAYLOAD_KEYS = {
     "activeWorktreeId",
     "active_worktree_id",
+    "approval",
     "approvalId",
     "approval_id",
     "encoding",
@@ -225,6 +227,9 @@ _INTERNAL_VISIBLE_PAYLOAD_KEYS = {
     "max_bytes",
     "originalWorkspaceRoot",
     "original_workspace_root",
+    "providerRequest",
+    "raw",
+    "requestJson",
     "sessionId",
     "session_id",
     "taskId",
@@ -527,6 +532,52 @@ class PublishingMixin:
                 continue
             safe[str(key)] = cls._sanitize_visible_payload_value(str(key), value)
         return safe
+
+    @classmethod
+    def _public_permission_preview(cls, preview: Any) -> list[dict[str, Any]] | None:
+        if not isinstance(preview, list):
+            return None
+        rows: list[dict[str, Any]] = []
+        for row in preview[:10]:
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("label") or "").strip()
+            value = row.get("value")
+            if not label or value in (None, "", [], {}):
+                continue
+            text = str(value)
+            if cls._visible_text_has_internal_payload(text):
+                continue
+            safe_row: dict[str, Any] = {
+                "label": cls._sanitize_visible_payload_value("label", label),
+                "value": cls._sanitize_visible_payload_value("value", value),
+            }
+            rows.append(safe_row)
+        return rows or None
+
+    @staticmethod
+    def _visible_text_has_internal_payload(text: str) -> bool:
+        lowered = str(text or "").casefold()
+        if not lowered:
+            return False
+        internal_markers = (
+            "requestjson",
+            "workspaceroot",
+            "originalworkspaceroot",
+            "approvalid",
+            "sessionid",
+            "taskid",
+            "difftext",
+            "patchtext",
+            "providerrequest",
+            "authorization",
+            "api key",
+            "secret",
+            "token",
+        )
+        if any(marker in lowered for marker in internal_markers):
+            return True
+        return bool(re.search(r"(?:[a-z]:[\\/]|%systemdrive%|/users/|/home/|/tmp/)", lowered))
 
     @classmethod
     def _public_plan_request_input(cls, request: dict[str, Any]) -> dict[str, Any]:
@@ -1122,11 +1173,36 @@ class PublishingMixin:
         seen: set[str] = set()
         for item in activity_items[:8]:
             text = self._tool_result_activity_item_text(item)
-            if not text or text in seen:
+            if not text or text in seen or self._tool_activity_text_is_internal(text):
                 continue
             seen.add(text)
             deltas.append(f"{text}\n")
         return deltas
+
+    @staticmethod
+    def _tool_activity_text_is_internal(text: str) -> bool:
+        lowered = str(text or "").casefold()
+        if not lowered:
+            return True
+        sensitive_markers = (
+            "requestjson",
+            "workspaceroot",
+            "originalworkspaceroot",
+            "approvalid",
+            "sessionid",
+            "taskid",
+            "difftext",
+            "patchtext",
+            "providerrequest",
+            "authorization",
+            "api key",
+            "secret",
+            "token",
+        )
+        if any(marker in lowered for marker in sensitive_markers):
+            return True
+        stripped = lowered.strip()
+        return stripped.startswith(("{", "[")) and any(marker in stripped for marker in ("request", "approval", "workspace"))
 
     def _tool_result_activity_item_text(self, item: Any) -> str:
         if isinstance(item, str):
@@ -1184,6 +1260,11 @@ class PublishingMixin:
         effective_visibility: str,
     ) -> None:
         if effective_visibility != "chat" or task.get("role", "root") != "root":
+            return
+        bridge = payload.get("_bridge") if isinstance(payload.get("_bridge"), dict) else {}
+        if event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES and (
+            bridge.get("suppressRealtimeFlat") is True or bridge.get("suppressChatReplay") is True
+        ):
             return
         if event_type in _CHAT_COMPAT_EVENT_TYPES:
             return
@@ -1392,6 +1473,9 @@ class PublishingMixin:
             tool_call_id = payload.get("toolCallId")
             if not tool_call_id:
                 return
+            result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+            if result_payload.get("_chatCompatSuppressToolResult") is True:
+                return
             activity_deltas = self._tool_result_activity_delta_texts(payload)
             if activity_deltas and payload.get("toolName") != "run_command":
                 for activity_delta in activity_deltas:
@@ -1535,7 +1619,7 @@ class PublishingMixin:
                     "toolName": tool_name,
                     "input": visible_request,
                     "description": payload.get("summary"),
-                    "preview": payload.get("preview"),
+                    "preview": self._public_permission_preview(payload.get("preview")),
                     "previewSections": (
                         visible_request.get("previewSections")
                         if isinstance(visible_request, dict) and isinstance(visible_request.get("previewSections"), list)
@@ -1616,7 +1700,7 @@ class PublishingMixin:
                             "toolName": tool_name,
                             "input": visible_request,
                             "description": payload.get("summary"),
-                            "preview": payload.get("preview"),
+                            "preview": self._public_permission_preview(payload.get("preview")),
                             "previewSections": (
                                 visible_request.get("previewSections")
                                 if isinstance(visible_request, dict) and isinstance(visible_request.get("previewSections"), list)
@@ -1703,25 +1787,26 @@ class PublishingMixin:
         decided_by: str = "",
         decided_at: Any = None,
     ) -> dict[str, Any]:
+        public_request = PublishingMixin._public_permission_request_input("computer_use", request)
         action = (
-            request.get("action")
-            or request.get("permission")
-            or request.get("summary")
-            or request.get("description")
+            public_request.get("action")
+            or public_request.get("permission")
+            or public_request.get("summary")
+            or public_request.get("description")
             or "computer use action"
         )
         permission = (
-            request.get("permission")
-            or request.get("summary")
-            or request.get("description")
+            public_request.get("permission")
+            or public_request.get("summary")
+            or public_request.get("description")
             or action
         )
         app_name = (
-            request.get("app")
-            or request.get("application")
-            or request.get("target")
-            or request.get("windowTitle")
-            or request.get("window")
+            public_request.get("app")
+            or public_request.get("application")
+            or public_request.get("target")
+            or public_request.get("windowTitle")
+            or public_request.get("window")
         )
         payload: dict[str, Any] = {
             "approvalId": approval_id,
@@ -1730,12 +1815,12 @@ class PublishingMixin:
             "action": str(action),
             "permission": str(permission),
             "summary": str(permission),
-            "request": request,
+            "request": public_request,
         }
         if app_name:
             payload["app"] = str(app_name)
         for key in ("target", "selector", "text", "x", "y", "direction", "amount"):
-            value = request.get(key)
+            value = public_request.get(key)
             if value not in (None, ""):
                 payload[key] = value
         preview: list[dict[str, str]] = []

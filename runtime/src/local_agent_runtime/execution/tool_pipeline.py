@@ -61,14 +61,52 @@ _SUBAGENT_INTERNAL_RESULT_KEYS = {
     "workspaceRoot",
     "workspace_root",
 }
+_INTERNAL_VISIBLE_RESULT_KEYS = {
+    "activeWorktreeId",
+    "active_worktree_id",
+    "approval",
+    "approvalId",
+    "approval_id",
+    "originalWorkspaceRoot",
+    "original_workspace_root",
+    "providerRequest",
+    "raw",
+    "requestJson",
+    "sessionId",
+    "session_id",
+    "taskId",
+    "task_id",
+    "toolGroupId",
+    "tool_group_id",
+    "toolIndex",
+    "tool_index",
+    "toolOperationId",
+    "tool_operation_id",
+    "toolOperationLabel",
+    "tool_operation_label",
+    "toolTotal",
+    "tool_total",
+    "worktreePath",
+    "worktree_path",
+    "workspaceRoot",
+    "workspace_root",
+}
 _INTERNAL_TOOL_ARGUMENT_KEYS = {
     "activeWorktreeId",
+    "approval",
+    "approvalId",
+    "approval_id",
     "inputSummary",
     "originalWorkspaceRoot",
     "parentToolUseId",
+    "providerRequest",
+    "raw",
+    "requestJson",
     "sessionId",
+    "session_id",
     "target",
     "taskId",
+    "task_id",
     "toolCategory",
     "toolGroupId",
     "toolIndex",
@@ -192,7 +230,7 @@ def _public_nested_result(value: Any, *, depth: int = 0) -> Any:
     public: dict[str, Any] = {}
     for key, item in value.items():
         key_text = str(key)
-        if key_text in _SUBAGENT_INTERNAL_RESULT_KEYS:
+        if key_text in _SUBAGENT_INTERNAL_RESULT_KEYS or key_text in _INTERNAL_VISIBLE_RESULT_KEYS:
             continue
         if item in (None, "", [], {}):
             continue
@@ -332,16 +370,15 @@ def _visible_tool_result(
     }
     approval = result.get("approval")
     if isinstance(approval, dict):
-        compacted["approval"] = {
-            key: value
-            for key, value in {
-                "id": approval.get("id"),
-                "kind": approval.get("kind"),
-                "decision": approval.get("decision"),
-                "createdAt": approval.get("createdAt"),
-            }.items()
-            if value not in (None, "", [])
-        }
+        approval_kind = str(approval.get("kind") or tool_name or "approval").strip()
+        decision = str(approval.get("decision") or "").strip()
+        compacted["approvalStatus"] = decision or "waiting"
+        compacted["approvalKind"] = approval_kind
+    else:
+        if result.get("approvalStatus") is not None:
+            compacted["approvalStatus"] = result.get("approvalStatus")
+        if result.get("approvalKind") is not None:
+            compacted["approvalKind"] = result.get("approvalKind")
 
     if tool_name == "run_command":
         command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
@@ -391,7 +428,6 @@ def _visible_tool_result(
         compacted.update({
             "filesChanged": result.get("filesChanged"),
             "changedPaths": paths[:_TOOL_VISIBLE_COLLECTION_LIMIT] if isinstance(paths, list) else paths,
-            "diffText": _head_tail_text(result.get("diffText") or ""),
         })
     else:
         for key in ("error", "message", "summary", "path", "url", "id", "count", "total"):
@@ -403,6 +439,39 @@ def _visible_tool_result(
                 break
 
     return {key: value for key, value in compacted.items() if value not in (None, "", [])}
+
+
+def _public_approval_blocked_result(tool_name: str, result: Any, target: str = "") -> dict[str, Any]:
+    summary = _tool_result_summary(tool_name, result if isinstance(result, dict) else None, target)
+    public: dict[str, Any] = {
+        "status": "approval_required",
+        "summary": summary or f"approval required before running {tool_name}",
+        "target": target,
+        "approvalKind": tool_name,
+    }
+    if not isinstance(result, dict):
+        return {key: value for key, value in public.items() if value not in (None, "", [])}
+    approval = result.get("approval")
+    if isinstance(approval, dict):
+        public["approvalKind"] = str(approval.get("kind") or tool_name or "approval")
+        decision = str(approval.get("decision") or "").strip()
+        public["approvalStatus"] = decision or "waiting"
+    changed_paths = result.get("changedPaths")
+    if not isinstance(changed_paths, list):
+        patch = result.get("patch")
+        if isinstance(patch, dict):
+            changed_paths = patch.get("changedPaths")
+    if isinstance(changed_paths, list) and changed_paths:
+        public["changedPaths"] = changed_paths[:_TOOL_VISIBLE_COLLECTION_LIMIT]
+    files_changed = result.get("filesChanged")
+    if files_changed is None and isinstance(result.get("patch"), dict):
+        files_changed = result["patch"].get("filesChanged")
+    if files_changed is not None:
+        public["filesChanged"] = files_changed
+    path = result.get("path")
+    if path:
+        public["path"] = path
+    return {key: value for key, value in public.items() if value not in (None, "", [])}
 
 
 def _model_visible_tool_result(tool_name: str, result: Any, target: str = "", *, summary: str = "", preview: list[dict[str, str]] | None = None) -> Any:
@@ -568,7 +637,7 @@ def _approval_request_preview(kind: str, request: dict[str, Any]) -> list[dict[s
             )
         rows.extend(
             [
-                _preview_row("目录", request.get("cwd") or request.get("workspaceRoot")),
+                _preview_row("目录", request.get("cwd")),
                 _preview_row("Shell", request.get("shell")),
                 _preview_row("原因", request.get("policyReason") or request.get("risk") or request.get("reason")),
             ]
@@ -2154,13 +2223,6 @@ class ToolExecutionMixin:
             target = _tool_target(tool_spec["name"], tool_arguments, result if isinstance(result, dict) else None) or tool_target
             result_preview = _tool_result_preview(tool_spec["name"], result if isinstance(result, dict) else None, target)
             result_summary = _tool_result_summary(tool_spec["name"], result if isinstance(result, dict) else None, target)
-            frontend_visible_result = _frontend_visible_tool_result(
-                tool_spec["name"],
-                result,
-                target,
-                summary=result_summary,
-                preview=result_preview,
-            )
             operation_metadata = _tool_metadata_with_result_operation(
                 tool_spec,
                 result if isinstance(result, dict) else None,
@@ -2183,11 +2245,7 @@ class ToolExecutionMixin:
                 **({"resultPreviewStreamed": True} if result_preview_streamed else {}),
             }
             if extra:
-                visible_extra = {
-                    **extra,
-                    **({"result": frontend_visible_result} if "result" in extra else {}),
-                }
-                payload.update(visible_extra)
+                payload.update(extra)
             return payload
 
         def provider_tool_result() -> dict[str, Any]:
@@ -2404,12 +2462,13 @@ class ToolExecutionMixin:
                 },
             )
             tool_result = provider_tool_result()
+            public_blocked_result = _public_approval_blocked_result(tool_spec["name"], result, tool_result.get("target") or tool_target)
             self._publish(
                 session_id=session_id,
                 task=task,
                 event_type="tool.blocked",
                 payload=tool_event_payload({
-                    "result": result,
+                    "result": public_blocked_result,
                     "reason": "approval_required",
                 }),
             )

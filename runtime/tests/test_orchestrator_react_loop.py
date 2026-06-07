@@ -6205,6 +6205,71 @@ def test_react_loop_defaults_question_when_user_explicitly_says_not_to_ask(tmp_p
     ]
 
 
+def test_react_loop_defaults_low_risk_continuation_question_tool(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "name": "ask_user_question",
+                        "arguments": {
+                            "question": "Continue with a third read-only synthesis agent using the existing findings?",
+                            "options": [
+                                {
+                                    "label": "Proceed",
+                                    "value": "proceed",
+                                    "description": "Continue with synthesis using current findings.",
+                                    "recommended": True,
+                                }
+                            ],
+                            "summary": "Approval to launch final synthesis agent.",
+                            "reason": "continue_readonly_analysis",
+                        },
+                    }
+                ],
+            },
+            {"final": "Continued with the default read-only synthesis."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "Use multiple agents to analyze the project. Do not edit files."},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert not any(event["type"] == "ask_user_question" for event in runtime.events)
+    tool_messages = [
+        message
+        for message in provider.calls[1]["context"]["messages"]
+        if message.get("role") == "tool" and message.get("name") == "ask_user_question"
+    ]
+    assert len(tool_messages) == 1
+    payload = json.loads(tool_messages[0]["content"])
+    assert payload["defaulted"] is True
+    assert payload["status"] == "answered"
+    assert "read-only analysis" in payload["answer"]
+    assert not [
+        event
+        for event in runtime.events
+        if event["type"] == "tool_result"
+        and event["payload"].get("toolName") == "ask_user_question"
+    ]
+    assert not [
+        event
+        for event in runtime.events
+        if event["type"] in {"content_start", "tool_use_complete", "content_delta"}
+        and event["payload"].get("toolName") == "ask_user_question"
+    ]
+
+
 def test_react_loop_still_pauses_for_blocking_credentials_even_when_user_says_not_to_ask(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [

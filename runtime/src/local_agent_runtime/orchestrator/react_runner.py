@@ -344,6 +344,7 @@ class ReactRunnerMixin:
             "questions": questions,
             "defaulted": True,
             "reason": "low_risk_preference_defaulted",
+            "_chatCompatSuppressToolResult": True,
         }
         tool_call_id = tool_spec.get("id") or self._store.new_id("tc")
         tool_arguments = {
@@ -1937,6 +1938,7 @@ class ReactRunnerMixin:
                 "questions": questions,
                 "defaulted": True,
                 "reason": "low_risk_preference_defaulted",
+                "_chatCompatSuppressToolResult": True,
             }
             tool_result = {
                 **tool_result,
@@ -2048,6 +2050,8 @@ class ReactRunnerMixin:
         )
         if any(marker in reason_text for marker in required_reason_markers):
             return True
+        if self._is_low_risk_continuation_question(text=text):
+            return False
         if self._question_requires_user_blocking_input(text=text, reason_text=reason_text):
             return True
         low_risk_preference_markers = (
@@ -2259,6 +2263,48 @@ class ReactRunnerMixin:
             and any(marker in combined_all for marker in cleanup_question_markers)
         )
 
+    @staticmethod
+    def _is_low_risk_continuation_question(*, text: str) -> bool:
+        combined = str(text or "").casefold()
+        continuation_markers = (
+            "continue",
+            "proceed",
+            "go ahead",
+            "launch",
+            "synthesis agent",
+            "third agent",
+            "next agent",
+            "existing findings",
+            "light file inspection",
+            "\u7ee7\u7eed",
+            "\u7ee7\u7eed\u5206\u6790",
+            "\u7ee7\u7eed\u6267\u884c",
+            "\u5f00\u59cb",
+            "\u63a8\u8fdb",
+        )
+        blocking_markers = (
+            "delete",
+            "remove",
+            "write",
+            "edit",
+            "run command",
+            "execute",
+            "permission",
+            "credential",
+            "api key",
+            "token",
+            "secret",
+            "\u5220\u9664",
+            "\u5199\u5165",
+            "\u4fee\u6539",
+            "\u6267\u884c\u547d\u4ee4",
+            "\u6743\u9650",
+            "\u5bc6\u94a5",
+        )
+        return any(marker in combined for marker in continuation_markers) and not any(
+            marker in combined for marker in blocking_markers
+        )
+
     def _default_answer_for_low_risk_question(self, *, question: Any, policy_needs: Any, goal: Any = None) -> str:
         text = self._ask_user_question_text(question=question, reason=None, policy_needs=policy_needs)
         if self._is_low_risk_cleanup_question(text=text, goal=goal, context=None):
@@ -2266,6 +2312,8 @@ class ReactRunnerMixin:
                 "Defaulting to the user's cleanup intent: remove only generated/local noise paths; "
                 "keep source, memory, and IDE state files unchanged."
             )
+        if self._is_low_risk_continuation_question(text=text):
+            return "Defaulting to continue with the low-risk read-only analysis."
         options: list[Any] = []
         if isinstance(policy_needs, dict):
             raw_options = policy_needs.get("options")

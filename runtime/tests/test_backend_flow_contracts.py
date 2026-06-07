@@ -339,7 +339,7 @@ def test_file_change_visible_tool_result_hides_internal_patch_record() -> None:
     assert visible["status"] == "applied"
     assert visible["summary"] == "Update README.md"
     assert visible["changedPaths"] == ["README.md"]
-    assert visible["diffText"]["text"].startswith("--- a/README.md")
+    assert "diffText" not in visible
     assert "workspaceId" not in encoded
     assert '"patch"' not in encoded
 
@@ -548,8 +548,9 @@ def test_write_file_approval_is_waiting_node_without_raw_request_json(tmp_path: 
     assert content["summary"] == "approval required before writing todo.html"
     assert "requestJson" not in json.dumps(content, ensure_ascii=False)
     assert "workspaceRoot" not in json.dumps(content, ensure_ascii=False)
-    assert content["approval"]["id"].startswith("appr_")
-    assert content["approval"]["kind"] == "write_file"
+    assert "approval" not in content
+    assert content["approvalStatus"] == "waiting"
+    assert content["approvalKind"] == "write_file"
 
     flat_permission = next(
         event["yuanbao"]
@@ -1134,3 +1135,161 @@ def test_planning_progress_is_visible_but_synthetic_thinking_stays_trace_only(tm
     assert planning_progress
     assert {event["visibility"] for event in planning_progress} == {"panel"}
     assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+
+
+def test_visible_tool_input_and_result_strip_internal_payload_fields(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(session_id=session["id"], task_type="chat", goal="tool contract", plan=[])
+    task["role"] = "root"
+
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "tool.started",
+        {
+            "toolCallId": "call_custom",
+            "toolName": "custom_tool",
+            "arguments": {
+                "query": "needle",
+                "requestJson": '{"workspaceRoot":"D:/py/test_pro"}',
+                "approval": {"id": "appr_1"},
+                "workspaceRoot": "D:/py/test_pro",
+            },
+            "target": "custom_tool",
+        },
+    )
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "tool.completed",
+        {
+            "toolCallId": "call_custom",
+            "toolName": "custom_tool",
+            "result": {
+                "status": "completed",
+                "summary": "ok",
+                "requestJson": '{"workspaceRoot":"D:/py/test_pro"}',
+                "approval": {"id": "appr_1"},
+                "workspaceRoot": "D:/py/test_pro",
+                "diffText": "--- a/file\n+++ b/file",
+            },
+        },
+    )
+
+    tool_input = next(
+        event["payload"]["input"]
+        for event in runtime.events
+        if event["type"] == "tool_use_complete" and event["payload"].get("toolUseId") == "call_custom"
+    )
+    tool_result = next(
+        event["payload"]["content"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_custom"
+    )
+
+    assert tool_input["query"] == "needle"
+    encoded_input = json.dumps(tool_input, ensure_ascii=False)
+    encoded_result = json.dumps(tool_result, ensure_ascii=False)
+    for marker in ("requestJson", "workspaceRoot", '"approval"', "appr_1", "D:/py/test_pro"):
+        assert marker not in encoded_input
+        assert marker not in encoded_result
+    assert tool_result["approvalStatus"] == "waiting"
+    assert tool_result["approvalKind"] == "custom_tool"
+    assert "diffText" not in encoded_result
+
+
+def test_tool_activity_delta_omits_internal_json_logs(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(session_id=session["id"], task_type="chat", goal="tool logs", plan=[])
+    task["role"] = "root"
+
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "tool.completed",
+        {
+            "toolCallId": "call_logs",
+            "toolName": "custom_tool",
+            "result": {
+                "status": "completed",
+                "logs": [
+                    '{"requestJson":{"workspaceRoot":"D:/py/test_pro"}}',
+                    {"label": "Inspect", "status": "done", "summary": "Checked public state."},
+                ],
+            },
+        },
+    )
+
+    deltas = [
+        event["payload"].get("toolOutput", "")
+        for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_logs"
+    ]
+    assert any("Checked public state." in delta for delta in deltas)
+    assert not any("requestJson" in delta or "workspaceRoot" in delta for delta in deltas)
+
+
+def test_run_command_permission_preview_does_not_fallback_to_workspace_root(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(session_id=session["id"], task_type="chat", goal="approval", plan=[])
+    task["role"] = "root"
+
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "approval.requested",
+        {
+            "approvalId": "appr_cmd",
+            "kind": "run_command",
+            "request": {
+                "command": "pytest -q",
+                "workspaceRoot": "D:/py/test_pro",
+                "shell": "powershell",
+            },
+            "preview": [
+                {"label": "命令", "value": "pytest -q"},
+                {"label": "目录", "value": "D:/py/test_pro"},
+            ],
+        },
+    )
+
+    flat = next(event for event in runtime.events if event["type"] == "permission_request")
+    encoded = json.dumps(flat["payload"], ensure_ascii=False)
+    assert "workspaceRoot" not in encoded
+    assert "D:/py/test_pro" not in encoded
+
+
+def test_computer_use_permission_request_strips_internal_request_fields(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(session_id=session["id"], task_type="chat", goal="computer use", plan=[])
+    task["role"] = "root"
+
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "approval.requested",
+        {
+            "approvalId": "appr_screen",
+            "kind": "computer_use",
+            "request": {
+                "action": "click",
+                "target": "Submit",
+                "x": 10,
+                "y": 20,
+                "requestJson": "{}",
+                "workspaceRoot": "D:/py/test_pro",
+            },
+        },
+    )
+
+    flat = next(event for event in runtime.events if event["type"] == "computer_use_permission_request")
+    encoded = json.dumps(flat["payload"], ensure_ascii=False)
+    assert flat["payload"]["request"]["action"] == "click"
+    assert flat["payload"]["target"] == "Submit"
+    assert "requestJson" not in encoded
+    assert "workspaceRoot" not in encoded
+    assert "D:/py/test_pro" not in encoded

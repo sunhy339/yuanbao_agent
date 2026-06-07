@@ -178,6 +178,23 @@ class ConfigStoreMixin:
         normalized["agentSoul"] = self._normalize_agent_soul_config(
             agent_soul if isinstance(agent_soul, dict) else {},
         )
+        storage = normalized.get("storage")
+        normalized["storage"] = self._normalize_storage_config(
+            storage if isinstance(storage, dict) else {},
+        )
+        return normalized
+
+    def _normalize_storage_config(self, storage: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._merge_config(deepcopy(DEFAULT_CONFIG["storage"]), storage)
+        retention = normalized.get("retention")
+        if not isinstance(retention, dict):
+            normalized["retention"] = deepcopy(DEFAULT_CONFIG["storage"]["retention"])
+            return normalized
+
+        trace_limit = retention.get("traceEventsMaxPerSession")
+        if trace_limit == 5000:
+            retention["traceEventsMaxPerSession"] = DEFAULT_CONFIG["storage"]["retention"]["traceEventsMaxPerSession"]
+        normalized["retention"] = retention
         return normalized
 
     def _normalize_autonomy_config(self, autonomy: dict[str, Any]) -> dict[str, Any]:

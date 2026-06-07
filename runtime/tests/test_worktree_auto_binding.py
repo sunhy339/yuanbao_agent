@@ -13,6 +13,32 @@ from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
+def _run_git(cwd: Path, *args: str) -> str:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _init_git_workspace(workspace_root: Path) -> None:
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    _run_git(workspace_root, "init")
+    _run_git(workspace_root, "checkout", "-b", "main")
+    _run_git(workspace_root, "config", "user.email", "test@example.com")
+    _run_git(workspace_root, "config", "user.name", "Test User")
+    (workspace_root / "README.md").write_text("# Project\n", encoding="utf-8")
+    _run_git(workspace_root, "add", "README.md")
+    _run_git(workspace_root, "commit", "-m", "init")
+
+
 class ScriptedProvider:
     def __init__(self, responses: list[dict[str, Any]]) -> None:
         self._responses = list(responses)
@@ -76,7 +102,7 @@ def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any]) -> Simple
     return SimpleNamespace(server=server, store=store, events=events, worktree_service=worktree_service)
 
 
-def test_code_edit_task_auto_binds_worktree_and_routes_workspace_tools(tmp_path: Any) -> None:
+def test_explicit_worktree_code_edit_binds_and_routes_workspace_tools(tmp_path: Any) -> None:
     seen_write_args: list[dict[str, Any]] = []
 
     def write_file(params: dict[str, Any]) -> dict[str, Any]:
@@ -84,7 +110,7 @@ def test_code_edit_task_auto_binds_worktree_and_routes_workspace_tools(tmp_path:
         return {"status": "written", "path": params["path"], "bytesWritten": len(params.get("content", ""))}
 
     workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
+    _init_git_workspace(workspace_root)
     provider = ScriptedProvider([
         {
             "tool_calls": [
@@ -137,7 +163,7 @@ def test_code_edit_task_auto_binds_worktree_and_routes_workspace_tools(tmp_path:
 
 def test_read_only_readme_summary_does_not_require_worktree(tmp_path: Any) -> None:
     workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
+    _init_git_workspace(workspace_root)
     (workspace_root / "README.md").write_text("# Demo\n\nRead-only fixture.\n", encoding="utf-8")
     runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "README says this is a demo."}]), {})
     runtime.server._orchestrator._worktree_service = FailingWorktreeService(runtime.store)
@@ -248,7 +274,7 @@ def test_queued_code_edit_persists_active_worktree_before_execution(tmp_path: An
 
 def test_session_launch_repository_controls_task_worktree_base_ref(tmp_path: Any) -> None:
     workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
+    _init_git_workspace(workspace_root)
     runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "Done."}]), {})
 
     workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
@@ -256,19 +282,19 @@ def test_session_launch_repository_controls_task_worktree_base_ref(tmp_path: Any
         "workspaceId": workspace["id"],
         "title": "Launch",
         "workDir": str(workspace_root),
-        "repository": {"branch": "feature/parity", "worktree": True},
+        "repository": {"branch": "main", "worktree": True},
     })["result"]["session"]
 
     assert session["launch"]["workDir"] == str(workspace_root)
-    assert session["repository"]["branch"] == "feature/parity"
+    assert session["repository"]["branch"] == "main"
 
     result = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "fix code by editing files"})
     task = result["result"]["task"]
     worktree = runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"]
 
     assert worktree is not None
-    assert runtime.worktree_service.created[0]["baseRef"] == "feature/parity"
-    assert task["routing"]["repository"] == {"branch": "feature/parity", "worktree": True}
+    assert runtime.worktree_service.created[0]["baseRef"] == "main"
+    assert task["routing"]["repository"] == {"branch": "main", "worktree": True}
     assert task["routing"]["activeWorktree"]["id"] == worktree["id"]
 
 
@@ -339,7 +365,7 @@ def test_context_preview_persists_into_session_metadata(tmp_path: Any) -> None:
     assert preview["taskFocus"]
 
 
-def test_write_child_task_auto_binds_own_worktree_when_parent_does_not_pass_one(tmp_path: Any) -> None:
+def test_write_child_task_falls_back_when_worktree_binding_is_unavailable(tmp_path: Any) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "Child done."}]), {})
@@ -359,16 +385,14 @@ def test_write_child_task_auto_binds_own_worktree_when_parent_does_not_pass_one(
     task = result["task"]
     worktree = runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"]
 
-    assert worktree is not None
-    assert runtime.worktree_service.created[0]["taskId"] == task["id"]
+    assert worktree is None
+    assert runtime.worktree_service.created == []
     assert task["routing"]["parentRuntimeTaskId"] == "parent-task"
-    assert task["routing"]["activeWorktree"]["id"] == worktree["id"]
-    assert task["routing"]["activeWorktree"]["worktreePath"] == worktree["worktreePath"]
 
     persisted_task = runtime.store.get_task({"taskId": task["id"]})["task"]
-    assert persisted_task["routing"]["activeWorktree"]["id"] == worktree["id"]
+    assert "activeWorktree" not in persisted_task["routing"]
     bound_events = [event for event in runtime.events if event["type"] == "task.worktree.bound"]
-    assert bound_events
+    assert not bound_events
 
 
 def test_worktree_segment_sanitizer_does_not_escape_path_root(tmp_path: Any) -> None:
@@ -389,7 +413,7 @@ def test_worktree_segment_sanitizer_does_not_escape_path_root(tmp_path: Any) -> 
     assert safe_segment == "agent/unsafe-branch"
 
 
-def test_write_oriented_task_fails_when_required_worktree_binding_cannot_be_created(tmp_path: Any) -> None:
+def test_preferred_worktree_binding_failure_falls_back_before_provider_loop(tmp_path: Any) -> None:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     worktree_service = FailingWorktreeService(store)
@@ -403,21 +427,7 @@ def test_write_oriented_task_fails_when_required_worktree_binding_cannot_be_crea
                 "bytesWritten": len(params.get("content", "")),
             },
         }),
-        provider=ScriptedProvider([
-            {
-                "tool_calls": [
-                    {
-                        "id": "call_write",
-                        "name": "write_file",
-                        "arguments": {
-                            "workspaceRoot": str(tmp_path / "workspace"),
-                            "path": "generated.txt",
-                            "content": "hello",
-                        },
-                    }
-                ]
-            }
-        ]),
+        provider=ScriptedProvider([{"final": "Done."}]),
         meta_router=MetaRouter(provider=None),
         worktree_service=worktree_service,
     )
@@ -450,7 +460,54 @@ def test_write_oriented_task_fails_when_required_worktree_binding_cannot_be_crea
     }, ensure_ascii=False))
 
     assert "error" not in response
-    assert response["result"]["task"]["status"] == "failed"
-    assert response["result"]["task"]["errorCode"] == "WORKTREE_BINDING_FAILED"
-    assert response["result"]["task"]["structuredResult"]["failureKind"] == "worktree_binding_failed"
-    assert "worktree binding failed" in response["result"]["task"]["resultSummary"]
+    assert response["result"]["task"]["status"] == "completed"
+    assert response["result"]["task"]["routing"]["preferredWorktree"] is True
+    assert response["result"]["task"]["routing"].get("worktreeBindingRequired") is True
+    assert store.get_worktree_by_task({"taskId": response["result"]["task"]["id"]})["worktree"] is None
+
+
+def test_preferred_worktree_binding_failure_falls_back_to_current_workspace(tmp_path: Any) -> None:
+    seen_write_args: list[dict[str, Any]] = []
+
+    def write_file(params: dict[str, Any]) -> dict[str, Any]:
+        seen_write_args.append(dict(params))
+        return {"status": "written", "path": params["path"], "bytesWritten": len(params.get("content", ""))}
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    provider = ScriptedProvider([
+        {
+            "tool_calls": [
+                {
+                    "id": "call_write",
+                    "name": "write_file",
+                    "arguments": {
+                        "workspaceRoot": str(workspace_root),
+                        "path": "generated.txt",
+                        "content": "hello",
+                    },
+                },
+            ],
+        },
+        {"final": "Done."},
+    ])
+    runtime = _make_runtime(tmp_path, provider, {"write_file": write_file})
+    runtime.server._orchestrator._worktree_service = FailingWorktreeService(runtime.store)
+
+    workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
+    session = _rpc(runtime, "session.create", {
+        "workspaceId": workspace["id"],
+        "title": "Preferred worktree fallback",
+        "repository": {"branch": "main", "worktree": True},
+    })["result"]["session"]
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "fix code by writing a generated file"})
+
+    assert "error" not in response
+    task = response["result"]["task"]
+    assert task["status"] == "completed"
+    assert task["routing"]["preferredWorktree"] is True
+    assert task["routing"].get("worktreeBindingRequired") is True
+    assert runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"] is None
+    assert seen_write_args
+    assert seen_write_args[0]["workspaceRoot"] == str(workspace_root)

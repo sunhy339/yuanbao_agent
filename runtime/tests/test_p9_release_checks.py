@@ -863,7 +863,7 @@ class TestEventCompatAssistantToken:
         assert next(event for event in collected if event.type == "task.completed").visibility == "panel"
         assert next(event for event in collected if event.type == "tool.started").visibility == "trace"
         assert next(event for event in collected if event.type == "approval.requested").visibility == "panel"
-        assert next(event for event in collected if event.type == "message.completed").visibility == "chat"
+        assert next(event for event in collected if event.type == "message.completed").visibility == "trace"
 
     def test_root_task_lifecycle_panel_payloads_are_lightweight(self, tmp_path: Any) -> None:
         """Root task lifecycle panels should not leak heavy audit JSON into the chat transcript."""

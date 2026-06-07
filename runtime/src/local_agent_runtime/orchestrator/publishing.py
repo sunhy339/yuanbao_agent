@@ -86,8 +86,6 @@ _ROOT_CHAT_EVENT_TYPES = {
     "compact_summary",
     "computer_use_permission",
     "computer_use_permission_request",
-    "message.created",
-    "message.completed",
     "message.failed",
     "session_title_updated",
     "system_notification",
@@ -98,23 +96,12 @@ _ROOT_CHAT_DERIVATION_EVENT_TYPES = {
     "approval.requested",
     "approval.resolved",
     "assistant.token",
-    "command.cancelled",
-    "command.completed",
-    "command.failed",
-    "command.output",
-    "command.started",
     "message.delta",
     "task.cancelled",
     "task.completed",
     "task.failed",
     "task.started",
     "task.updated",
-    "tool.blocked",
-    "tool.completed",
-    "tool.failed",
-    "tool.output",
-    "tool.progress",
-    "tool.started",
 }
 
 _ROOT_PANEL_EVENT_TYPES = {
@@ -688,12 +675,24 @@ class PublishingMixin:
 
     @staticmethod
     def _raw_runtime_event_visibility(event_type: str, effective_visibility: str, explicit_visibility: str | None) -> str:
-        if explicit_visibility is None and event_type == "assistant.token":
-            return "trace"
         if explicit_visibility is None and event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES:
+            return "trace"
+        if explicit_visibility is None and event_type == "message.completed":
+            return "trace"
+        if explicit_visibility is None and event_type == "assistant.token":
             return "trace"
         if explicit_visibility is None and event_type in _RAW_PANEL_MIRROR_EVENT_TYPES:
             return "panel"
+        return effective_visibility
+
+    @staticmethod
+    def _chat_compat_event_visibility(event_type: str, task: dict[str, Any], effective_visibility: str) -> str:
+        if task.get("role", "root") != "root":
+            return effective_visibility
+        if event_type == "message.completed":
+            return "chat"
+        if event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES:
+            return "chat"
         return effective_visibility
 
     def _latest_terminal_task_status(self, task: dict[str, Any]) -> str | None:
@@ -1883,6 +1882,12 @@ class PublishingMixin:
             return "chat" if task_role == "root" else "trace"
         if event_type.startswith("provider."):
             return "trace"
+        if event_type == "message.created":
+            return "trace"
+        if event_type == "message.completed":
+            return "trace"
+        if event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES:
+            return "trace" if task_role == "root" else "trace"
         # Root streaming deltas are user-facing chat output; child deltas stay in trace.
         if event_type in {"assistant.token", "message.delta"}:
             return "chat" if task_role == "root" else "trace"
@@ -1964,12 +1969,13 @@ class PublishingMixin:
             visible_payload["_chatCompat"] = True
             token_delta_payload = {**visible_payload}
             token_delta_payload.setdefault("messageId", active_msg_id or "")
+        chat_compat_visibility = self._chat_compat_event_visibility(event_type, task, effective_visibility)
         self._publish_chat_compat_for_event(
             session_id=session_id,
             task=task,
             event_type=event_type,
             payload=visible_payload,
-            effective_visibility=effective_visibility,
+            effective_visibility=chat_compat_visibility,
         )
         if token_delta_payload is not None:
             delta_event = RuntimeEvent(

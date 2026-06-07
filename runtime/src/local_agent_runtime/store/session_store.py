@@ -268,7 +268,7 @@ def _build_workspace_memory_templates(workspace_root: Path, workspace_name: str)
 
 class SessionStoreMixin:
     def upsert_workspace(self, path: str) -> dict[str, Any]:
-        root = str(Path(path))
+        root = str(Path(path).expanduser().resolve())
         workspace_id = self.new_id("ws")
         now = self.now()
         self._conn.execute(

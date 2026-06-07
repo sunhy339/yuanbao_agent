@@ -44,6 +44,23 @@ def _rpc(runtime: SimpleNamespace, method: str, params: dict[str, Any]) -> dict[
     return response["result"]
 
 
+def test_storage_config_migrates_legacy_trace_retention_without_overriding_custom_caps(tmp_path: Path) -> None:
+    db_path = tmp_path / "config.sqlite3"
+    store = SQLiteStore(str(db_path))
+    store.update_config({"config": {"storage": {"retention": {"traceEventsMaxPerSession": 5000}}}})
+    store.close()
+
+    reopened = SQLiteStore(str(db_path))
+    try:
+        retention = reopened.get_config({})["config"]["storage"]["retention"]
+        assert retention["traceEventsMaxPerSession"] == 50000
+
+        reopened.update_config({"config": {"storage": {"retention": {"traceEventsMaxPerSession": 2}}}})
+        assert reopened.get_config({})["config"]["storage"]["retention"]["traceEventsMaxPerSession"] == 2
+    finally:
+        reopened.close()
+
+
 def test_session_delete_cascades_runtime_records_and_artifacts(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
     store = runtime.store

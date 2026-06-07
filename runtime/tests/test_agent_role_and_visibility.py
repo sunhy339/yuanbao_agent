@@ -149,8 +149,13 @@ class TestEventVisibilityInference:
     def test_non_root_non_task_event_is_trace(self):
         assert self._invoke("some.other", role="worker") == "trace"
 
-    def test_non_root_message_event_is_panel(self):
-        assert self._invoke("message.created", role="reviewer") == "panel"
+    def test_message_created_lifecycle_is_trace(self):
+        assert self._invoke("message.created", role="root") == "trace"
+        assert self._invoke("message.created", role="reviewer") == "trace"
+
+    def test_message_completed_lifecycle_is_trace(self):
+        assert self._invoke("message.completed", role="root") == "trace"
+        assert self._invoke("message.completed", role="reviewer") == "trace"
 
 
 # ---------------------------------------------------------------------------

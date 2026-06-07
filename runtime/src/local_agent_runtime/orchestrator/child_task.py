@@ -166,15 +166,14 @@ class ChildTaskMixin:
                 task=runtime_task,
                 routing=worktree_routing,
             )
-            if worktree is None:
-                raise ValueError("Write-oriented child task requires an active worktree, but worktree binding failed.")
-            active_worktree = worktree
-            child_routing = {**child_routing, "activeWorktree": worktree}
-            runtime_task = self._persist_task_routing(runtime_task, child_routing)
-            child_routing_seed = dict(context.get("routing") if isinstance(context.get("routing"), dict) else {})
-            child_routing_seed["activeWorktree"] = worktree
-            context["routing"] = child_routing_seed
-            context = self._context_with_worktree_binding(context, worktree)
+            if worktree is not None:
+                active_worktree = worktree
+                child_routing = {**child_routing, "activeWorktree": worktree}
+                runtime_task = self._persist_task_routing(runtime_task, child_routing)
+                child_routing_seed = dict(context.get("routing") if isinstance(context.get("routing"), dict) else {})
+                child_routing_seed["activeWorktree"] = worktree
+                context["routing"] = child_routing_seed
+                context = self._context_with_worktree_binding(context, worktree)
         context = self._context_with_task_focus(context, runtime_task)
 
         self._publish(

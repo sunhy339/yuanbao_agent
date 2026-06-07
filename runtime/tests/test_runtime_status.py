@@ -197,4 +197,4 @@ def test_runtime_status_prefers_active_task_for_session_and_exposes_controls(tmp
     assert result["permissions"]["approvalMode"] == "on_write_or_command"
     assert result["permissions"]["allowFileWrite"] == "approval_required"
     assert result["permissions"]["allowShell"] == "approval_required"
-    assert result["worktree"]["autoBindWriteTasks"] is True
+    assert result["worktree"]["autoBindWriteTasks"] is False

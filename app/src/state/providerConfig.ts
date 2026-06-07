@@ -112,7 +112,7 @@ export const DEFAULT_AGENT_SOUL_PROFILE: AgentSoulProfile = {
   updatedAt: 0,
 };
 export const TRACE_LIMIT = 200;
-export const TRACE_CACHE_LIMIT = 4000;
+export const TRACE_CACHE_LIMIT = 50000;
 export const SESSION_TRACE_TASK_LIMIT = 8;
 export const TRACE_AUTO_REFRESH_STATUSES = new Set<TaskRecord["status"]>([
   "completed",

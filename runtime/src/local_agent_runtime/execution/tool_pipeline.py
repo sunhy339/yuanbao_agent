@@ -1819,6 +1819,8 @@ class ToolExecutionMixin:
             routing = {}
         if routing.get("disableWorktreeBinding") is True:
             return context, None
+        if routing.get("preferredWorktree") is True:
+            return context, None
         if routing.get("worktreeBindingRequired") is not True:
             return context, None
         if self._store.get_worktree_by_task({"taskId": task["id"]}).get("worktree") is not None:

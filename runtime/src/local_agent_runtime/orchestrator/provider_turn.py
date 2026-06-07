@@ -562,11 +562,22 @@ class ProviderTurnMixin:
             return
         facts = decision.get("facts") if isinstance(decision.get("facts"), dict) else {}
         advice = decision.get("advice")
+        runtime_action = str(decision.get("runtimeAction") or "proceed")
+        runtime_applied = bool(decision.get("runtimeApplied"))
+        advisor_config = provider_context.get("advisor") if isinstance(provider_context.get("advisor"), dict) else {}
+        should_record_trace = (
+            runtime_action != "proceed"
+            or runtime_applied
+            or advice is not None
+            or bool(advisor_config.get("alwaysProviderPreflight"))
+        )
+        if not should_record_trace:
+            return
         payload: dict[str, Any] = {
             "providerTurnId": provider_turn_id,
             "facts": facts,
-            "runtimeAction": decision.get("runtimeAction"),
-            "runtimeApplied": bool(decision.get("runtimeApplied")),
+            "runtimeAction": runtime_action,
+            "runtimeApplied": runtime_applied,
             "providerPreflight": decision.get("providerPreflight"),
         }
         provider_switch = decision.get("providerSwitch")

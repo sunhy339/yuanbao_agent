@@ -538,6 +538,8 @@ class MessageRoutingMixin:
 
         worktree_config = self._worktree_config()
         workspace_root = Path(workspace_root_text).resolve()
+        if not self._workspace_can_create_task_worktree(workspace_root):
+            return None
         task_id = str(task["id"])
         branch_prefix = self._safe_worktree_segment(str(worktree_config.get("branchPrefix") or "agent"))
         branch_name = f"{branch_prefix}/{self._safe_worktree_segment(task_id)}"
@@ -583,14 +585,40 @@ class MessageRoutingMixin:
     def _should_auto_bind_worktree(self, routing: dict[str, Any]) -> bool:
         if routing.get("disableWorktreeBinding") is True:
             return False
-        if routing.get("orchestrationMode") == "model_tools":
-            return bool(routing.get("worktreeBindingRequired") is True)
-        if routing.get("worktreeBindingRequired") is True:
-            return True
-        worktree_config = self._worktree_config()
-        if worktree_config.get("autoBindWriteTasks", False) is not True:
+        return bool(routing.get("worktreeBindingRequired") is True)
+
+    def _workspace_can_create_task_worktree(self, workspace_root: Path) -> bool:
+        git = self._git_workspace_status(workspace_root)
+        if git.get("isRepo") is not True:
             return False
-        return self._routing_has_write_worktree_intent(routing)
+        try:
+            top = subprocess_run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=workspace_root,
+                stdout=PIPE,
+                stderr=DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+            )
+        except (SubprocessError, OSError):
+            return False
+        if top.returncode != 0:
+            return False
+        workspace_git_root = Path(top.stdout.strip() or workspace_root).resolve()
+        if workspace_git_root != workspace_root.resolve():
+            return False
+        worktree_service = getattr(self, "_worktree_service", None)
+        git_adapter = getattr(worktree_service, "_git", None)
+        configured_root = getattr(git_adapter, "_repo_root", None)
+        if not isinstance(configured_root, str) or not configured_root.strip():
+            return True
+        try:
+            configured = Path(configured_root).resolve()
+        except (OSError, RuntimeError):
+            return False
+        return workspace_git_root == configured
 
     def _routing_has_write_worktree_intent(self, routing: dict[str, Any], goal: str | None = None) -> bool:
         goal_text = str(goal or routing.get("goal") or routing.get("userGoal") or "").strip()
@@ -623,7 +651,7 @@ class MessageRoutingMixin:
         if routing.get("worktreeBindingRequired") is True:
             return routing
         worktree_config = self._worktree_config()
-        if worktree_config.get("autoBindWriteTasks", False) is not True:
+        if worktree_config.get("autoBindWriteTasks", False) is not True and routing.get("preferredWorktree") is not True:
             return routing
         if not self._routing_has_write_worktree_intent(routing, goal=goal):
             return routing
@@ -977,7 +1005,7 @@ class MessageRoutingMixin:
             if worktree is not None:
                 routing_dict["activeWorktree"] = worktree
                 runtime_task = self._persist_task_routing(runtime_task, routing_dict)
-            elif routing_dict.get("worktreeBindingRequired") is True:
+            elif routing_dict.get("worktreeBindingRequired") is True and routing_dict.get("preferredWorktree") is not True:
                 return self._return_worktree_binding_failed_task(
                     session=session,
                     task=runtime_task,
@@ -1104,7 +1132,7 @@ class MessageRoutingMixin:
             runtime_task = self._persist_task_routing(runtime_task, routing_dict)
             context["routing"] = routing_dict
             context = self._context_with_worktree_binding(context, worktree)
-        elif routing_dict.get("worktreeBindingRequired") is True:
+        elif routing_dict.get("worktreeBindingRequired") is True and routing_dict.get("preferredWorktree") is not True:
             return self._return_worktree_binding_failed_task(
                 session=session,
                 task=runtime_task,

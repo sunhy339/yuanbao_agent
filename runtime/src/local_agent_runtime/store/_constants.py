@@ -191,7 +191,7 @@ DEFAULT_CONFIG = {
         }
     },
     "worktree": {
-        "autoBindWriteTasks": True,
+        "autoBindWriteTasks": False,
         "baseRef": "HEAD",
         "branchPrefix": "agent",
         "pathRoot": "",
@@ -222,7 +222,7 @@ DEFAULT_CONFIG = {
     "storage": {
         "retention": {
             "enabled": True,
-            "traceEventsMaxPerSession": 5000,
+            "traceEventsMaxPerSession": 50000,
             "providerTurnsMaxPerTask": 200,
             "contextSnapshotsMaxPerTask": 100,
             "commandLogsMaxPerTask": 100,

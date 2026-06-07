@@ -243,7 +243,7 @@ class Orchestrator(
                 type="session.created",
                 ts=self._store.now(),
                 payload={"session": session},
-                visibility="panel",
+                visibility="trace",
             )
         )
         return {"session": session}

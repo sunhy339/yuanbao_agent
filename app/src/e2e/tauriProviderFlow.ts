@@ -311,12 +311,22 @@ function normalizeForTextComparison(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function normalizeRenderedMarkdownText(value: string) {
+  return normalizeForTextComparison(
+    value
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/^\s*[-*+]\s+/gm, "")
+      .replace(/^\s*\d+[.)]\s+/gm, "")
+      .replace(/[*_`~]/g, ""),
+  );
+}
+
 function visibleComparableLength(value: string) {
   return Array.from(value.replace(/\s+/g, "")).length;
 }
 
 function meaningfulTextFragments(value: string) {
-  const normalized = normalizeForTextComparison(value);
+  const normalized = normalizeRenderedMarkdownText(value);
   const minFragmentLength = /[\u4e00-\u9fff]/.test(normalized) ? 8 : 16;
   const fragments = normalized
     .split(/(?<=[.!?。！？])\s+|(?:\s+-\s+)|\s{2,}/)

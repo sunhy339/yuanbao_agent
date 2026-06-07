@@ -70,7 +70,7 @@ import { useDerivedViews } from "./hooks/useDerivedViews";
 
 const runtimeClient = new RuntimeClient();
 const SESSION_TRACE_EVENT_PAGE_LIMIT = 500;
-const SESSION_TRACE_EVENT_MAX_PAGES = 40;
+const SESSION_TRACE_EVENT_MAX_PAGES = 100;
 const SESSION_COMMAND_LOG_LIMIT = 1000;
 
 function mergeTraceEvents(
@@ -1250,7 +1250,7 @@ export function App() {
       permissionMode={views.permissionMode}
       onPermissionModeChange={handlePermissionModeChange}
       onWorkspacePathChange={setWorkspacePath}
-      useWorktree={config?.worktree?.autoBindWriteTasks ?? true}
+      useWorktree={config?.worktree?.autoBindWriteTasks ?? false}
       onUseWorktreeChange={handleUseWorktreeChange}
       worktreeModeBusy={worktreeModeBusy}
       runtimeLabel={views.runtimeStatusLabel}

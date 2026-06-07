@@ -738,9 +738,17 @@ class TestEventVisibilityRouting:
     def test_tool_calls_are_trace_visibility(self):
         from local_agent_runtime.orchestrator.service import Orchestrator
         task = {"id": "t-1", "role": "root"}
-        for event_type in ["tool.call.started", "tool.call.completed", "tool.call.failed"]:
+        for event_type in ["tool.call.started", "tool.call.completed", "tool.call.failed", "tool.started", "tool.completed", "tool.output", "command.started", "command.completed"]:
             vis = Orchestrator._infer_event_visibility(event_type, task)
             assert vis == "trace"
+
+    def test_root_tool_lifecycle_derives_chat_compat_frames(self):
+        from local_agent_runtime.orchestrator.service import Orchestrator
+        task = {"id": "t-1", "role": "root"}
+        for event_type in ["tool.started", "tool.completed", "tool.output", "command.output"]:
+            vis = Orchestrator._infer_event_visibility(event_type, task)
+            assert vis == "trace"
+            assert Orchestrator._chat_compat_event_visibility(event_type, task, vis) == "chat"
 
 
 class TestEventPersistenceForRefresh:

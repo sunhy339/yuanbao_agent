@@ -2127,6 +2127,7 @@
 
 .hc-thinking,
 .hc-tool-inline,
+.hc-tool-group,
 .hc-runtime,
 .hc-worklog,
 .hc-runtime-inline,
@@ -2146,6 +2147,7 @@
 
 .hc-thinking button,
 .hc-tool-inline > button,
+.hc-tool-group > button,
 .hc-runtime-head,
 .hc-worklog-head,
 .hc-special-event > button,
@@ -2170,6 +2172,7 @@
 .hc-tool-inline[data-kind="git-status"] > button,
 .hc-tool-inline[data-kind="git-diff"] > button,
 .hc-thinking button,
+.hc-tool-group > button,
 .hc-worklog-head {
   min-height: 28px;
   border-color: transparent;
@@ -2185,6 +2188,7 @@
 
 .hc-thinking button:hover,
 .hc-tool-inline > button:hover,
+.hc-tool-group > button:hover,
 .hc-runtime-head:hover,
 .hc-worklog-head:hover,
 .hc-special-event > button:hover,
@@ -2229,6 +2233,7 @@
 
 .hc-thinking strong,
 .hc-tool-inline strong,
+.hc-tool-group strong,
 .hc-runtime strong,
 .hc-worklog span {
   color: var(--hc-text);
@@ -2331,6 +2336,7 @@
 
 .hc-thinking em,
 .hc-tool-inline span,
+.hc-tool-group span,
 .hc-runtime-head span,
 .hc-special-event span,
 .hc-slash-command > button > span {
@@ -2345,6 +2351,7 @@
 
 .hc-tool-inline em,
 .hc-tool-inline time,
+.hc-tool-group em,
 .hc-runtime-head em,
 .hc-runtime-head time,
 .hc-status-chip {
@@ -2881,17 +2888,20 @@
 }
 
 .hc-runtime[data-tone="success"],
-.hc-tool-inline[data-tone="success"] {
+.hc-tool-inline[data-tone="success"],
+.hc-tool-group[data-tone="success"] {
   border-left-color: rgba(32, 114, 69, 0.45);
 }
 
 .hc-runtime[data-tone="running"],
-.hc-tool-inline[data-tone="running"] {
+.hc-tool-inline[data-tone="running"],
+.hc-tool-group[data-tone="running"] {
   border-left-color: rgba(164, 91, 59, 0.55);
 }
 
 .hc-runtime[data-tone="danger"],
-.hc-tool-inline[data-tone="danger"] {
+.hc-tool-inline[data-tone="danger"],
+.hc-tool-group[data-tone="danger"] {
   border-left-color: rgba(178, 59, 47, 0.55);
 }
 
@@ -3465,6 +3475,41 @@ button.hc-diff-new-line:hover {
   color: #39434d;
   font: 12px/1.55 "Cascadia Mono", Consolas, monospace;
   white-space: pre-wrap;
+}
+
+.hc-tool-group-list {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 0 22px;
+}
+
+.hc-tool-group-item {
+  display: grid;
+  gap: 4px;
+  border-left: 1px solid var(--hc-line);
+  margin-left: calc(var(--tool-group-depth, 0) * 16px);
+  padding-left: 7px;
+}
+
+.hc-tool-group-item[data-depth="1"] {
+  --tool-group-depth: 1;
+}
+
+.hc-tool-group-item[data-depth="2"] {
+  --tool-group-depth: 2;
+}
+
+.hc-tool-group-item[data-depth="3"] {
+  --tool-group-depth: 3;
+}
+
+.hc-tool-group-item[data-depth="4"] {
+  --tool-group-depth: 4;
+}
+
+.hc-tool-group-item .hc-tool-inline {
+  border-left: 0;
+  padding-left: 0;
 }
 
 .hc-worklog-list {

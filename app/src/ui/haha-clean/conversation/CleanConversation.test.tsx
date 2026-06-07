@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { CleanActivityItem, CleanAgentTaskGroupBlock, CleanPermissionMessageBlock, CleanPlanUpdateBlock, CleanRuntimeBlock, CleanSlashCommandBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
+import { CleanActivityItem, CleanAgentTaskGroupBlock, CleanPermissionMessageBlock, CleanPlanUpdateBlock, CleanRuntimeBlock, CleanSlashCommandBlock, CleanThinkingBlock, CleanToolGroupBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
 
 afterEach(() => cleanup());
 
@@ -1850,5 +1850,42 @@ describe("CleanConversation", () => {
     const preview = screen.getByLabelText("工具结果预览");
     expect(within(preview).getByText("目录")).toBeInTheDocument();
     expect(within(preview).getByText("src/app.ts, src/ui.tsx")).toBeInTheDocument();
+  });
+
+  it("renders typed tool groups without the legacy worklog chrome", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <CleanToolGroupBlock
+        items={[
+          {
+            id: "inline:search",
+            kind: "tool",
+            toolName: "search_files",
+            toolUseId: "search_1",
+            title: "Search README",
+            status: "completed",
+            toolCategory: "search",
+            code: JSON.stringify({ query: "README" }),
+          },
+          {
+            id: "inline:read",
+            kind: "tool",
+            toolName: "read_file",
+            toolUseId: "read_1",
+            parentToolUseId: "search_1",
+            title: "Read docs/README.md",
+            status: "completed",
+            toolCategory: "context_read",
+            code: JSON.stringify({ path: "docs/README.md" }),
+          },
+        ]}
+      />,
+    );
+
+    expect(container.querySelector(".hc-worklog")).toBeNull();
+    expect(container.querySelector(".hc-tool-group")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /搜索 1、读取 1/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /读取 docs\/README\.md/ }));
+    expect(screen.getAllByText(/docs\/README\.md/).length).toBeGreaterThan(0);
   });
 });

@@ -22,7 +22,7 @@ if (!window.matchMedia) {
 }
 
 describe("CleanSessionWorkspace", () => {
-  it("hides quiet inline tool messages when the same runtime item is already visible", () => {
+  it("prefers typed tool messages over duplicate runtime worklogs", () => {
     const items: ConversationActivityItem[] = [
       {
         id: "message:tool_activity:tc_1",
@@ -62,10 +62,10 @@ describe("CleanSessionWorkspace", () => {
 
     const filtered = filterCleanDuplicateToolMessages(items);
 
-    expect(filtered.map((item) => item.id)).toEqual(["worklog:tool:tc_1"]);
+    expect(filtered.map((item) => item.id)).toEqual(["message:tool_activity:tc_1"]);
   });
 
-  it("keeps important inline tool messages even when runtime items exist", () => {
+  it("dedupes duplicate runtimes and groups consecutive typed tool messages", () => {
     const items: ConversationActivityItem[] = [
       {
         id: "message:tool_activity:write_1",
@@ -119,14 +119,16 @@ describe("CleanSessionWorkspace", () => {
 
     const filtered = filterCleanDuplicateToolMessages(items);
 
-    expect(filtered.map((item) => item.id)).toEqual([
-      "message:tool_activity:write_1",
-      "runtime:tool:write_1",
-      "message:tool_activity:read_failed",
-    ]);
+    expect(filtered.map((item) => item.id)).toEqual(["tool-group:inline:write_1:read_failed"]);
+    expect(filtered[0]?.kind).toBe("worklog");
+    if (filtered[0]?.kind !== "worklog") {
+      throw new Error("Expected typed tools to group into a tool group");
+    }
+    expect(filtered[0].groupKind).toBe("tool_group");
+    expect(filtered[0].runtimeItems.map((item) => item.toolUseId)).toEqual(["write_1", "read_failed"]);
   });
 
-  it("folds completed inline tools into a visible worklog when no runtime row can represent them", () => {
+  it("groups consecutive typed tool messages into a haha-style tool group", () => {
     const items: ConversationActivityItem[] = [
       {
         id: "message:tool_activity:read_1",
@@ -212,11 +214,12 @@ describe("CleanSessionWorkspace", () => {
 
     const filtered = filterCleanDuplicateToolMessages(items);
 
-    expect(filtered.map((item) => item.id)).toEqual(["worklog:inline:read_1:git_status:rg:get_content:test"]);
+    expect(filtered.map((item) => item.id)).toEqual(["tool-group:inline:read_1:git_status:rg:get_content:test"]);
     expect(filtered[0]?.kind).toBe("worklog");
     if (filtered[0]?.kind !== "worklog") {
-      throw new Error("Expected inline tools to fold into a worklog");
+      throw new Error("Expected inline tools to group into a tool group");
     }
+    expect(filtered[0].groupKind).toBe("tool_group");
     expect(filtered[0].runtimeItems.map((item) => item.toolName)).toEqual([
       "read_file",
       "run_command",
@@ -233,7 +236,7 @@ describe("CleanSessionWorkspace", () => {
     ]);
   });
 
-  it("folds categorized inline tools while keeping failed records visible", () => {
+  it("groups categorized inline tools while keeping failures in the same tool flow", () => {
     const items: ConversationActivityItem[] = [
       {
         id: "message:tool_activity:category_read",
@@ -290,18 +293,17 @@ describe("CleanSessionWorkspace", () => {
 
     const filtered = filterCleanDuplicateToolMessages(items);
 
-    expect(filtered.map((item) => item.id)).toEqual([
-      "worklog:inline:category_read:category_git",
-      "message:tool_activity:category_failed",
-    ]);
+    expect(filtered.map((item) => item.id)).toEqual(["tool-group:inline:category_read:category_git:category_failed"]);
     expect(filtered[0]?.kind).toBe("worklog");
     if (filtered[0]?.kind !== "worklog") {
-      throw new Error("Expected categorized inline tools to fold into a worklog");
+      throw new Error("Expected categorized inline tools to group into a tool group");
     }
-    expect(filtered[0].runtimeItems.map((item) => item.toolCategory)).toEqual(["context_read", "git"]);
+    expect(filtered[0].groupKind).toBe("tool_group");
+    expect(filtered[0].runtimeItems.map((item) => item.toolCategory)).toEqual(["context_read", "git", "search"]);
+    expect(filtered[0].runtimeItems.map((item) => item.status)).toEqual(["completed", "completed", "failed"]);
   });
 
-  it("folds completed child tool messages into the visible worklog tree", () => {
+  it("dedupes child tool messages against runtime trees without losing failed typed tools", () => {
     const items: ConversationActivityItem[] = [
       {
         id: "message:tool_activity:child_1",
@@ -379,9 +381,14 @@ describe("CleanSessionWorkspace", () => {
     const filtered = filterCleanDuplicateToolMessages(items);
 
     expect(filtered.map((item) => item.id)).toEqual([
-      "message:tool_activity:child_failed",
+      "tool-group:inline:child_1:child_failed",
       "worklog:tool:parent",
     ]);
+    expect(filtered[0]?.kind).toBe("worklog");
+    if (filtered[0]?.kind !== "worklog") {
+      throw new Error("Expected child tools to group into a tool group");
+    }
+    expect(filtered[0].groupKind).toBe("tool_group");
   });
 
   it("hides early task summaries and routine status events from the main transcript", () => {

@@ -29,23 +29,6 @@ function isVisibleRuntime(item: RuntimeTimelineItem) {
   return item.visibility !== "panel";
 }
 
-const QUIET_INLINE_TOOL_NAMES = new Set([
-  "read_file",
-  "list_dir",
-  "list_directory",
-  "git_status",
-  "git_diff",
-  "search_files",
-  "code_search",
-]);
-const IMPORTANT_INLINE_TOOL_NAMES = new Set([
-  "apply_patch",
-  "write_file",
-  "edit_file",
-  "multi_edit",
-  "replace_file",
-  "delete_file",
-]);
 const INLINE_SHELL_TOOL_NAMES = new Set([
   "run_command",
   "command",
@@ -54,21 +37,12 @@ const INLINE_SHELL_TOOL_NAMES = new Set([
   "shell_command",
   "powershell",
 ]);
-const FOLD_INLINE_TOOL_CATEGORIES = new Set([
-  "command",
-  "context_read",
-  "git",
-  "search",
-  "verification",
-]);
 const INLINE_CONTEXT_COMMAND_RE =
   /^(git\s+(?:status|diff|log|show|branch|remote|tag|rev-parse|rev-list|ls-files|grep|blame)(?:\s|$)|rg(?:\s|$)|grep(?:\s|$)|ag(?:\s|$)|ack(?:\s|$)|findstr(?:\s|$)|select-string(?:\s|$)|find(?:\s|$)|where(?:\.exe)?(?:\s|$)|which(?:\s|$)|whereis(?:\s|$)|locate(?:\s|$)|cat(?:\s|$)|head(?:\s|$)|tail(?:\s|$)|less(?:\s|$)|more(?:\s|$)|type(?:\s|$)|wc(?:\s|$)|stat(?:\s|$)|file(?:\s|$)|strings(?:\s|$)|jq(?:\s|$)|awk(?:\s|$)|cut(?:\s|$)|sort(?:\s|$)|uniq(?:\s|$)|tr(?:\s|$)|get-content(?:\s|$)|gc(?:\s|$)|get-item(?:\s|$)|test-path(?:\s|$)|resolve-path(?:\s|$)|get-filehash(?:\s|$)|get-acl(?:\s|$)|format-hex(?:\s|$)|pwd(?:\s|$)|get-location(?:\s|$)|ls(?:\s|$)|dir(?:\s|$)|tree(?:\s|$)|du(?:\s|$)|get-childitem(?:\s|$)|gci(?:\s|$))/i;
 const INLINE_VERIFICATION_COMMAND_RE =
   /\b(npm\s+(?:run\s+)?(?:test|typecheck|lint|build)|pnpm\s+(?:run\s+)?(?:test|typecheck|lint|build)|yarn\s+(?:test|typecheck|lint|build)|pytest|vitest|jest|playwright|tsc|ruff|eslint|mypy|cargo\s+(?:test|check|build)|go\s+test|dotnet\s+test)\b|\b(test|typecheck|lint|build|verify|check)\b/i;
 const INLINE_ROUTINE_MUTATION_COMMAND_RE =
   /^git\s+(?:add|commit|reset\s+--soft|restore\s+--staged)(?:\s|$)/i;
-const FAILED_INLINE_TOOL_STATUSES = new Set(["failed", "failure", "error", "cancelled", "canceled", "rejected", "blocked"]);
-const COMPLETED_INLINE_TOOL_STATUSES = new Set(["completed", "complete", "done", "finished", "succeeded", "success", "passed"]);
 
 const LOW_SIGNAL_TASK_STEP_PATTERNS = [
   /目标已开始/,
@@ -160,25 +134,6 @@ function toolInputFingerprint(value?: string | null) {
   return normalizePath(structured || text).toLowerCase();
 }
 
-function isQuietCompletedRuntime(item: RuntimeTimelineItem) {
-  const name = normalizeToolName(item.toolName || item.title);
-  const status = item.status?.toLowerCase() ?? "";
-  if (!QUIET_INLINE_TOOL_NAMES.has(name)) return false;
-  if (isRuntimeInFlight(status)) return false;
-  return !["failed", "error", "cancelled", "rejected"].includes(status);
-}
-
-function isCompletedChildRuntime(item: RuntimeTimelineItem) {
-  const status = item.status?.toLowerCase() ?? "";
-  if (!item.parentToolUseId || item.kind !== "tool") return false;
-  if (isRuntimeInFlight(status)) return false;
-  return !["failed", "error", "cancelled", "rejected", "blocked"].includes(status);
-}
-
-function shouldFoldDuplicateRuntime(item: RuntimeTimelineItem) {
-  return isQuietCompletedRuntime(item) || isCompletedChildRuntime(item);
-}
-
 function runtimeMatchKeys(item: RuntimeTimelineItem) {
   return [
     item.toolUseId,
@@ -218,24 +173,6 @@ function activityRuntimeItems(items: ConversationActivityItem[]) {
   });
 }
 
-function shouldHideDuplicateInlineToolMessage(
-  message: SessionWorkspaceMessage,
-  runtimeIds: Set<string>,
-  quietRuntimeFingerprints: Set<string>,
-) {
-  const kind = message.metadata?.kind;
-  if (kind !== "tool_use" && kind !== "tool_activity" && kind !== "tool_result") return false;
-  const name = normalizeToolName(message.toolName || metadataText(message, "toolName"));
-  const status = message.status?.toLowerCase() ?? "";
-  if (message.streaming || isRuntimeInFlight(status) || ["failed", "error", "cancelled", "rejected", "blocked"].includes(status)) {
-    return false;
-  }
-  if (messageMatchKeys(message).some((key) => runtimeIds.has(key))) return true;
-  if (!QUIET_INLINE_TOOL_NAMES.has(name)) return false;
-  const fingerprint = messageFingerprint(message);
-  return Boolean(fingerprint && quietRuntimeFingerprints.has(fingerprint));
-}
-
 function inlineToolInputText(message: SessionWorkspaceMessage) {
   const metadataInputText = metadataText(message, "inputText");
   if (metadataInputText) return metadataInputText;
@@ -264,14 +201,6 @@ function inlineToolStatus(message: SessionWorkspaceMessage) {
   return typeof message.status === "string" ? message.status.trim().toLowerCase() : "";
 }
 
-function isCompletedInlineToolMessage(message: SessionWorkspaceMessage) {
-  const status = inlineToolStatus(message);
-  if (message.streaming || isRuntimeInFlight(status) || FAILED_INLINE_TOOL_STATUSES.has(status)) {
-    return false;
-  }
-  return !status || COMPLETED_INLINE_TOOL_STATUSES.has(status);
-}
-
 function inlineToolCommand(message: SessionWorkspaceMessage) {
   const record = inlineToolInputRecord(message);
   const structured = readRecordText(record, ["command", "cmd"]);
@@ -297,42 +226,9 @@ function inlineToolTarget(message: SessionWorkspaceMessage) {
   return normalizePath(readRecordText(record, ["path", "file", "target", "query", "url", "cwd", "root", "command", "cmd"]));
 }
 
-function isCollapsibleInlineCommand(message: SessionWorkspaceMessage) {
-  const command = normalizeComparableCommand(inlineToolCommand(message));
-  return Boolean(
-    command &&
-    (
-      isVerificationCommand(command) ||
-      INLINE_VERIFICATION_COMMAND_RE.test(command) ||
-      INLINE_CONTEXT_COMMAND_RE.test(command) ||
-      INLINE_ROUTINE_MUTATION_COMMAND_RE.test(command)
-    ),
-  );
-}
-
-function shouldFoldInlineToolMessageToWorklog(message: SessionWorkspaceMessage) {
+function isInlineToolMessage(message: SessionWorkspaceMessage) {
   const kind = messageMetadataKind(message);
-  if (kind !== "tool_use" && kind !== "tool_activity" && kind !== "tool_result") {
-    return false;
-  }
-  if (!isCompletedInlineToolMessage(message)) {
-    return false;
-  }
-  const name = normalizeToolName(message.toolName || metadataText(message, "toolName"));
-  if (IMPORTANT_INLINE_TOOL_NAMES.has(name)) {
-    return false;
-  }
-  const category = metadataText(message, "toolCategory").toLowerCase();
-  if (category && FOLD_INLINE_TOOL_CATEGORIES.has(category)) {
-    return true;
-  }
-  if (QUIET_INLINE_TOOL_NAMES.has(name)) {
-    return true;
-  }
-  if (INLINE_SHELL_TOOL_NAMES.has(name)) {
-    return isCollapsibleInlineCommand(message);
-  }
-  return false;
+  return kind === "tool_use" || kind === "tool_activity" || kind === "tool_result";
 }
 
 function inlineToolRuntimeCategory(message: SessionWorkspaceMessage) {
@@ -412,9 +308,15 @@ function foldInlineToolMessagesIntoWorklogs(items: ConversationActivityItem[]) {
       return;
     }
     const first = buffer[0];
+    if (buffer.length === 1) {
+      folded.push(first);
+      buffer = [];
+      return;
+    }
     folded.push({
-      id: `worklog:inline:${buffer.map((item) => stripToolEntityId(item.message.id) || item.message.id).join(":")}`,
+      id: `tool-group:inline:${buffer.map((item) => stripToolEntityId(item.message.id) || item.message.id).join(":")}`,
       kind: "worklog",
+      groupKind: "tool_group",
       order: first.order,
       time: first.time,
       runtimeItems: buffer.map((item) => inlineToolMessageToRuntime(item.message)),
@@ -423,7 +325,7 @@ function foldInlineToolMessagesIntoWorklogs(items: ConversationActivityItem[]) {
   };
 
   items.forEach((item) => {
-    if (item.kind === "message" && shouldFoldInlineToolMessageToWorklog(item.message)) {
+    if (item.kind === "message" && isInlineToolMessage(item.message)) {
       buffer.push(item);
       return;
     }
@@ -692,18 +594,43 @@ export function dedupeCleanMessages(messages: SessionWorkspaceMessage[]) {
 }
 
 export function filterCleanDuplicateToolMessages(items: ConversationActivityItem[]) {
-  const foldableRuntimes = activityRuntimeItems(items).filter(shouldFoldDuplicateRuntime);
-  if (!foldableRuntimes.length) {
-    return foldInlineToolMessagesIntoWorklogs(items);
+  const inlineToolKeys = new Set<string>();
+  const inlineToolFingerprints = new Set<string>();
+  for (const item of items) {
+    if (item.kind !== "message" || !isInlineToolMessage(item.message)) {
+      continue;
+    }
+    messageMatchKeys(item.message).forEach((key) => inlineToolKeys.add(key));
+    const fingerprint = messageFingerprint(item.message);
+    if (fingerprint) inlineToolFingerprints.add(fingerprint);
   }
-  const runtimeIds = new Set(foldableRuntimes.flatMap(runtimeMatchKeys));
-  const quietRuntimeFingerprints = new Set(
-    foldableRuntimes.filter(isQuietCompletedRuntime).map(runtimeFingerprint).filter(Boolean),
-  );
-  const deduped = items.filter((item) => (
-    item.kind !== "message" ||
-    !shouldHideDuplicateInlineToolMessage(item.message, runtimeIds, quietRuntimeFingerprints)
-  ));
+
+  const hasInlineTwin = (runtime: RuntimeTimelineItem) => {
+    const keys = runtimeMatchKeys(runtime);
+    const fingerprint = runtimeFingerprint(runtime);
+    return (
+      keys.some((key) => inlineToolKeys.has(key)) ||
+      Boolean(fingerprint && inlineToolFingerprints.has(fingerprint))
+    );
+  };
+
+  const deduped = items.flatMap((item): ConversationActivityItem[] => {
+    if (item.kind === "message") {
+      return [item];
+    }
+    if (item.kind === "runtime") {
+      return hasInlineTwin(item.runtime) ? [] : [item];
+    }
+    const runtimeItems = item.runtimeItems.filter((runtime) => !hasInlineTwin(runtime));
+    if (!runtimeItems.length) {
+      return [];
+    }
+    if (runtimeItems.length === item.runtimeItems.length) {
+      return [item];
+    }
+    return [{ ...item, runtimeItems }];
+  });
+
   return foldInlineToolMessagesIntoWorklogs(deduped);
 }
 

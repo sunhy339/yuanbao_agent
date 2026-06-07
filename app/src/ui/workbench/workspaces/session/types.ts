@@ -552,6 +552,7 @@ export type ConversationActivityItem =
   | {
       id: string;
       kind: "worklog";
+      groupKind?: "tool_group";
       order: number;
       time?: number;
       runtimeItems: RuntimeTimelineItem[];

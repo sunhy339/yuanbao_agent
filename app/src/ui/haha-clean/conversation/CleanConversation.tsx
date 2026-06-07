@@ -255,13 +255,83 @@ function toolInlineSummary(message: SessionWorkspaceMessage) {
   }
   const structuredResult = cleanInlineDisplayText(readString(message.metadata?.resultSummary));
   const result = summarizeToolResultText(readString(message.metadata?.resultText));
-  return compactText(structuredResult || result || cleanInlineDisplayText(message.content) || "等待工具返回结果", 170);
+  if (structuredResult || result) return compactText(structuredResult || result, 170);
+  if (message.streaming || isInFlight(message.status)) return "等待工具返回结果";
+  const safeContent = cleanInlineDisplayText(message.content);
+  const inputText = cleanInlineDisplayText(readString(message.metadata?.inputText));
+  if (!safeContent || safeContent === inputText || looksLikeInternalPayloadText(safeContent)) return "";
+  return compactText(safeContent, 170);
 }
 
 function toolInlineTarget(message: SessionWorkspaceMessage) {
   if (isAskUserToolMessage(message)) return "";
   const input = readToolInputRecord(message);
   return compactText(cleanInlineDisplayText(readString(input?.path ?? input?.file ?? input?.cwd ?? input?.command ?? input?.query)), 92);
+}
+
+function toolGroupLabel(item: RuntimeTimelineItem) {
+  const name = normalizeRuntimeToolName(item);
+  const category = typeof item.toolCategory === "string" ? item.toolCategory.trim().toLowerCase() : "";
+  if (category === "context_read" || name === "read_file" || name === "list_dir" || name === "list_directory") return "读取";
+  if (category === "search" || name === "search_files" || name === "code_search") return "搜索";
+  if (category === "git" || name === "git_status" || name === "git_diff") return "Git";
+  if (category === "verification") return "验证";
+  if (item.kind === "command" || ["run_command", "command", "bash", "shell", "shell_command", "powershell"].includes(name)) return "命令";
+  if (name === "apply_patch" || name === "write_file" || name === "edit_file" || item.kind === "patch") return "文件";
+  if (name === "agent" || name === "task") return "Agent";
+  return "工具";
+}
+
+function toolGroupSummary(items: RuntimeTimelineItem[]) {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const label = toolGroupLabel(item);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([left], [right]) => compareWorklogGroupLabels(left, right))
+    .map(([label, count]) => `${label} ${count}`)
+    .join("、");
+}
+
+function runtimeItemToToolMessage(item: RuntimeTimelineItem): SessionWorkspaceMessage | null {
+  if (!["tool", "command", "patch"].includes(item.kind)) {
+    return null;
+  }
+  const toolName =
+    item.toolName ||
+    (item.kind === "command" ? "run_command" : item.kind === "patch" ? "apply_patch" : normalizeRuntimeToolName(item));
+  return {
+    id: `tool_activity:${item.toolUseId || item.sourceId || item.id}`,
+    role: "assistant",
+    content: item.code || item.summary || "",
+    taskId: item.taskId,
+    toolName,
+    status: item.status,
+    createdAt: item.time,
+    updatedAt: item.time,
+    metadata: {
+      kind: "tool_activity",
+      toolUseId: item.toolUseId || item.sourceId || item.id,
+      parentToolUseId: item.parentToolUseId,
+      toolGroupId: item.toolGroupId,
+      toolIndex: item.toolIndex,
+      toolTotal: item.toolTotal,
+      toolOperationId: item.toolOperationId,
+      toolOperationLabel: item.toolOperationLabel,
+      toolCategory: item.toolCategory,
+      toolPhaseId: item.toolPhaseId,
+      toolPhaseLabel: item.toolPhaseLabel,
+      toolSemanticParentId: item.toolSemanticParentId,
+      toolSemanticParentLabel: item.toolSemanticParentLabel,
+      inputText: item.code,
+      resultText: item.rawDetail || item.summary,
+      resultPreview: item.previewRows,
+      durationMs: item.durationMs,
+      target: item.meta?.[0],
+      inputSummary: item.title,
+    },
+  };
 }
 
 function metadataPreviewRows(value: unknown): Array<{ label: string; value: string }> {
@@ -1194,12 +1264,13 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
   const fallbackInput = metadataTarget ? JSON.stringify({ target: metadataTarget }) : "";
   const previewRows = metadataPreviewRows(message.metadata?.resultPreview);
   const safeContent = cleanInlineDisplayText(message.content);
+  const extraContent = safeContent && safeContent !== input && safeContent !== result ? safeContent : "";
   const details = askUserTool
     ? [
         question ? `问题\n${question}` : "",
         result && !looksLikeInternalPayloadText(result) ? `结果\n${result}` : "",
       ].filter(Boolean).join("\n\n")
-    : [input ? `输入\n${input}` : "", result ? `结果\n${result}` : "", safeContent].filter(Boolean).join("\n\n");
+    : [input ? `输入\n${input}` : "", result ? `结果\n${result}` : "", extraContent].filter(Boolean).join("\n\n");
   const title = askUserTool
     ? "需要你补充信息"
     : toolActionTitle({
@@ -1246,6 +1317,45 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
           </figcaption>
           <pre>{details}</pre>
         </figure>
+      ) : null}
+    </section>
+  );
+});
+
+export const CleanToolGroupBlock = memo(function CleanToolGroupBlock({
+  items,
+  onCopyRuntimeText,
+}: {
+  items: RuntimeTimelineItem[];
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(() => items.some((item) => isInFlight(item.status) || item.parentToolUseId));
+  const running = items.some((item) => isInFlight(item.status));
+  const failed = items.some((item) => statusTone(item.status) === "danger");
+  const childCount = items.filter((item) => item.parentToolUseId).length;
+  const summary = toolGroupSummary(items) || `${items.length} 个工具`;
+  const statusText = running ? "运行中" : failed ? "有失败" : "已完成";
+  const tree = useMemo(() => flattenWorklogTree(buildWorklogTree(items)), [items]);
+  return (
+    <section className="hc-tool-group" data-tone={failed ? "danger" : running ? "running" : "success"}>
+      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <Wrench size={15} />
+        <strong>{summary}</strong>
+        <span>{childCount ? `包含 ${childCount} 个子步骤` : "工具调用"}</span>
+        <em>{statusText}</em>
+      </button>
+      {expanded ? (
+        <div className="hc-tool-group-list">
+          {tree.flatMap((node) => {
+            const message = runtimeItemToToolMessage(node.item);
+            return message ? (
+              <div key={node.item.id} className="hc-tool-group-item" data-depth={node.depth}>
+                <CleanToolMessageBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />
+              </div>
+            ) : [];
+          })}
+        </div>
       ) : null}
     </section>
   );
@@ -2660,7 +2770,7 @@ function CleanWorklogPhaseRoot({ phase }: { phase: WorklogPhase }) {
   const childTotal = phase.nodes.reduce((total, node) => total + node.children.length, 0);
   const runningCount = phase.nodes.filter((node) => isInFlight(node.item.status)).length;
   const failedCount = phase.nodes.filter((node) => statusTone(node.item.status) === "danger").length;
-  const totalCount = flattenWorklogTree(phase.nodes).length;
+  const rootCount = phase.nodes.length;
   const summary = failedCount ? `${failedCount} 个异常` : runningCount ? `${runningCount} 个进行中` : childTotal ? `包含 ${childTotal} 个子步骤` : "语义阶段";
   return (
     <div className="hc-worklog-phase-root" data-tone={tone}>
@@ -2668,7 +2778,7 @@ function CleanWorklogPhaseRoot({ phase }: { phase: WorklogPhase }) {
         <ListChecks size={13} />
         <strong>{phase.label}</strong>
       </span>
-      <em>{totalCount} 项</em>
+      <em>{rootCount} 项</em>
       <small>{summary}</small>
     </div>
   );
@@ -2733,7 +2843,7 @@ export function CleanWorklogBlock({
             <section className="hc-worklog-phase" key={phase.id} aria-label={`阶段：${phase.label}`}>
               <header>
                 <span>{phase.label}</span>
-                <small>{flattenWorklogTree(phase.nodes).length} 项</small>
+                <small>{phase.nodes.length} 项</small>
               </header>
               <CleanWorklogPhaseRoot phase={phase} />
               <div className="hc-worklog-list">
@@ -2833,7 +2943,9 @@ export function CleanActivityItem({
   if (item.kind === "worklog") {
     return (
       <div className="hc-activity" data-transcript-kind={transcriptKind}>
-        <CleanWorklogBlock items={item.runtimeItems} onCopyRuntimeText={onCopyRuntimeText} />
+        {item.groupKind === "tool_group"
+          ? <CleanToolGroupBlock items={item.runtimeItems} onCopyRuntimeText={onCopyRuntimeText} />
+          : <CleanWorklogBlock items={item.runtimeItems} onCopyRuntimeText={onCopyRuntimeText} />}
       </div>
     );
   }

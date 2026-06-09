@@ -233,7 +233,32 @@ class ApprovalFlowMixin:
                 visibility="trace",
             )
             return {"approval": approval, "task": task, "ignored": True}
-        if approval["decision"] == "approved":
+        pending_state = self._load_pending_react_state(approval["taskId"])
+        child_task = self._blocked_child_collaboration_for_runtime_task(approval=approval, runtime_task=task)
+        pending_dag_state = self._load_pending_dag_state(task["id"])
+        if (
+            pending_state is None
+            and child_task is None
+            and pending_dag_state is None
+            and approval.get("kind") in {"plan", "run_command", "apply_patch", "write_file"}
+        ):
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="approval.resolved",
+                payload=self._approval_resolved_payload(
+                    approval=approval,
+                    task=task,
+                    extra={
+                        "ignored": True,
+                        "taskStatus": task.get("status"),
+                        "reason": "No pending ReAct state exists for this legacy approval.",
+                    },
+                ),
+                visibility="trace",
+            )
+            return {"approval": approval, "task": task, "ignored": True}
+        if approval["decision"] == "approved" and child_task is None:
             task = self._ensure_task_running_after_approval(
                 task=task,
                 detail="Approval accepted",
@@ -244,7 +269,6 @@ class ApprovalFlowMixin:
             event_type="approval.resolved",
             payload=self._approval_resolved_payload(approval=approval, task=task),
         )
-        pending_state = self._load_pending_react_state(approval["taskId"])
         if pending_state is not None:
             if approval.get("kind") == "plan" and self._pending_plan_approval_state(pending_state) is not None:
                 if task.get("status") != "running":
@@ -266,7 +290,6 @@ class ApprovalFlowMixin:
                 )
                 resumed_task = self._resume_cooperative_react(task=running_task, state=answered_state)
                 return {"approval": approval, "task": resumed_task}
-            child_task = self._blocked_child_collaboration_for_runtime_task(approval=approval, runtime_task=task)
             if child_task is not None and self._should_resume_child_approval_in_process(params, child_task):
                 try:
                     runtime_task = self._worker_runner.resume_child_approval(
@@ -304,6 +327,21 @@ class ApprovalFlowMixin:
                 )
                 self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=failed_task)
                 return {"approval": approval, "task": failed_task}
+        if child_task is not None and self._should_resume_child_approval_in_process(params, child_task):
+            try:
+                runtime_task = self._worker_runner.resume_child_approval(
+                    approval=approval,
+                    child_task=child_task,
+                )
+            except Exception as exc:  # noqa: BLE001
+                runtime_task = self._fail_task(
+                    session_id=task["sessionId"],
+                    task=task,
+                    summary=str(exc),
+                    error_code=str(getattr(exc, "code", None) or "CHILD_WORKER_APPROVAL_RESUME_FAILED"),
+                )
+            self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=runtime_task)
+            return {"approval": approval}
         if approval["decision"] == "approved" and approval["kind"] == "plan":
             task = self._resume_approved_plan(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "run_command":
@@ -614,7 +652,6 @@ class ApprovalFlowMixin:
                     goal=task.get("goal") or summary,
                 ),
                 tool_results=[tool_result],
-                force_complete_after_review=True,
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
@@ -667,7 +704,6 @@ class ApprovalFlowMixin:
                     goal=task.get("goal") or summary,
                 ),
                 tool_results=[tool_result],
-                force_complete_after_review=True,
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
@@ -710,7 +746,6 @@ class ApprovalFlowMixin:
                     goal=task.get("goal") or summary,
                 ),
                 tool_results=[tool_result],
-                force_complete_after_review=True,
             )
         except Exception as exc:  # noqa: BLE001
             return self._fail_task(

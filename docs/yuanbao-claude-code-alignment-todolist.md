@@ -629,3 +629,9 @@ Progress:
 - 2026-06-03: `pytest runtime/tests/test_provider_streaming.py runtime/tests/test_provider_adapter.py -q -k "thinking or reasoning or responses_stream"` passed: 14 passed, 55 deselected.
 - 2026-06-03: `pytest runtime/tests/test_provider_turns.py runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py -q -k "thinking or provider_reasoning or events_after"` passed: 9 passed, 86 deselected.
 - 2026-06-03: `python -m compileall -q runtime/src/local_agent_runtime` passed.
+> Current status (2026-06-09): this checklist is a historical migration
+> record. Items that mention dual-writing `hahaCc`, `haha_cc_message`, or
+> `events.hahaCcAfter` describe earlier compatibility work, not the current
+> product contract. The active contract is `yuanbao`-only flat replay,
+> model-first ReAct, no default MetaRouter/DecisionAdvisor/completion-review/
+> workspace-evidence gate, and panel-only task/plan state.

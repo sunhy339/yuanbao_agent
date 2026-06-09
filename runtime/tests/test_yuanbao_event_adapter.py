@@ -166,7 +166,7 @@ def test_yuanbao_output_frames_keep_flat_messages_in_sync() -> None:
     assert "eventId" not in frames[0]["payload"]
 
 
-def test_yuanbao_output_frames_fall_back_to_legacy_haha_cc_payload() -> None:
+def test_yuanbao_output_frames_ignore_legacy_haha_cc_payload() -> None:
     payload = {
         "eventId": "evt_1",
         "type": "thinking",
@@ -174,10 +174,8 @@ def test_yuanbao_output_frames_fall_back_to_legacy_haha_cc_payload() -> None:
         "hahaCc": {"type": "thinking", "text": "plan"},
     }
 
-    assert yuanbao_message_from_event_payload(payload) == {"type": "thinking", "text": "plan"}
-    assert to_yuanbao_output_frames(payload) == [
-        {"kind": "yuanbao_message", "payload": {"type": "thinking", "text": "plan"}},
-    ]
+    assert yuanbao_message_from_event_payload(payload) is None
+    assert to_yuanbao_output_frames(payload) == []
 
 
 def test_collect_yuanbao_server_messages_uses_same_flat_extraction_rules() -> None:
@@ -190,7 +188,6 @@ def test_collect_yuanbao_server_messages_uses_same_flat_extraction_rules() -> No
     assert collect_yuanbao_server_messages(events, after_seq=3) == {
         "messages": [
             {"type": "content_delta", "text": "hello"},
-            {"type": "thinking", "text": "plan"},
         ],
         "lastSeq": 9,
     }

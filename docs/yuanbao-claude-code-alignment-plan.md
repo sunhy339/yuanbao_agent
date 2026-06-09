@@ -417,3 +417,11 @@ Covered streaming sources:
 ### 11.3 Message lifecycle flat boundary
 
 `message.created` is a Yuanbao envelope lifecycle event only. It should not generate flat `content_start`, because legacy flat consumers treat explicit `content_start`, `content_delta`, and `message_complete` as the assistant-output lifecycle.
+> Current status (2026-06-09): this file is a historical migration plan. The
+> current contract is model-first ReAct; normal turns do not use MetaRouter,
+> DecisionAdvisor, completion review, or workspace-evidence gates as default
+> flow. New events write/read only `yuanbao` flat messages; `hahaCc` and
+> `events.hahaCcAfter` are legacy migration terms, not current replay
+> fallbacks. Use `docs/haha-cc-alignment-flow-and-gap.md`,
+> `docs/haha-cc-backend-feature-flow-code-map.md`, and
+> `docs/backend-agent-flow-output-matrix.md` as the current source of truth.

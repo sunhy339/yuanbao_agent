@@ -105,7 +105,6 @@ class TaskLifecycleMixin:
         tool_results: list[dict[str, Any]] | None = None,
         skip_reflection: bool = False,
         skip_drain: bool = False,
-        force_complete_after_review: bool = False,
     ) -> dict[str, Any]:
         if self._task_is_cancelled(task):
             return self._cancelled_task_result(task, summary)
@@ -128,9 +127,6 @@ class TaskLifecycleMixin:
             tool_results=tool_results or [],
             context=context or {},
         )
-        completion_review = self._completion_review_conclusion(context or {})
-        if completion_review:
-            completion_evidence["reviewConclusion"] = completion_review
         completion_audit = self._completion_audit_context(
             task=task,
             completion_evidence=completion_evidence,
@@ -159,13 +155,8 @@ class TaskLifecycleMixin:
             "keyFindings": [],
             "completionEvidence": completion_evidence,
         }
-        if completion_review:
-            structured_result["completionReview"] = completion_review
         completion_gate = self._completion_gate_decision(
-            task=task,
-            context=context or {},
             completion_evidence=completion_evidence,
-            force_complete_after_review=force_complete_after_review,
         )
         if completion_gate["action"] == "wait":
             return self._mark_completion_waiting_on_runtime_work(
@@ -178,54 +169,6 @@ class TaskLifecycleMixin:
                 risk=completion_gate.get("risk"),
                 gate_status=completion_gate.get("gateStatus"),
                 decision=completion_gate.get("decision"),
-                skip_drain=skip_drain,
-            )
-        if completion_gate["action"] == "review":
-            return self._record_completion_review_trace_and_finalize(
-                session_id=session_id,
-                task=task,
-                summary=final_summary,
-                context=context or {},
-                reflection_data=reflection_data,
-                structured_result=structured_result,
-                completion_evidence=completion_evidence,
-                tool_results=tool_results,
-                reason=completion_gate["reason"],
-                risk=completion_gate.get("risk"),
-                gate_status=completion_gate.get("gateStatus"),
-                decision=completion_gate.get("decision"),
-                skip_drain=skip_drain,
-            )
-        if completion_gate["action"] == "fail":
-            failed_gate_status = (
-                completion_gate.get("gateStatus")
-                or completion_gate.get("decision")
-                or "completion_failed"
-            )
-            failed_structured_result = {
-                **structured_result,
-                "status": "failed",
-                "completionGate": {
-                    "status": failed_gate_status,
-                    "decision": completion_gate.get("decision") or failed_gate_status,
-                    "reason": completion_gate["reason"],
-                    "risk": completion_gate.get("risk"),
-                    "internal": True,
-                    "terminal": True,
-                },
-            }
-            failed_structured_result["completionEvidence"] = completion_evidence
-            failure_summary = self._merge_failed_completion_summary(
-                final_summary=final_summary,
-                failure_reason=completion_gate["reason"],
-                completion_evidence=completion_evidence,
-            )
-            return self._fail_task(
-                session_id=session_id,
-                task=task,
-                summary=failure_summary,
-                error_code="COMPLETION_EVIDENCE_INSUFFICIENT",
-                structured_result=failed_structured_result,
                 skip_drain=skip_drain,
             )
         return self._finalize_completed_task(
@@ -295,29 +238,6 @@ class TaskLifecycleMixin:
         self._consolidate_working_memories(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
-        completion_payload = {
-            "decision": "completed",
-            "whyComplete": final_summary[:500],
-            "completionEvidence": completion_evidence,
-            "changedFiles": runtime_task.get("changedFiles") or [],
-            "commands": runtime_task.get("commands") or [],
-            "testsRun": runtime_task.get("verification") or [],
-            "reflection": reflection_data,
-            "remainingRisks": runtime_task.get("risks") or [],
-        }
-        final_completion_audit = (
-            completion_evidence.get("audit")
-            if isinstance(completion_evidence.get("audit"), dict)
-            else {}
-        )
-        if final_completion_audit:
-            completion_payload["audit"] = final_completion_audit
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="agent.decision.completion",
-            payload=completion_payload,
-        )
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -350,179 +270,17 @@ class TaskLifecycleMixin:
             self._drain_session_queue(session_id)
         return runtime_task
 
-    def _record_completion_review_trace_and_finalize(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        summary: str,
-        context: dict[str, Any],
-        reflection_data: dict[str, Any] | None,
-        structured_result: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        tool_results: list[dict[str, Any]] | None,
-        reason: str,
-        risk: str | None,
-        gate_status: str | None,
-        decision: str | None,
-        skip_drain: bool,
-    ) -> dict[str, Any]:
-        status = gate_status or "review_recorded"
-        gate_decision = decision or status
-        review_structured_result = {
-            **structured_result,
-            "completionGate": {
-                "status": status,
-                "decision": gate_decision,
-                "reason": reason,
-                "risk": risk,
-                "internal": True,
-                "terminal": False,
-                "defaultBehavior": "record_only",
-            },
-        }
-        review_structured_result["completionEvidence"] = completion_evidence
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="agent.decision.completion",
-            payload={
-                "decision": gate_decision,
-                "whyBlocked": reason,
-                "completionEvidence": completion_evidence,
-                "completionGate": review_structured_result["completionGate"],
-                "internal": True,
-                "recordOnly": True,
-            },
-            visibility="trace",
-        )
-        return self._finalize_completed_task(
-            session_id=session_id,
-            task=task,
-            final_summary=summary,
-            structured_result=review_structured_result,
-            completion_evidence=completion_evidence,
-            reflection_data=reflection_data,
-            tool_results=tool_results,
-            skip_drain=skip_drain,
-        )
-
-    def _completion_gate_waits_for_external_runtime_work(self, completion_evidence: dict[str, Any]) -> bool:
-        return bool(
-            self._completion_pending_approval_items(completion_evidence)
-            or self._completion_unresolved_child_tasks(completion_evidence)
-        )
-
     def _completion_gate_decision(
         self,
         *,
-        task: dict[str, Any],
-        context: dict[str, Any],
         completion_evidence: dict[str, Any],
-        force_complete_after_review: bool,
     ) -> dict[str, str]:
         unresolved_work_gate = self._completion_unresolved_runtime_work_gate(completion_evidence)
         if unresolved_work_gate is not None:
             return unresolved_work_gate
-        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
-        failed_verification_count = self._completion_evidence_count(counts, "failedVerification")
-        if completion_evidence.get("evidenceLevel") == "failed_verification" or failed_verification_count > 0:
-            return {
-                "action": "fail",
-                "reason": (
-                    "Completion blocked because verification failed. "
-                    "Fix the failed checks before marking the task completed."
-                ),
-            }
-        explicit_completion_review = (
-            self._explicit_completion_review_required(context)
-            or self._summary_only_completion_review_required(context)
-        )
-        reviews_disabled = self._completion_reviews_disabled(context)
-        workspace_evidence_gate = self._completion_workspace_evidence_gate(completion_evidence)
-        if workspace_evidence_gate is not None:
-            if reviews_disabled and workspace_evidence_gate.get("action") == "review":
-                return self._completion_reviews_disabled_failure(
-                    workspace_evidence_gate.get("reason") or "Workspace evidence is required."
-                )
-            return workspace_evidence_gate
-        if not explicit_completion_review:
-            return {"action": "complete", "reason": "Read-only completion is allowed."}
-        is_write_or_verification_task = self._is_write_or_verification_task(task=task, context=context)
-        if not is_write_or_verification_task:
-            return {"action": "complete", "reason": "Explicit completion review does not apply to read-only work."}
-        if force_complete_after_review:
-            return {"action": "complete", "reason": "Completion review was approved."}
-        if context.get("_allow_summary_only_completion") is True:
-            return {"action": "complete", "reason": "Summary-only completion explicitly allowed."}
-        tool_failure_gate = self._completion_tool_failure_gate(completion_evidence)
-        if tool_failure_gate is not None:
-            if reviews_disabled and tool_failure_gate.get("action") == "review":
-                return self._completion_reviews_disabled_failure(
-                    tool_failure_gate.get("reason") or "Completion evidence requires review."
-                )
-            return tool_failure_gate
-        acceptance_gate = self._completion_acceptance_gate(completion_evidence)
-        if acceptance_gate is not None:
-            if reviews_disabled and acceptance_gate.get("action") == "review":
-                return self._completion_reviews_disabled_failure(
-                    acceptance_gate.get("reason") or "Completion evidence requires review."
-                )
-            return acceptance_gate
-        verification_match_gate = self._completion_verification_match_gate(completion_evidence)
-        if verification_match_gate is not None:
-            if reviews_disabled and verification_match_gate.get("action") == "review":
-                return self._completion_reviews_disabled_failure(
-                    verification_match_gate.get("reason") or "Completion evidence requires review."
-                )
-            return verification_match_gate
-        if self._completion_needs_verification_review(completion_evidence):
-            if reviews_disabled:
-                return self._completion_reviews_disabled_failure(
-                    "Write-oriented task produced runtime evidence but no passing verification."
-                )
-            return {
-                "action": "review",
-                "decision": "needs_verification",
-                "gateStatus": "needs_verification",
-                "risk": "write-oriented task has runtime evidence without passing verification",
-                "reason": (
-                    "Write-oriented task produced runtime evidence but no passing verification. "
-                    "Run verification or approve the completion evidence before marking it completed."
-                ),
-            }
-        if completion_evidence.get("evidenceLevel") != "summary_only":
-            return {"action": "complete", "reason": "Runtime evidence is present."}
-        if self._summary_only_completion_review_required(context):
-            if reviews_disabled:
-                return self._completion_reviews_disabled_failure(
-                    "Write-oriented task produced only a summary without verification."
-                )
-            return {
-                "action": "review",
-                "decision": "needs_user_review",
-                "gateStatus": "needs_user_review",
-                "risk": "summary-only completion for write-oriented task",
-                "reason": (
-                    "Write-oriented task produced only a natural-language summary. "
-                    "Verification or user review is required before marking it completed."
-                ),
-            }
         return {
             "action": "complete",
-            "reason": "Model loop completed without an explicit completion evidence requirement.",
-        }
-
-    def _completion_reviews_disabled_failure(self, reason: str) -> dict[str, str]:
-        clean_reason = reason.strip().rstrip(".")
-        if not clean_reason:
-            clean_reason = "Completion review is required"
-        return {
-            "action": "fail",
-            "reason": (
-                f"{clean_reason}. Completion reviews are disabled, so this write-oriented task "
-                "cannot be auto-completed without passing verification or user approval."
-            ),
+            "reason": "Model final is authoritative unless real runtime work is pending.",
         }
 
     def _mark_completion_waiting_on_runtime_work(
@@ -607,58 +365,6 @@ class TaskLifecycleMixin:
             self._drain_session_queue(session_id)
         return runtime_task
 
-    def _merge_failed_completion_summary(
-        self,
-        *,
-        final_summary: str,
-        failure_reason: str,
-        completion_evidence: dict[str, Any],
-    ) -> str:
-        parts: list[str] = []
-        if final_summary.strip():
-            parts.append(final_summary.strip())
-        blocking_lines = self._completion_blocking_evidence_lines(completion_evidence)
-        suffix_lines = [failure_reason.strip()]
-        if blocking_lines:
-            suffix_lines.append("Blocking evidence:")
-            suffix_lines.extend(f"- {line}" for line in blocking_lines[:6])
-        suffix = "\n".join(line for line in suffix_lines if line)
-        if suffix:
-            parts.append(suffix)
-        return _merge_active_assistant_completion_content("\n\n".join(parts[:-1]), parts[-1]) if len(parts) > 1 else (parts[0] if parts else failure_reason)
-
-    def _completion_blocking_evidence_lines(self, completion_evidence: dict[str, Any]) -> list[str]:
-        lines: list[str] = []
-        for item in completion_evidence.get("verification") or []:
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get("status") or "").strip().lower()
-            if status not in {"failed", "timeout", "killed", "validation_failed"}:
-                continue
-            command = str(item.get("command") or item.get("name") or "verification").strip()
-            summary = str(item.get("summary") or item.get("reason") or "").strip()
-            lines.append(f"{command}: {summary or status}")
-        for item in completion_evidence.get("testsRun") or []:
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get("status") or "").strip().lower()
-            if status not in {"failed", "timeout", "killed", "validation_failed"}:
-                continue
-            command = str(item.get("command") or item.get("name") or "test").strip()
-            summary = str(item.get("summary") or "").strip()
-            line = f"{command}: {summary or status}"
-            if line not in lines:
-                lines.append(line)
-        for item in completion_evidence.get("unresolvedToolFailures") or []:
-            if not isinstance(item, dict):
-                continue
-            command = str(item.get("command") or item.get("name") or "tool").strip()
-            summary = str(item.get("summary") or item.get("error") or "").strip()
-            line = f"{command}: {summary or 'failed'}"
-            if line not in lines:
-                lines.append(line)
-        return lines
-
     def _completion_unresolved_runtime_work_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
         pending_approvals = self._completion_pending_approval_items(completion_evidence)
         unresolved_children = self._completion_unresolved_child_tasks(completion_evidence)
@@ -701,10 +407,12 @@ class TaskLifecycleMixin:
     def _completion_pending_approval_items(self, completion_evidence: dict[str, Any]) -> list[dict[str, Any]]:
         audit = completion_evidence.get("audit") if isinstance(completion_evidence.get("audit"), dict) else {}
         approvals = audit.get("approvals") if isinstance(audit.get("approvals"), list) else []
+        internal_only_kinds = {"completion_review", "advisor_tool"}
         return [
             item for item in approvals
             if isinstance(item, dict)
             and str(item.get("decision") or "pending").strip().casefold() == "pending"
+            and str(item.get("kind") or "").strip().casefold() not in internal_only_kinds
         ]
 
     def _completion_unresolved_child_tasks(self, completion_evidence: dict[str, Any]) -> list[dict[str, Any]]:
@@ -722,204 +430,6 @@ class TaskLifecycleMixin:
             unresolved.append(item)
         return unresolved
 
-    def _completion_workspace_evidence_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
-        workspace_evidence = completion_evidence.get("workspaceEvidence")
-        if not isinstance(workspace_evidence, dict):
-            return None
-        if workspace_evidence.get("required") is not True:
-            return None
-        if workspace_evidence.get("status") == "satisfied":
-            return None
-        if self._completion_has_workspace_change_evidence(completion_evidence):
-            return None
-        required_tools = [
-            str(item).strip()
-            for item in (workspace_evidence.get("requiredTools") or [])
-            if str(item).strip()
-        ]
-        reason = "Completion blocked because this task requires read-only workspace evidence before answering."
-        if required_tools:
-            reason = f"{reason} Expected one of: {', '.join(required_tools[:6])}."
-        return {
-            "action": "wait",
-            "decision": "needs_workspace_evidence",
-            "gateStatus": "needs_workspace_evidence",
-            "risk": "workspace-grounded task completed without read-only workspace evidence",
-            "reason": reason,
-        }
-
-    def _completion_reviews_disabled(self, context: dict[str, Any]) -> bool:
-        config = context.get("config") if isinstance(context, dict) else {}
-        if not isinstance(config, dict) or not config.get("policy"):
-            try:
-                result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
-            except Exception:  # noqa: BLE001
-                logger.debug("Failed to load config for completion review policy", exc_info=True)
-                result = {}
-            store_config = result.get("config") if isinstance(result, dict) else None
-            if isinstance(store_config, dict):
-                config = store_config
-        policy = config.get("policy") if isinstance(config, dict) else {}
-        mode = str(policy.get("approvalMode") or "").strip().lower() if isinstance(policy, dict) else ""
-        return mode in {"none", "never", "off"}
-
-    def _explicit_completion_review_required(self, context: dict[str, Any]) -> bool:
-        if context.get("_require_completion_review") is True:
-            return True
-        if context.get("_enable_visible_completion_review") is True:
-            return True
-        config = context.get("config") if isinstance(context, dict) else {}
-        if not isinstance(config, dict):
-            return False
-        policy = config.get("policy")
-        if not isinstance(policy, dict):
-            return False
-        for key in (
-            "requireCompletionReview",
-            "visibleCompletionReview",
-            "require_completion_review",
-            "visible_completion_review",
-        ):
-            value = policy.get(key)
-            if isinstance(value, bool):
-                return value
-            if value is not None:
-                return str(value).strip().casefold() in {"1", "true", "yes", "on", "always"}
-        return False
-
-    def _summary_only_completion_review_required(self, context: dict[str, Any]) -> bool:
-        if context.get("_require_summary_only_completion_review") is True:
-            return True
-        config = context.get("config") if isinstance(context, dict) else {}
-        if not isinstance(config, dict):
-            return False
-        policy = config.get("policy")
-        if not isinstance(policy, dict):
-            return False
-        for key in (
-            "requireSummaryOnlyCompletionReview",
-            "requireSummaryOnlyReview",
-            "completionReviewOnSummaryOnly",
-            "require_summary_only_completion_review",
-        ):
-            value = policy.get(key)
-            if isinstance(value, bool):
-                return value
-            if value is not None:
-                return str(value).strip().casefold() in {"1", "true", "yes", "on", "always"}
-        return False
-
-    def _completion_tool_failure_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
-        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
-        failed_tool_count = self._completion_evidence_count(counts, "failedToolResults")
-        if failed_tool_count <= 0:
-            return None
-        return {
-            "action": "fail",
-            "decision": "needs_tool_review",
-            "gateStatus": "needs_tool_review",
-            "risk": "tool results include unresolved failures",
-            "reason": (
-                "Completion blocked because tool results include unresolved failures. "
-                "Resolve the failed tool result before marking it completed."
-            ),
-        }
-
-    def _completion_acceptance_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
-        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
-        failed_count = self._completion_evidence_count(counts, "failedAcceptanceCriteria")
-        unverified_count = self._completion_evidence_count(counts, "unverifiedAcceptanceCriteria")
-        if failed_count <= 0 and unverified_count <= 0:
-            return None
-        if failed_count > 0:
-            reason = (
-                "Completion blocked because explicit acceptance evidence reports unmet criteria. "
-                "Resolve the failed criteria before marking the task completed."
-            )
-            return {
-                "action": "fail",
-                "decision": "needs_acceptance_review",
-                "gateStatus": "needs_acceptance_review",
-                "risk": "acceptance criteria failed",
-                "reason": reason,
-            }
-        else:
-            reason = (
-                "Completion blocked because explicit acceptance evidence does not cover every criterion. "
-                "The gap is recorded as an internal completion audit."
-            )
-        return {
-            "action": "review",
-            "decision": "needs_acceptance_review",
-            "gateStatus": "needs_acceptance_review",
-            "risk": "acceptance criteria require review",
-            "reason": reason,
-        }
-
-    def _completion_verification_match_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
-        if not self._completion_has_code_or_test_changes(completion_evidence):
-            return None
-        if not self._completion_has_any_passing_verification_signal(completion_evidence):
-            return None
-        requirements = completion_evidence.get("verificationRequirements")
-        if isinstance(requirements, dict):
-            requirement_status = str(requirements.get("status") or "").strip().casefold()
-            if requirement_status == "not_required":
-                return None
-        if isinstance(requirements, dict):
-            missing = [
-                str(item)
-                for item in (requirements.get("missing") or [])
-                if str(item).strip()
-            ]
-            if missing:
-                if self._completion_static_frontend_structural_check_satisfies(
-                    completion_evidence,
-                    missing,
-                ):
-                    return None
-                return {
-                    "action": "review",
-                    "decision": "needs_verification",
-                    "gateStatus": "needs_verification",
-                    "risk": "code changes lack framework-matched verification",
-                    "reason": (
-                        "Completion blocked because code or test files changed, but passing verification "
-                        f"does not cover required framework signal(s): {', '.join(missing)}."
-                    ),
-                }
-        if self._completion_has_targeted_verification(completion_evidence):
-            return None
-        return {
-            "action": "review",
-            "decision": "needs_verification",
-            "gateStatus": "needs_verification",
-            "risk": "code changes lack targeted test or build verification",
-            "reason": (
-                "Completion blocked because code or test files changed, but the passing verification "
-                "does not include a targeted test, build, or typecheck signal."
-            ),
-        }
-
-    def _completion_needs_verification_review(self, completion_evidence: dict[str, Any]) -> bool:
-        if completion_evidence.get("evidenceLevel") != "runtime_evidence":
-            return False
-        requirements = completion_evidence.get("verificationRequirements")
-        if isinstance(requirements, dict) and str(requirements.get("status") or "").strip().casefold() == "not_required":
-            return False
-        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
-        if self._completion_has_any_passing_verification_signal(completion_evidence):
-            return False
-        if self._completion_evidence_count(counts, "failedVerification") > 0:
-            return False
-        workspace_evidence_count = sum(
-            self._completion_evidence_count(counts, key)
-            for key in ("changedFiles", "patches")
-        )
-        if workspace_evidence_count <= 0 and not self._completion_has_workspace_tool_evidence(completion_evidence):
-            return False
-        return self._completion_has_code_or_test_changes(completion_evidence)
-
     def _completion_evidence_count(self, counts: dict[str, Any], key: str) -> int:
         value = counts.get(key)
         if isinstance(value, bool):
@@ -929,39 +439,6 @@ class TaskLifecycleMixin:
         if isinstance(value, float):
             return int(value)
         return 0
-
-    def _completion_has_workspace_tool_evidence(self, completion_evidence: dict[str, Any]) -> bool:
-        tool_results = completion_evidence.get("toolResults")
-        if not isinstance(tool_results, list):
-            return False
-        for item in tool_results:
-            if not isinstance(item, dict):
-                continue
-            if item.get("name") in {"apply_patch", "write_file"}:
-                changed_paths = item.get("changedPaths")
-                if item["name"] == "write_file":
-                    return True
-                if isinstance(changed_paths, list) and changed_paths:
-                    return True
-        return False
-
-    def _completion_has_workspace_change_evidence(self, completion_evidence: dict[str, Any]) -> bool:
-        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
-        if self._completion_evidence_count(counts, "changedFiles") > 0:
-            return True
-        if self._completion_evidence_count(counts, "patches") > 0:
-            return True
-        return self._completion_has_workspace_tool_evidence(completion_evidence)
-
-    def _completion_has_code_or_test_changes(self, completion_evidence: dict[str, Any]) -> bool:
-        changed_files = completion_evidence.get("changedFiles")
-        if not isinstance(changed_files, list):
-            return False
-        return any(
-            self._completion_path_requires_targeted_verification(self._completion_changed_file_path(item))
-            for item in changed_files
-            if isinstance(item, dict)
-        )
 
     def _completion_changed_file_path(self, item: dict[str, Any]) -> str:
         value = item.get("path") or item.get("file") or item.get("name")
@@ -1239,69 +716,6 @@ class TaskLifecycleMixin:
             )
         ) or "/test" in normalized or normalized.startswith(("test/", "tests/"))
 
-    def _completion_has_any_passing_verification_signal(self, completion_evidence: dict[str, Any]) -> bool:
-        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
-        return (
-            self._completion_evidence_count(counts, "passedVerification") > 0
-            or self._completion_evidence_count(counts, "passedTestsRun") > 0
-            or self._completion_has_passing_structural_file_check(completion_evidence)
-        )
-
-    def _completion_has_passing_structural_file_check(self, completion_evidence: dict[str, Any]) -> bool:
-        changed_files = completion_evidence.get("changedFiles")
-        if not isinstance(changed_files, list) or not changed_files:
-            return False
-        changed_names = {
-            self._completion_changed_file_path(item).casefold().rsplit("/", 1)[-1]
-            for item in changed_files
-            if isinstance(item, dict) and self._completion_changed_file_path(item)
-        }
-        if not changed_names:
-            return False
-        commands = completion_evidence.get("commands")
-        if not isinstance(commands, list):
-            return False
-        for item in commands:
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get("status") or "").strip().casefold()
-            exit_code = item.get("exitCode")
-            if status not in {"completed", "passed", "success"} or exit_code not in (0, "0", None):
-                continue
-            key = self._structural_command_resolution_key(item.get("command"))
-            if not key:
-                continue
-            checked_names = {path.rsplit("/", 1)[-1] for path in key[1]}
-            if changed_names.issubset(checked_names):
-                return True
-        return False
-
-    def _completion_static_frontend_structural_check_satisfies(
-        self,
-        completion_evidence: dict[str, Any],
-        missing_families: list[str],
-    ) -> bool:
-        missing = {item.casefold() for item in missing_families}
-        if missing != {"javascript"}:
-            return False
-        changed_files = completion_evidence.get("changedFiles")
-        if not isinstance(changed_files, list) or not changed_files:
-            return False
-        paths = [
-            self._completion_changed_file_path(item).casefold()
-            for item in changed_files
-            if isinstance(item, dict) and self._completion_changed_file_path(item)
-        ]
-        if not paths:
-            return False
-        frontend_suffixes = (".html", ".css", ".js", ".mjs", ".md", ".txt")
-        if any(not path.endswith(frontend_suffixes) for path in paths):
-            return False
-        manifest_names = {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"}
-        if any(path.rsplit("/", 1)[-1] in manifest_names for path in paths):
-            return False
-        return self._completion_has_passing_structural_file_check(completion_evidence)
-
     def _completion_has_python_layout_coverage(
         self,
         completion_evidence: dict[str, Any],
@@ -1351,39 +765,6 @@ class TaskLifecycleMixin:
                 continue
             observed_families.update(self._completion_verification_item_families(item))
         return "python" in observed_families or "python:test" in observed_families or "python:syntax" in observed_families
-
-    def _completion_has_targeted_verification(self, completion_evidence: dict[str, Any]) -> bool:
-        verification_items = completion_evidence.get("verification")
-        if isinstance(verification_items, list):
-            for item in verification_items:
-                if not isinstance(item, dict) or item.get("status") != "passed":
-                    continue
-                if self._completion_verification_item_is_targeted(item):
-                    return True
-        tests_run = completion_evidence.get("testsRun")
-        if isinstance(tests_run, list):
-            for item in tests_run:
-                if not isinstance(item, dict) or item.get("status") not in {"passed", "success", "completed"}:
-                    continue
-                if self._completion_tests_run_item_is_targeted(item):
-                    return True
-        return False
-
-    def _completion_verification_item_is_targeted(self, item: dict[str, Any]) -> bool:
-        command = " ".join(
-            str(item.get(key) or "")
-            for key in ("command", "name", "summary")
-        ).casefold()
-        if not command.strip():
-            return False
-        return self._completion_text_mentions_targeted_verification(command)
-
-    def _completion_tests_run_item_is_targeted(self, item: dict[str, Any]) -> bool:
-        text = " ".join(
-            str(item.get(key) or "")
-            for key in ("command", "name", "summary", "suite")
-        ).casefold()
-        return self._completion_text_mentions_targeted_verification(text) or bool(text.strip())
 
     def _completion_text_mentions_targeted_verification(self, text: str) -> bool:
         normalized = text.casefold()
@@ -1451,24 +832,6 @@ class TaskLifecycleMixin:
         )
         return any(token in normalized for token in targeted_tokens)
 
-    def _completion_review_conclusion(self, context: dict[str, Any]) -> dict[str, Any]:
-        raw = context.get("completionReviewConclusion")
-        if not isinstance(raw, dict):
-            return {}
-        conclusion = {
-            "approvalId": str(raw.get("approvalId") or "").strip(),
-            "decision": str(raw.get("decision") or "").strip(),
-            "decidedBy": str(raw.get("decidedBy") or "").strip(),
-            "summary": str(raw.get("summary") or "").strip(),
-        }
-        decided_at = raw.get("decidedAt")
-        if isinstance(decided_at, (int, float)):
-            conclusion["decidedAt"] = int(decided_at)
-        gate_status = str(raw.get("gateStatus") or "").strip()
-        if gate_status:
-            conclusion["gateStatus"] = gate_status
-        return {key: value for key, value in conclusion.items() if value not in ("", None)}
-
     def _completion_audit_context(
         self,
         *,
@@ -1479,17 +842,10 @@ class TaskLifecycleMixin:
             task=task,
             completion_evidence=completion_evidence,
         )
-        review_conclusion = (
-            completion_evidence.get("reviewConclusion")
-            if isinstance(completion_evidence.get("reviewConclusion"), dict)
-            else {}
-        )
         audit: dict[str, Any] = {
             "approvals": approvals,
             "approvalCounts": self._completion_approval_counts(approvals),
         }
-        if review_conclusion:
-            audit["reviewConclusion"] = review_conclusion
         return {key: value for key, value in audit.items() if value not in (None, "", [], {})}
 
     def _completion_approval_audit_for_completion(

@@ -8,6 +8,30 @@ haha-cc byte-for-byte. The target principle is:
 > enforces policy, executes tools, persists state, and projects typed events.
 > The frontend renders typed events, not raw backend JSON.
 
+## Current Baseline: 2026-06-09
+
+This section supersedes older migration notes below when they conflict.
+
+- Default turns are model-first ReAct. No MetaRouter, DecisionAdvisor,
+  completion-review gate, workspace-evidence gate, or fixed
+  inspect/apply/verify/report planner should decide the business flow before
+  the provider/tool loop.
+- Normal completion is the model/tool loop finishing. `_complete_task` may
+  persist completion evidence for panels/trace, but it must not create a
+  completion review, advisor approval, record-only completion decision, or
+  workspace evidence wait for ordinary chat/read/write/doc turns.
+- `workspaceEvidenceRequired` is diagnostic metadata only unless a future
+  explicit product mode opts into a separate UX. It is not a blocking gate.
+- Approval is reserved for real user decisions: write/edit, risky command,
+  computer use, explicit plan approval, worktree merge, or equivalent external
+  side effects. Historical `completion_review` / `advisor_tool` approvals are
+  ignored idempotently and stay internal.
+- New flat output uses only `event.yuanbao` / `yuanbao_message`. The legacy
+  `hahaCc` field is not a new-event or replay fallback.
+- `plan_update` is not derived as a flat chat frame from `task.updated`.
+  Plan/team/agent/task state should render through structured panels produced
+  by model tool calls or explicit mode state.
+
 ## Why This Exists
 
 Recent sessions showed several symptoms:
@@ -77,14 +101,15 @@ Important code-level conclusions:
 Yuanbao alignment decision from this evidence:
 
 - The default product path should be model-first ReAct.
-- `MetaRouter` may keep cheap intent hints for observability, but it must not
-  be a default business router that selects fixed inspect/apply/verify/report
-  plans.
-- `DecisionAdvisor` and completion review are not default turn routers. They
-  belong behind explicit policy/gate boundaries such as write verification,
-  permissions, safety, compaction, or explicitly enabled experimental modes.
-- `workspaceEvidenceRequired` must be an explicit contract, not an implicit
-  default for code/doc/workspace prompts.
+- `MetaRouter` must not be a default business router that selects fixed
+  inspect/apply/verify/report plans. Keyword/rule output may only survive as
+  metadata or trace diagnostics.
+- `DecisionAdvisor` and completion review are not default turn routers or
+  completion gates. If retained at all, they are diagnostics or explicitly
+  opted-in experiments outside the normal product path.
+- `workspaceEvidenceRequired` must not block completion in the default path.
+  It may be recorded as diagnostic evidence but must not force read probes or
+  post-hoc review.
 - Plan/swarm/team/agent panels should be projected from model tool calls or
   explicit mode state, not from raw planner JSON.
 - Parity fixes must be source-driven, not filter-driven. Do not treat raw JSON,
@@ -136,7 +161,7 @@ The important part is not the exact names. The important part is ownership:
 - Completion is the model/tool loop finishing. There is no default visible
   completion-review task for ordinary chat or read-only answers.
 
-### Yuanbao Before This Pass
+### Yuanbao Before This Pass (Historical, Not Current Contract)
 
 Reference code:
 
@@ -153,8 +178,7 @@ message.send
   -> router/meta-router picks scenario and strategy
   -> enable_planning may enter planner/supervisor/swarm before normal ReAct
   -> ReAct provider loop runs
-  -> completion advisor/product advisor may run
-  -> completion gate may request internal follow-up/review
+  -> legacy completion advisor/gate could run
 ```
 
 This created the user-visible symptoms from the screenshots:
@@ -175,13 +199,14 @@ orchestration principle should match haha-cc:
 
 - Default turn: model-first ReAct. Do not insert inspect/apply/verify/report
   scaffolds for normal chat, read-only, document, or code questions.
-- Explicit contracts only: `workspaceEvidenceRequired` is honored when router
-  or advisor explicitly attaches it, not as a broad default for all workspace
-  prompts.
+- Workspace evidence is diagnostic in the default path. A contract may be
+  recorded, but it does not force read tools or block finalization.
 - Plan mode is stateful: `exit_plan_mode` can request approval only after
   `enter_plan_mode` or an explicit plan-mode session state.
-- Completion advisor is a write/verification boundary. It should not take over
-  pure chat/read-only answers.
+- Completion review/advisor is not part of the default completion boundary.
+  Real write risk is handled by permission tools before side effects happen;
+  verification evidence is stored for panels and model context, not as a
+  post-hoc backend reviewer.
 - Task/team/agent cards should be generated from model tool calls or explicit
   user multi-agent requests, then rendered as typed panels rather than raw
   JSON.
@@ -189,10 +214,14 @@ orchestration principle should match haha-cc:
 ### Current Code Changes From This Pass
 
 - `runtime/src/local_agent_runtime/orchestrator/task_lifecycle.py`
-  now checks explicit workspace evidence first, then completes read-only/chat
-  tasks before consulting completion advisor.
+  no longer runs a normal completion-review/advisor/evidence gate. Completion
+  evidence remains in structured task data, while finalization is blocked only
+  by real unresolved runtime work such as pending user approval or child task
+  state.
 - `runtime/src/local_agent_runtime/orchestrator/task_lifecycle.py`
-  skips completion advisor for non-write/non-verification tasks.
+  no longer emits `agent.decision.completion` for ordinary completed turns.
+  Completion is represented by `message.completed` / `message_complete` and
+  `task.completed`; backend completion diagnostics stay out of the chat stream.
 - `runtime/src/local_agent_runtime/orchestrator/react_runner.py`
   blocks `exit_plan_mode` outside active plan mode and returns a model-visible
   tool error instead of creating a plan approval.
@@ -218,9 +247,9 @@ orchestration principle should match haha-cc:
   This matches the haha-cc shape: advisor remains an optional capability, not
   a default backend classifier that rewrites every turn before the model acts.
 - `runtime/src/local_agent_runtime/orchestrator/service.py` uses a rule-only
-  `MetaRouter` as its fallback when no router is injected. Tests can still
-  explicitly construct advisor/provider-backed routing, but the product path no
-  longer does so by accident.
+  compatibility shim as its fallback when no router is injected. Tests can
+  still explicitly construct old routing components, but the product path
+  should not depend on `MetaRouter` ownership for business flow.
 - `runtime/src/local_agent_runtime/router/meta_router.py` no longer consults a
   high-confidence routing advisor by default. If this experimental path is
   needed, it must be explicitly enabled with
@@ -229,9 +258,9 @@ orchestration principle should match haha-cc:
   auto-binds `doc_write` to a worktree. Real writes still go through the normal
   write tool and approval gates; read-only docs stay read-only.
 - `runtime/src/local_agent_runtime/orchestrator/publishing.py`
-  only derives flat `plan_update` from `task.updated` when the update carries
-  an actual non-empty plan. Plain task status/current-step updates continue as
-  task updates instead of pretending to be plan panels.
+  no longer derives a flat chat-compatible `plan_update` from `task.updated`.
+  Plan/team/agent/task state stays in structured panel events instead of
+  mixing backend panel state into model/tool trajectory frames.
 - `runtime/tests/test_orchestrator_react_loop.py` locks the
   `exit_plan_mode` outside plan-mode regression, blocked tool visibility, and
   explicit multi-agent model-tool entrypoint.
@@ -244,6 +273,11 @@ orchestration principle should match haha-cc:
 - `runtime/tests/test_backend_flow_contracts.py` now locks the default server
   contract: the main product runtime has no backend advisor or provider-backed
   pre-route unless a caller wires one explicitly.
+- `runtime/tests/test_worker_structured_output.py` now treats
+  `workspaceEvidenceRequired` and failed verification as evidence, not as
+  completion gates. The tests assert no completion-review approval, no
+  `task.runtime_work_waiting`, and no `agent.decision.completion` for normal
+  finalization.
 
 ### 1. Transport And Messages
 
@@ -495,12 +529,12 @@ Action:
 
 - Permission cards only for real external decisions:
   write/edit, risky command, computer use, explicit plan approval.
-- `completion_review` is an internal gate. If visible, it should be a compact
-  panel audit, not a chat permission request.
+- `completion_review` is historical/internal diagnostic data. It must not be a
+  gate, a chat permission request, or a new runtime resume target.
 - New task completion no longer creates `completion_review` approvals. The
-  completion state machine now separates clear failures, internal audit gaps,
-  and same-task continuation for advisor/workspace evidence. Legacy
-  `completion_review` approvals are still accepted for old stored sessions.
+  completion state machine now completes ordinary model/tool turns directly and
+  only waits for real unresolved runtime work. Legacy `completion_review`
+  approvals are still ignored idempotently for old stored sessions.
 - All approval/question responses are one-shot supplements to the existing
   task, never new user goals.
 
@@ -662,7 +696,7 @@ Action:
 - Render roster/member cards from `team_update`.
 - Only create swarm/team when user intent or model tool call asks for it.
 
-### 10. Completion Review / Evidence Gate
+### 10. Historical Completion Review / Evidence Gate
 
 Reference behavior:
 
@@ -685,10 +719,12 @@ Gap:
 
 Action:
 
-- Completion review is internal by default.
-- If an explicit user approval is needed, show compact semantic evidence rows.
-- Workspace evidence is required only when router/advisor explicitly sets a
-  task contract, not by default for all code/doc tasks.
+- Completion review is outside the default product flow. New normal tasks must
+  not create `completion_review` approvals or completion-gate cards.
+- If an explicit user approval is needed, it must come from a real side-effect
+  boundary and show compact semantic evidence rows.
+- Workspace evidence is diagnostic metadata only unless a future explicit
+  product mode defines a separate UX.
 
 ### 11. Failure, Retry, Stop, Resume
 
@@ -831,14 +867,14 @@ Rules:
      pressure or prior provider failure.
 
 2. Evidence/completion:
-   - `workspaceEvidenceRequired` only from explicit metadata/advisor contract.
-   - Completion review is internal; no flat `permission_request`, no new
-     user-visible approval, and no new user goal after approval/resume.
+   - `workspaceEvidenceRequired` is diagnostic metadata in the default flow.
+   - Completion review/advisor evidence is not part of default completion; no
+     flat `permission_request`, no new user-visible approval, and no new user
+     goal after approval/resume.
    - Failed verification, failed acceptance, and unresolved failed tool
-     evidence terminate as task failures with structured completion-gate
-     metadata. Missing but non-failing evidence is recorded as an internal
-     audit, or continues the same task when advisor/workspace evidence is
-     explicitly required.
+     evidence terminate as task failures or normal tool errors. Missing but
+     non-failing evidence is recorded as structured task/panel data, not as a
+     completion gate.
    - Terminal states block late review/resume/chat events.
 
 3. Event projection/replay:
@@ -939,13 +975,13 @@ Yuanbao decision:
 
 Implementation target:
 
-- keep `MetaRouter` for compatibility, but make its default output
-  `free_form/react_standard` for normal prompts;
-- preserve old keyword result as `metadata.intentHints.ruleCandidate`;
-- preserve `simple_query/react_fast` only for greeting-only or clearly
-  informational prompts where it does not remove needed tools;
-- preserve explicit multi-agent as `swarm_task/plan_swarm` with
-  `enable_planning=false` and `orchestrationMode=model_tools`;
+- remove `MetaRouter` from the normal product path; any remaining class should
+  be a legacy test/developer shim only, not a runtime dependency;
+- preserve keyword observations only as `metadata.intentHints.ruleCandidate`
+  when a legacy shim is explicitly invoked;
+- preserve greeting-only fast paths only when they do not remove needed tools;
+- preserve explicit multi-agent as model-visible task/agent/team tool flow, not
+  a pre-generated fixed plan;
 - update tests so `debug this`, `write a test`, `generate a document`,
   `update README`, `implement a game`, and `optimize this project` no longer
   force backend skills/plans/worktrees before the provider turn.
@@ -1094,9 +1130,10 @@ Validation:
   roadmap does not enter plan mode; explicit plan mode waits for plan approval;
   explicit multi-agent read-only uses `read_file/read_file/agent/agent` without
   repeated AskUserQuestion; write tasks wait on permission and duplicate
-  approval submit is ignored. For every case, direct flat events,
-  `events.yuanbaoAfter`, and `events.hahaCcAfter` matched exactly, with no raw
-  JSON leak detected.
+  approval submit is ignored. For every case, direct flat events and
+  `events.yuanbaoAfter` matched exactly, with no raw JSON leak detected.
+  Historical `events.hahaCcAfter` probes are legacy-only and are not part of the
+  new event contract.
 
 ## 2026-06-07 Complex Write Tool Visibility And Approval Resume
 
@@ -1138,7 +1175,8 @@ Validation:
 - The real audio tuner probe completed after five approvals. It created
   `index.html`, `src/app.js`, `src/styles.css`, updated `README.md`, ran
   `node --check src/app.js` successfully, had zero raw JSON leaks, and direct
-  flat events, `events.yuanbaoAfter`, and `events.hahaCcAfter` matched.
+  flat events matched `events.yuanbaoAfter`. Historical `events.hahaCcAfter`
+  checks were legacy compatibility probes, not the current event contract.
 - A second simple-prompt probe used only the product/stack requirement:
   "make a browser audio tuner with plain HTML/CSS/JavaScript and Web Audio API,
   usable page, microphone request, pitch, nearest note, cents offset, and

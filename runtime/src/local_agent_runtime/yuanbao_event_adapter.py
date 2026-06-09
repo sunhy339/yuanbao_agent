@@ -260,8 +260,6 @@ def yuanbao_message_from_event_payload(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     message = payload.get("yuanbao")
-    if not isinstance(message, dict):
-        message = payload.get("hahaCc")
     return message if isinstance(message, dict) else None
 
 

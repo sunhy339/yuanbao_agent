@@ -38,8 +38,8 @@
 - 前端事件订阅现在会消费 `content_start`：`tool_use` 会先生成可见的工具占位行，`text` 会生成“正在输出回复”的流式提示，避免工具输入到齐前页面完全没反应。
 - 后端非流式 `assistant.token` 也会先派生一次 `content_start(text)`，再派生 `content_delta`，让非 streaming provider 的正文也能走同一套 clean 文本块生命周期。
 - `content_delta`、`tool_use_complete`、`tool_result` 已透传并保存 `parentToolUseId`；后端 lifecycle/chat-compat 也会把现有 parent id 带出来，并为 provider/最小循环里的同批工具序列补稳定 `toolCallId`，同时带 `toolGroupId/toolIndex/toolTotal`、`toolCategory`、`toolPhaseId/toolPhaseLabel` 和批次 + 阶段粒度的 `toolSemanticParentId/toolSemanticParentLabel`；clean runtime/worklog 已用这些字段稳定同批工具兄弟顺序，并优先按后端语义 parent/阶段汇总。
-- 新增 Yuanbao flat 特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`background_task`、`task_summary`、`plan_update`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission`。后端即使暂时只补部分事件，前端也能先渲染为低卡片信息流；`task_summary/plan_update/status` 会过滤启动期低价值事件，避免任务刚开始就出现“工作摘要”。
-- 后端 `task.updated` 现在会派生去重后的 `plan_update` chat-compat 事件，携带当前步骤、计划、活跃步骤和步骤数；前端不需要只从 activeTask 快照反推计划节点。
+- Yuanbao flat ServerMessage 只承载模型/工具轨迹：`content_start`、`content_delta`、`tool_use_complete`、`tool_result`、真实 `permission_request`、`thinking`、`message_complete` 和 `error`。`goal_event`、`memory_event`、`task_summary`、`plan_update`、`status` 属于 panel/runtime state，不能作为主聊天 flat 协议输出；clean UI 可以从 activeTask/trace panel state 渲染低卡片，但不把它们混入模型聊天流。
+- 后端 `task.updated` 只更新 task/plan panel state，不再派生 `plan_update` chat-compat frame。前端如需展示计划节点，应从 activeTask/structured panel event 消费，而不是从 flat chat transcript 反推。
 - `assistant_progress` 现在是正式 shared 事件并进入前端订阅：主路由会发“正在整理上下文”，provider turn 请求模型前会发“正在请求模型”的轻量过程说明，工具首次进入新的 semantic parent 时会发“进入 X 阶段”，子任务会保持 trace/panel 而不污染主聊天。
 - 预算收束也开始用 `assistant_progress` 解释：步骤预算 critical 时提示“正在收束当前任务”，max steps 耗尽时提示“正在整理当前进展”，并保留预算 pressure/step/recommendedAction 字段。
 - ReAct 步骤预算已和路由/workflow 同源：后端循环优先读 main workflow `budget.maxSteps/resumeMaxSteps`，再读 routing `max_steps`，最后才回退 autonomy profile / policy；doc/code/debug/multi-step 等工作型场景不再被固定 20 步截断，前端看到的工作流预算和实际执行上限一致。
@@ -149,7 +149,7 @@
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入，并补了复制文件列表、撤销本轮；撤销会反向应用已保存 patch diff，工作区已漂移时拒绝 | patches/changedFiles / task.revertChanges | `部分接入`：patch diff 可回滚，diff 文件匹配仍需加强，非 patch 副作用不覆盖 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
 | 上下文压缩 | “上下文已自动压缩”分割节点 | `compact_summary` 已进入 transcript adapter；provider preflight/recovery 压缩会 emit | provider preflight / failure recovery | `部分接入`：模型上下文压缩已能显示，长期会话 compactor 等其他来源仍待统一 |
-| Goal/Memory 事件 | 轻量系统节点 | `goal_event`/`memory_event` 已进入 transcript adapter；root task started/completed/failed/cancelled 会 emit `goal_event`，task/supplement/scratchpad 记忆写入会 emit `memory_event` | task lifecycle / memory flow | `部分接入`：Goal/Memory 都有真实事件，后续补更细目标重写/阶段变更 |
+| Goal/Memory 事件 | 轻量系统/面板节点 | `goal_event`/`memory_event` 属于 runtime panel state；clean UI 可从 activeTask/trace state 渲染，但不再把它们作为主聊天 flat ServerMessage | task lifecycle / memory flow | `部分接入`：Goal/Memory 都有真实事件，后续补更细目标重写/阶段变更 |
 | API retry | 重试提示 | `api_retry` 已进入 transcript adapter；provider stream/non-stream 恢复路径会 emit | provider failure recovery | `部分接入`：模型请求恢复已能显示，其他 API/工具级重试来源仍待补 |
 | 错误节点 | 失败工具/请求明显但不巨大 | 已有错误态 | failed trace/runtime/message | `部分接入`：需要统一错误摘要和展开详情 |
 | 置底按钮 | 用户离开底部时显示向下按钮 | clean session 已有置底按钮 | 前端滚动状态 | `部分接入`：和 composer/右侧分隔布局还需联动打磨 |
@@ -244,12 +244,12 @@
 
 ## 11. 后端事件/协议差异
 
-当前后端仍保留本地 `AgentEventEnvelope` 作为主协议，但每条可兼容事件只新写 `yuanbao` 扁平 ServerMessage。shared `YuanbaoServerMessage` 已按 `docs/cc-haha-main` 原始 `ServerMessage` 收紧，flat message 只声明 haha-cc 同形字段，本地扩展继续留在 envelope `payload`；legacy `hahaCc` 字段仅作为旧数据库回放兜底读取，不再作为新事件、新 stdout frame 或新桌面通道产生。Tauri 只广播 `yuanbao://message`，stdio 侧只写出 `kind=yuanbao_message`；`trace.list`、`events.after` 和 replay timeline 读取同一份 flat message，补拉入口统一为后端 `events.yuanbaoAfter`、桌面 `yuanbao_events_after` 与 `RuntimeClient.yuanbaoEventsAfter()`，避免实时流、补拉和回放出现两套输出，也让外部 adapter 不必自行剥本地 envelope。`connected/pong` 已从后端 `runtime.ping` 接到 Tauri `runtime_ping` 和前端 `RuntimeClient.runtimePing()`，并通过 `connectYuanbaoMessages()` 在订阅后主动补 `connected+pong` 和后续 keepalive `pong`；`task_update`、`team_created/team_update`、`session_title_updated` 已用真实后端 RPC/发布流覆盖：普通 `task.updated`、协作任务创建/认领/消息/完成，以及 `session.update` 标题变化都会在实时 envelope 和 trace 中携带同形 flat message；摘要/记忆刷新会通过 `changedFields` 避免误派生标题更新。
+当前后端仍保留本地 `AgentEventEnvelope` 作为主协议，但每条可兼容事件只新写并只读取 `yuanbao` 扁平 ServerMessage。shared `YuanbaoServerMessage` 已按 `docs/cc-haha-main` 原始 `ServerMessage` 收紧，flat message 只声明 haha-cc 同形字段，本地扩展继续留在 envelope `payload`；legacy `hahaCc` 字段只作为历史迁移术语保留在旧文档/负向断言中，不再作为新事件、新 stdout frame、新桌面通道或 replay fallback。Tauri 只广播 `yuanbao://message`，stdio 侧只写出 `kind=yuanbao_message`；`trace.list`、`events.after` 和 replay timeline 读取同一份 flat message，补拉入口统一为后端 `events.yuanbaoAfter`、桌面 `yuanbao_events_after` 与 `RuntimeClient.yuanbaoEventsAfter()`，避免实时流、补拉和回放出现两套输出，也让外部 adapter 不必自行剥本地 envelope。`connected/pong` 已从后端 `runtime.ping` 接到 Tauri `runtime_ping` 和前端 `RuntimeClient.runtimePing()`，并通过 `connectYuanbaoMessages()` 在订阅后主动补 `connected+pong` 和后续 keepalive `pong`；`task_update`、`team_created/team_update`、`session_title_updated` 已用真实后端 RPC/发布流覆盖：普通 `task.updated`、协作任务创建/认领/消息/完成，以及 `session.update` 标题变化都会在实时 envelope 和 trace 中携带同形 flat message；摘要/记忆刷新会通过 `changedFields` 避免误派生标题更新。
 
 | haha-cc ServerMessage | 用途 | 我们当前来源 | 状态 |
 | --- | --- | --- | --- |
-| `connected` | websocket/session ready | `runtime.ping` / Tauri `runtime_ping` / `RuntimeClient.connectHahaCcMessages()` | `部分接入`：订阅 helper 会先派发扁平 `connected` ServerMessage；仍不是原生 websocket connect 事件 |
-| `pong` | keepalive 探活 | `runtime.ping` / Tauri `runtime_ping` / `RuntimeClient.connectHahaCcMessages()` | `部分接入`：订阅 helper 会先派发 `pong` 并按间隔继续 keepalive；仍是 RPC 驱动，不是 websocket 协议层自动 pong |
+| `connected` | websocket/session ready | `runtime.ping` / Tauri `runtime_ping` / `RuntimeClient.connectYuanbaoMessages()` | `部分接入`：订阅 helper 会先派发扁平 `connected` ServerMessage；仍不是原生 websocket connect 事件 |
+| `pong` | keepalive 探活 | `runtime.ping` / Tauri `runtime_ping` / `RuntimeClient.connectYuanbaoMessages()` | `部分接入`：订阅 helper 会先派发 `pong` 并按间隔继续 keepalive；仍是 RPC 驱动，不是 websocket 协议层自动 pong |
 | `content_start` | 开始 text/tool_use，并给 id | chat-compat 事件 / provider turn / non-stream assistant.token bridge | `部分接入`：前端已渲染 text/tool 占位；非流式正文、工具调用前 message 和工具输入都有基础起始事件；EventBus 已保证实时事件 `ts` 单调推进，后续继续稳固 id |
 | `content_delta` | token/工具输入/工具输出流式增量 | chat-compat 事件 / assistant token / provider tool_call_delta / command.output / tool lifecycle activity/result preview / tool.progress / tool.output | `部分接入`：正文、OpenAI Chat/Responses 工具输入、run_command stdout/stderr、read/list/search/git/web/notebook/memory/MCP started `activity`、web/browser/notebook/memory/scratchpad/task 和已批准/免审批写入/桌面操作执行前 `tool.progress`、read/list/search/git/web/browser/notebook/memory/scratchpad/write/patch/task/computer 执行后 `tool.output.result_preview`、非命令工具结构化步骤提前进入 `tool.progress(activity)`、`tool.progress/tool.output` 和 `resultPreview` 已能进流；工具输入流早期事件已带 parent/阶段 metadata，仍需更多 executor 主动发执行中分段 |
 | `tool_use_complete` | 工具输入完整、parentToolUseId、toolGroupId/toolIndex/toolTotal/toolCategory/toolPhaseId/toolPhaseLabel/toolSemanticParentId/toolSemanticParentLabel | toolCalls/runtime/chat-compat | `部分接入`：前后端已透传 parentToolUseId、同批工具顺序、语义分类、可显示阶段名和批次 + 阶段粒度的 semantic parent id/label，真正跨工具语义树和更多 UI 折叠仍待补 |
@@ -258,15 +258,15 @@
 | `computer_use_permission_request` | computer use 授权 | `computer_use` approval / transcript adapter | `部分接入`：后端会把 `computer_use` 审批镜像成专用事件并带结构化动作/目标/坐标/文本/滚动预览，前端可允许/拒绝；inspect/screenshot、可插拔 click/type/key/scroll executor 和 Playwright page-like DOM executor 适配已有基础闭环，完整无障碍/宿主浏览器会话控制和弹窗详情待补 |
 | `message_complete` | 本轮消息结束 | task lifecycle `message.completed` -> chat-compat `message_complete` | `已接入`：后端完成任务时会发布，前端收到后清理 thinking/streaming 占位；haha-cc 扁平 usage 已稳定为 `input_tokens/output_tokens/cache_read_tokens/cache_creation_tokens`，内部 envelope 仍可保留 provider 原始 usage 和预算字段 |
 | `thinking` | 思考内容 | status/thinking metadata + OpenAI Responses reasoning summary delta + OpenAI-compatible/DeepSeek `reasoning_content/thinking` + Anthropic Messages SSE `thinking_delta` + non-stream `thought_summary/reasoning_content` | `部分接入`：Responses reasoning summary、OpenAI-compatible/DeepSeek token thinking、Anthropic Messages 原生 SSE thinking 和非流式显式 thought summary 已接；外部 adapter 等更多 thinking 形态与更完整思考阶段仍待补 |
-| `status` | 当前运行状态 | status event + traces/activeTask | `部分接入`：普通 thinking/streaming 仍走思考块，只有失败/阻塞等需要注意的状态进入主流 |
+| `status` | 当前运行状态 | traces/activeTask panel state | `部分接入`：不是 flat chat ServerMessage；普通 thinking/streaming 由 provider thinking/text/tool 生命周期表达，失败/阻塞只在需要用户注意时进入错误或权限块 |
 | `background_task` | 后台/子任务进展 | transcript adapter | `部分接入` |
-| `task_summary` | 本轮任务摘要 | transcript adapter + activeTask summary | `部分接入`：已限制到完成/失败/等待审批等有价值阶段 |
-| `plan_update` | 计划/步骤更新 | `task.updated` 派生 chat-compat 事件 + activeTask.plan | `部分接入`：后端已发去重的当前步骤/计划节点，前端仍会隐藏低价值启动计划 |
+| `task_summary` | 本轮任务摘要 | activeTask/task panel state | `部分接入`：不是 flat chat ServerMessage；只在 runtime panel 或明确摘要面板中展示 |
+| `plan_update` | 计划/步骤更新 | activeTask.plan / structured panel events | `部分接入`：不是 flat chat ServerMessage；前端从 task/plan panel state 渲染计划节点 |
 | `api_retry` | API 重试提示 | provider failure recovery + transcript adapter | `部分接入`：provider 恢复/重试已 emit，其他 API/工具级重试来源待补 |
 | `error` | 错误 | `message.failed` / `task.failed` | `部分接入`：失败事件会派生 haha-cc `error` ServerMessage，并在实时流、trace、补拉中保留同形字段 |
 | `system_notification` | 系统通知 | provider preflight switch + transcript adapter | `部分接入`：模型配置切换已 emit，其他系统级提示待统一 |
 | `compact_summary` | 上下文压缩节点 | provider preflight/recovery + transcript adapter | `部分接入`：模型上下文压缩已 emit，其他 compaction 来源待统一 |
-| `goal_event` / `memory_event` | 目标/记忆节点 | task lifecycle / memory flow + transcript adapter | `部分接入`：Goal start/complete/fail/cancel 与 Memory 写入已 emit，目标重写/阶段变更待补 |
+| `goal_event` / `memory_event` | 目标/记忆节点 | task lifecycle / memory flow + panel state | `部分接入`：不是 flat chat ServerMessage；Goal start/complete/fail/cancel 与 Memory 写入已 emit，目标重写/阶段变更待补 |
 | `ask_user_question` | 工具向用户提问 | ReAct `ask_user` / budget convergence + transcript adapter | `部分接入`：前端可提交回答，后端会通过 supplement + resume 继续；更多工具级问题来源仍待统一 |
 | `task_update` | 子任务/团队任务状态 | `task.updated` / activeTask/backgroundJobs | `部分接入`：真实 `task.updated` 会携带扁平 `task_update`，`currentStep/goal/title` 会作为 progress 兜底；团队任务的完整生态仍待补 |
 | `team_update` / `team_created` / `team_deleted` | 团队 agent 状态 | collaboration RPC / worker/task events | `部分接入`：`collab.task.created/claimed/message.sent/completed` 已派生 haha-cc 同形团队消息并进入 trace，`members` 已收紧为 `TeamMemberStatus[]` 且空闲成员省略 `currentTask`；haha-cc 的 teamWatcher/团队配置生态仍未完全等价 |

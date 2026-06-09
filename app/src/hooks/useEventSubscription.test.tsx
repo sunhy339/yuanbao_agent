@@ -1181,7 +1181,7 @@ describe("useEventSubscription", () => {
     expect(screen.queryByText(/rawJson/)).toBeNull();
   });
 
-  it("renders live flat task_update without leaking envelope payload", async () => {
+  it("keeps live flat task_update out of the chat transcript", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
 
@@ -1203,9 +1203,7 @@ describe("useEventSubscription", () => {
       });
     });
 
-    const row = screen.getByText("Inspect current workflow");
-    expect(row.getAttribute("data-kind")).toBe("task_summary");
-    expect(row.getAttribute("data-status")).toBe("streaming");
+    expect(screen.queryByText("Inspect current workflow")).toBeNull();
     expect(screen.queryByText(/rawJson/)).toBeNull();
   });
 

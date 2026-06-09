@@ -123,10 +123,13 @@ function looksLikeInternalDisplayText(value: string): boolean {
 }
 
 export function yuanbaoServerMessageFromEvent(event: AgentEventEnvelope): YuanbaoServerMessage | null {
-  return event.yuanbao ?? event.hahaCc ?? null;
+  return event.yuanbao ?? null;
 }
 
 export function yuanbaoServerMessageProducesChat(message: YuanbaoServerMessage): boolean {
+  if (message.type === "task_update") {
+    return false;
+  }
   return !SILENT_FLAT_MESSAGE_TYPES.has(message.type);
 }
 
@@ -138,9 +141,6 @@ export function shouldSuppressLegacyRenderingForYuanbaoMessage(
     return true;
   }
   if (message.type === "team_update" || message.type === "team_created" || message.type === "team_deleted") {
-    return false;
-  }
-  if (message.type === "task_update") {
     return false;
   }
   return event.type === "message.delta" ||
@@ -476,10 +476,7 @@ export function applyYuanbaoServerMessageToChat(
       };
 
     case "task_update":
-      return {
-        handled: true,
-        messages: appendTaskUpdateEvent(current, event, message),
-      };
+      return { handled: false, messages: current };
 
     default:
       return { handled: false, messages: current };
@@ -497,11 +494,14 @@ function appendTeamEvent(
   const failed = members.some((member) => member.status === "error");
   const completed = members.length > 0 && members.every((member) => member.status === "completed");
   const status = failed ? "failed" : running ? "running" : completed || action === "deleted" ? "completed" : "running";
+  const visibleTeamName = looksLikeInternalDisplayText(teamName) || /^(?:c?task|team|session|worker|agent)[_-][a-z0-9_-]{4,}$/i.test(teamName)
+    ? ""
+    : teamName;
   const title = action === "created"
-    ? `Team created: ${teamName}`
+    ? (visibleTeamName ? `Team created: ${visibleTeamName}` : "Team created")
     : action === "deleted"
-      ? `Team deleted: ${teamName}`
-      : `Team update: ${teamName}`;
+      ? (visibleTeamName ? `Team deleted: ${visibleTeamName}` : "Team deleted")
+      : (visibleTeamName ? `Team update: ${visibleTeamName}` : "Team update");
   const summary = members.length
     ? `${members.length} member${members.length === 1 ? "" : "s"}`
     : action;
@@ -516,43 +516,9 @@ function appendTeamEvent(
     eventId: event.eventId,
     metadata: {
       kind: "agent_task_group",
-      teamName,
+      teamName: visibleTeamName,
       action,
       members,
-    },
-    now: event.ts,
-  });
-}
-
-function appendTaskUpdateEvent(
-  current: ChatMessageView[],
-  event: AgentEventEnvelope,
-  message: Extract<YuanbaoServerMessage, { type: "task_update" }>,
-): ChatMessageView[] {
-  const summary = message.progress || message.status;
-  const taskTitle = message.progress || message.status || "Task update";
-  return appendSpecialEventMessage(current, {
-    kind: "task_summary",
-    sessionId: event.sessionId,
-    taskId: event.taskId,
-    title: "Task update",
-    summary,
-    content: summary,
-    status: message.status,
-    eventId: event.eventId,
-    metadata: {
-      kind: "task_summary",
-      sourceType: "task_update",
-      taskId: message.taskId,
-      status: message.status,
-      progress: message.progress,
-      tasks: [
-        {
-          id: message.taskId,
-          title: taskTitle,
-          status: message.status,
-        },
-      ],
     },
     now: event.ts,
   });

@@ -29,7 +29,6 @@ _CHAT_COMPAT_EVENT_TYPES = {
     "tool_result",
     "permission_request",
     "message_complete",
-    "plan_update",
 }
 
 _RECOVERABLE_CHAT_COMPAT_EVENT_TYPES = {
@@ -37,7 +36,6 @@ _RECOVERABLE_CHAT_COMPAT_EVENT_TYPES = {
     "content_start",
     "message_complete",
     "permission_request",
-    "plan_update",
     "status",
     "thinking",
     "tool_result",
@@ -1331,68 +1329,6 @@ class PublishingMixin:
             return text
         return f"{text[:limit - 1].rstrip()}…"
 
-    @staticmethod
-    def _plan_update_fingerprint(payload: dict[str, Any]) -> str:
-        plan = payload.get("plan")
-        if isinstance(plan, list):
-            parts: list[str] = []
-            for step in plan:
-                if not isinstance(step, dict):
-                    continue
-                parts.append(
-                    "|".join(
-                        str(step.get(key) or "").strip()
-                        for key in ("id", "title", "status")
-                    )
-                )
-            if parts:
-                return "\n".join(parts)
-        return "|".join(
-            str(payload.get(key) or "").strip()
-            for key in ("status", "currentStep", "summary", "resultSummary", "detail")
-        )
-
-    def _plan_update_payload_from_task_update(self, task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
-        plan = payload.get("plan")
-        current_step = payload.get("currentStep") or task.get("currentStep")
-        summary = (
-            payload.get("detail")
-            or payload.get("summary")
-            or payload.get("resultSummary")
-            or current_step
-        )
-        has_plan = isinstance(plan, list) and bool(plan)
-        if not has_plan:
-            return None
-        status = str(payload.get("status") or task.get("status") or "running")
-        title = "计划更新"
-        if current_step:
-            title = "正在处理"
-        if status in {"completed", "failed", "cancelled", "canceled"}:
-            title = "任务进展"
-        event_payload: dict[str, Any] = {
-            "title": title,
-            "status": status,
-            "summary": self._compact_chat_event_text(summary),
-            "currentStep": current_step,
-            "fingerprint": self._plan_update_fingerprint(payload),
-        }
-        if has_plan:
-            event_payload["plan"] = plan
-            event_payload["stepCount"] = len(plan)
-            active_steps = [
-                step for step in plan
-                if isinstance(step, dict) and str(step.get("status") or "").strip().lower() in {"active", "running", "in_progress"}
-            ]
-            completed_steps = [
-                step for step in plan
-                if isinstance(step, dict) and str(step.get("status") or "").strip().lower() in {"completed", "complete", "done"}
-            ]
-            if active_steps:
-                event_payload["activeStep"] = active_steps[0].get("title") or active_steps[0].get("id")
-            event_payload["completedSteps"] = len(completed_steps)
-        return event_payload
-
     def _tool_started_output_delta_text(self, payload: dict[str, Any]) -> str:
         tool_name = str(payload.get("toolName") or "").strip()
         executor_progress_tools = {
@@ -1611,25 +1547,6 @@ class PublishingMixin:
             )
 
         if event_type == "task.updated":
-            plan_payload = self._plan_update_payload_from_task_update(task, payload)
-            if plan_payload is not None:
-                fingerprint_cache = getattr(self, "_chat_plan_update_fingerprints", None)
-                if not isinstance(fingerprint_cache, dict):
-                    fingerprint_cache = {}
-                    setattr(self, "_chat_plan_update_fingerprints", fingerprint_cache)
-                cache_key = str(task.get("id") or "")
-                last_key = fingerprint_cache.get(cache_key)
-                next_key = plan_payload.get("fingerprint")
-                if next_key and next_key != last_key:
-                    if cache_key:
-                        fingerprint_cache[cache_key] = next_key
-                    self._publish_chat_compat_event(
-                        session_id=session_id,
-                        task=task,
-                        event_type="plan_update",
-                        payload=plan_payload,
-                        visibility=effective_visibility,
-                    )
             return
 
         if event_type == "assistant.token":

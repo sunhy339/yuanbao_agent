@@ -529,7 +529,7 @@ def test_computer_use_approval_emits_dedicated_permission_events(tmp_path: Any) 
     assert resolved_events[-1]["payload"]["resolved"] is True
 
 
-def test_task_updated_bridges_plan_update_once(tmp_path: Any) -> None:
+def test_task_updated_with_plan_stays_panel_only(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -561,18 +561,13 @@ def test_task_updated_bridges_plan_update_once(tmp_path: Any) -> None:
         payload=payload,
     )
 
-    plan_events = [event for event in runtime.events if event["type"] == "plan_update"]
-    assert len(plan_events) == 1
-    assert plan_events[0]["visibility"] == "chat"
-    assert plan_events[0]["payload"]["_chatCompat"] is True
-    assert plan_events[0]["payload"]["currentStep"] == "Inspect files"
-    assert plan_events[0]["payload"]["activeStep"] == "Inspect files"
-    assert plan_events[0]["payload"]["stepCount"] == 2
+    assert not [event for event in runtime.events if event["type"] == "plan_update"]
     task_events = [event for event in runtime.events if event["type"] == "task.updated"]
     assert len(task_events) == 2
     assert all("hahaCc" not in event and "yuanbao" not in event for event in task_events)
     assert all("acceptanceCriteria" not in event["payload"] for event in task_events)
     assert all("context" not in event["payload"] for event in task_events)
+    assert all(event["visibility"] == "panel" for event in task_events)
 
 
 def test_task_updated_without_plan_does_not_bridge_plan_update(tmp_path: Any) -> None:
@@ -8171,7 +8166,7 @@ def test_react_loop_fails_when_patch_repair_attempts_are_exhausted(tmp_path: Any
     assert "Patch removal mismatch in README.md" in messages[1]["content"]
 
 
-def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: Any) -> None:
+def test_patch_completion_runs_post_task_validation_and_records_validation_trace(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [
             {
@@ -8310,8 +8305,7 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     assert validation_event["payload"]["command"]["command"] == "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
     assert validation_event["payload"]["patches"][0]["summary"] == "Updated todo.txt"
     assert validation_event["payload"]["verification"][-1]["status"] == "passed"
-    completion_event = next(event for event in trace if event["type"] == "agent.decision.completion")
-    assert completion_event["payload"]["completionEvidence"]["evidenceLevel"] == "verified"
+    assert "agent.decision.completion" not in trace_types
     task_updates = [event for event in runtime.events if event["type"] == "task.updated"]
     assert any(event["payload"].get("changedFiles") for event in task_updates)
     assert any(event["payload"].get("commands") for event in task_updates)

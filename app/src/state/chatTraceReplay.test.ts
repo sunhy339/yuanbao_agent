@@ -137,6 +137,31 @@ describe("chat trace replay", () => {
     });
   });
 
+  it("replays team updates without exposing internal team ids", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      {
+        ...trace("evt_team", "collab.worker.updated", {}, 1, "chat"),
+        yuanbao: {
+          type: "team_update",
+          teamName: "team_ctask_abc123",
+          members: [
+            {
+              agentId: "planner-1",
+              role: "planner",
+              status: "running",
+              currentTask: "Inspect trace rendering",
+            },
+          ],
+        },
+      },
+    ]);
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+
+    expect(visible[0]?.content).toBe("1 member");
+    expect(visible[0]?.metadata?.title).toBe("Team update");
+    expect(JSON.stringify(visible)).not.toContain("team_ctask_abc123");
+  });
+
   it("does not restore raw trace-only tool lifecycle rows into chat", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       trace("evt_tool_start", "tool.started", {
@@ -745,7 +770,7 @@ describe("chat trace replay", () => {
     expect(visible[0]?.content).not.toContain("raw");
   });
 
-  it("replays flat task_update as a compact task summary", () => {
+  it("keeps flat task_update out of chat replay", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       {
         ...trace("evt_task_update", "task.updated", {
@@ -761,11 +786,7 @@ describe("chat trace replay", () => {
     ]);
 
     const visible = getVisibleChatMessages(replayed, "sess_1");
-    expect(visible).toHaveLength(1);
-    expect(visible[0]?.metadata?.kind).toBe("task_summary");
-    expect(visible[0]?.metadata?.sourceType).toBe("task_update");
-    expect(visible[0]?.content).toBe("Inspect current workflow");
-    expect(visible[0]?.content).not.toContain("payload");
+    expect(visible).toHaveLength(0);
   });
 
   it("hides child-worker trace events on session recovery unless they are explicitly chat-visible", () => {

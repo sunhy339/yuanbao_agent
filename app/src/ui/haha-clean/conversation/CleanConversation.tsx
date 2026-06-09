@@ -269,6 +269,42 @@ function summarizeToolResultText(value: string) {
   return parts.length ? parts.join(" · ") : "结果已记录";
 }
 
+function structuredToolDetailText(value: string, fallbackLabel: string) {
+  const text = value.trim();
+  if (!text) return "";
+  const record = parseJson(text);
+  if (!record) return looksLikeInternalPayloadText(text) ? "" : text;
+  const rows = [
+    "summary",
+    "message",
+    "status",
+    "state",
+    "error",
+    "reason",
+    "path",
+    "file",
+    "target",
+    "command",
+    "exitCode",
+    "durationMs",
+  ].flatMap((key) => {
+    const value = record[key];
+    const clean = typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+      ? cleanInlineDisplayText(String(value))
+      : "";
+    return clean ? [`${key}: ${clean}`] : [];
+  });
+  const previewRows = metadataPreviewRows(record.resultPreview)
+    .concat(metadataPreviewRows(record.preview))
+    .map((row) => `${row.label}: ${row.value}`);
+  const lines = [...rows, ...previewRows];
+  if (!lines.length) {
+    const summary = summarizeToolResultText(text);
+    return summary ? `${fallbackLabel}\n${summary}` : "";
+  }
+  return `${fallbackLabel}\n${lines.join("\n")}`;
+}
+
 function toolInlineSummary(message: SessionWorkspaceMessage) {
   if (isAskUserToolMessage(message)) {
     return compactText(toolQuestionText(message) || "等待你补充信息", 170);
@@ -740,9 +776,10 @@ function worklogGroupCounts(items: RuntimeTimelineItem[]) {
 
 function splitDiffText(value: string) {
   const files: Array<{ oldPath: string; newPath: string; lines: ReturnType<typeof parseUnifiedDiff> }> = [];
-  const sections = value.split(/\ndiff --git /g);
+  const normalizedValue = value.replace(/\r\n/g, "\n").trimStart();
+  const sections = normalizedValue.split(/\ndiff --git /g);
   sections.forEach((section, index) => {
-    const text = index === 0 && !section.startsWith("diff --git ") ? section : `diff --git ${section}`;
+    const text = index === 0 || section.startsWith("diff --git ") ? section : `diff --git ${section}`;
     const oldPath = /^---\s+(.*)$/m.exec(text)?.[1]?.replace(/^a\//, "") ?? "";
     const newPath = /^\+\+\+\s+(.*)$/m.exec(text)?.[1]?.replace(/^b\//, "") ?? oldPath;
     const lines = parseUnifiedDiff(text);
@@ -1016,6 +1053,12 @@ function readMetadataPreviewRows(message: SessionWorkspaceMessage, keys: string[
     if (rows.length) return rows;
   }
   return [];
+}
+
+function safePermissionDetailText(value: string) {
+  const text = value.trim();
+  if (!text || isGenericApprovalText(text) || looksLikeInternalPayloadText(text) || parseJson(text)) return "";
+  return text;
 }
 
 function messageTitleForKind(kind: CleanTranscriptKind | string, message: SessionWorkspaceMessage) {
@@ -1326,6 +1369,16 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
         result && !looksLikeInternalPayloadText(result) ? `结果\n${result}` : "",
       ].filter(Boolean).join("\n\n")
     : [safeInputDetail, safeResultDetail, safeExtraDetail].filter(Boolean).join("\n\n");
+  const displayDetails = askUserTool
+    ? [
+        question ? `Question\n${question}` : "",
+        structuredToolDetailText(result, "Result"),
+      ].filter(Boolean).join("\n\n")
+    : [
+        needsDiagnostics ? structuredToolDetailText(input, "Input") : "",
+        needsDiagnostics ? structuredToolDetailText(result, "Result") : "",
+        safeExtraDetail,
+      ].filter(Boolean).join("\n\n");
   const displayTitle = cleanInlineDisplayText(readMetadataString(message, ["displayTitle"]));
   const title = askUserTool
     ? "需要你补充信息"
@@ -1363,17 +1416,17 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
           ))}
         </dl>
       ) : null}
-      {expanded && details ? (
+      {expanded && displayDetails ? (
         <figure className="hc-tool-detail">
           <figcaption>
             <span>工具详情</span>
             {onCopyRuntimeText ? (
-              <button type="button" onClick={() => void onCopyRuntimeText("工具详情", details)}>
+              <button type="button" onClick={() => void onCopyRuntimeText("工具详情", displayDetails)}>
                 复制
               </button>
             ) : null}
           </figcaption>
-          <pre>{details}</pre>
+          <pre>{displayDetails}</pre>
         </figure>
       ) : null}
     </section>
@@ -1439,10 +1492,7 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
   const approvalKind = readMetadataString(message, ["approvalKind", "kind"]) || message.toolName;
   const canAlwaysAllow = Boolean(onApproveAlways && supportsAlwaysAllowKind(approvalKind));
   const inputText = readMetadataString(message, ["parametersPreview", "inputText", "command"]);
-  const contentLooksStructured = Boolean(parseJson(message.content.trim()));
-  const detailText = isGenericApprovalText(message.content) || looksLikeInternalPayloadText(message.content) || contentLooksStructured
-    ? ""
-    : message.content.trim();
+  const detailText = safePermissionDetailText(message.content);
   const previewRows = readMetadataPreviewRows(message, ["previewRows", "preview"]);
   const changedPaths = readMetadataList(message, ["changedPaths", "paths", "files"]);
   const filesChanged = readMetadataString(message, ["filesChanged"]);
@@ -1489,8 +1539,17 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
       ) : filesChanged ? (
         <p className="hc-permission-meta">涉及 {filesChanged} 个文件</p>
       ) : null}
-      {detailText ? <pre>{detailText}</pre> : null}
-      {diffText && !detailText ? <p className="hc-permission-meta">已附带差异预览，可在运行记录中展开审查。</p> : null}
+      {diffText ? (
+        <DiffPreview
+          item={{
+            id: `${message.id}:diff`,
+            kind: "approval",
+            title: permissionTitle,
+            status: resolved ? decision || "approved" : "waiting_approval",
+            rawDetail: diffText,
+          }}
+        />
+      ) : detailText ? <pre>{detailText}</pre> : null}
       {!resolved && requestId ? (
         <div className="hc-approval-actions">
           <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(requestId)}>允许一次</button>

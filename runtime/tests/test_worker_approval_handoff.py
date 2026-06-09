@@ -514,7 +514,7 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
         store.close()
 
 
-def test_child_approval_resume_failure_resumes_parent_dag_to_terminal_failure(
+def test_child_approval_resume_failure_clears_parent_legacy_dag_without_terminal_failure(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
@@ -615,14 +615,15 @@ def test_child_approval_resume_failure_resumes_parent_dag_to_terminal_failure(
         child_collaboration_task = store.get_collaboration_task({"taskId": response["childTaskId"]})["task"]
 
         assert child_collaboration_task["status"] == "failed"
-        assert stored_parent_task["status"] == "failed"
-        assert stored_parent_task["errorCode"] == "PLANNING_SUBTASKS_FAILED"
-        assert "child command failed after approval" in (stored_parent_task["resultSummary"] or "")
+        assert stored_parent_task["status"] == "running"
+        assert stored_parent_task.get("errorCode") is None
+        assert "child command failed after approval" not in (stored_parent_task.get("resultSummary") or "")
         assert store.get_pending_dag_state(parent_task["id"]) is None
         assert any(
-            event["type"] == "task.failed"
+            event["type"] == "task.updated"
             and event["taskId"] == parent_task["id"]
-            and event["payload"]["errorCode"] == "PLANNING_SUBTASKS_FAILED"
+            and event.get("visibility") == "trace"
+            and event["payload"].get("legacyCheckpoint") == "dag"
             for event in events
         )
     finally:

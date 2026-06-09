@@ -46,8 +46,6 @@ const SPECIAL_EVENT_TYPES = new Set([
   "memory_event",
   "background_task",
   "agent_task_group",
-  "task_summary",
-  "plan_update",
   "ask_user_question",
   "computer_use_permission_request",
   "computer_use_permission",
@@ -65,7 +63,7 @@ function envelopeFromTrace(trace: TraceEventRecord): AgentEventEnvelope {
     seq: trace.sequence,
     payload: trace.payload,
     visibility: trace.visibility,
-    yuanbao: trace.yuanbao ?? trace.hahaCc,
+    yuanbao: trace.yuanbao,
   };
 }
 

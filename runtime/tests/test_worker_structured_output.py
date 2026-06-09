@@ -1,9 +1,9 @@
-"""Model-first completion/result contracts.
+"""Model-first result and approval boundary contracts.
 
 These tests intentionally avoid the removed router/advisor/planner stack. The
-runtime should complete from provider/tool evidence, enforce only explicit
-evidence contracts and objective failures, and keep legacy completion review
-approvals internal.
+runtime completes from provider/tool evidence without post-hoc completion
+advisor gates. Legacy completion review approvals are tolerated only as
+internal historical data.
 """
 
 from __future__ import annotations
@@ -141,8 +141,10 @@ class TestModelFirstCompletionContracts:
             if event.type == "task.waiting_approval" and event.payload.get("kind") == "completion_review"
         ]
 
-    def test_explicit_workspace_evidence_contract_waits_for_read_only_evidence(self, tmp_path: Any) -> None:
+    def test_workspace_evidence_contract_is_diagnostic_not_a_gate(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
         contract = {
             "profile": {
                 "workspaceEvidenceRequired": {
@@ -167,13 +169,13 @@ class TestModelFirstCompletionContracts:
             skip_reflection=True,
         )
 
-        gate = result["structuredResult"]["completionGate"]
         evidence = result["structuredResult"]["completionEvidence"]["workspaceEvidence"]
-        assert result["status"] == "running"
-        assert gate["status"] == "needs_workspace_evidence"
-        assert gate["internal"] is True
+        assert result["status"] == "completed"
+        assert "completionGate" not in result["structuredResult"]
         assert evidence["required"] is True
         assert evidence["status"] == "missing"
+        assert not [event for event in captured_events if event.type == "task.runtime_work_waiting"]
+        assert not [event for event in captured_events if event.type == "agent.decision.completion"]
 
     def test_explicit_workspace_evidence_contract_accepts_read_only_tool_result(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -216,8 +218,10 @@ class TestModelFirstCompletionContracts:
         assert evidence["status"] == "satisfied"
         assert evidence["evidence"][0]["name"] == "read_file"
 
-    def test_failed_verification_blocks_completion(self, tmp_path: Any) -> None:
+    def test_failed_verification_is_evidence_not_a_completion_gate(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
         session, task = _make_session_task(rt, tmp_path)
         task = rt.store.update_task(
             task_id=task["id"],
@@ -233,9 +237,11 @@ class TestModelFirstCompletionContracts:
             skip_reflection=True,
         )
 
-        assert result["status"] == "failed"
-        assert result["errorCode"] == "COMPLETION_EVIDENCE_INSUFFICIENT"
-        assert "verification failed" in result["resultSummary"].lower()
+        assert result["status"] == "completed"
+        assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "failed_verification"
+        assert "completionGate" not in result["structuredResult"]
+        assert not [event for event in captured_events if event.type == "task.runtime_work_waiting"]
+        assert not [event for event in captured_events if event.type == "agent.decision.completion"]
 
     def test_passed_command_verification_completes_with_verified_evidence(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -320,3 +326,28 @@ class TestModelFirstCompletionContracts:
             event for event in captured_events
             if event.type == "approval.resolved" and event.payload.get("approvalId") == approval["id"]
         ]) == 1
+
+    def test_legacy_tool_approval_without_pending_react_state_does_not_synthesize_final(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        _session, task = _make_session_task(rt, tmp_path, status="waiting_approval")
+        approval = rt.store.create_approval(
+            task["id"],
+            "run_command",
+            {"command": "echo ok", "cwd": "."},
+        )
+
+        result = rt.orchestrator.submit_approval({"approvalId": approval["id"], "decision": "approved"})
+
+        refreshed = rt.store.get_task({"taskId": task["id"]})["task"]
+        assert result["ignored"] is True
+        assert refreshed["status"] == "waiting_approval"
+        assert not [event for event in captured_events if event.type in {"command.started", "message.completed"}]
+        resolved_events = [
+            event for event in captured_events
+            if event.type == "approval.resolved" and event.payload.get("approvalId") == approval["id"]
+        ]
+        assert resolved_events
+        assert resolved_events[-1].visibility == "trace"
+        assert resolved_events[-1].payload["ignored"] is True

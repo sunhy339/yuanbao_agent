@@ -131,7 +131,7 @@ def test_old_plan_strategy_hint_cannot_enter_legacy_orchestration(tmp_path: Path
     assert "task.planning.started" not in _event_types(runtime)
 
 
-def test_completion_review_defaults_to_internal_trace_not_visible_approval(tmp_path: Path) -> None:
+def test_summary_only_review_hint_does_not_create_completion_gate(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -156,15 +156,9 @@ def test_completion_review_defaults_to_internal_trace_not_visible_approval(tmp_p
     event_types = _event_types(runtime)
     assert "approval.requested" not in event_types
     assert "task.runtime_work_waiting" not in event_types
-    trace = [
-        event for event in runtime.events
-        if event["type"] == "agent.decision.completion"
-    ]
-    assert trace
-    recorded = [event for event in trace if event["payload"].get("recordOnly") is True]
-    assert recorded
-    assert recorded[-1]["visibility"] == "trace"
-    assert recorded[-1]["payload"]["completionGate"]["internal"] is True
+    assert "agent.decision.completion" not in event_types
+    assert "completionGate" not in completed["structuredResult"]
+    assert "completionReview" not in completed["structuredResult"]
 
 
 def test_tool_policy_ignores_legacy_plan_strategy_for_initial_phase() -> None:

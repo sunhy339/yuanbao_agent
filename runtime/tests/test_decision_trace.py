@@ -1,8 +1,8 @@
-"""Tests for P1: Agent Decision Trace.
+"""Tests for internal agent decision traces.
 
 Covers:
-  1. agent.decision.completion event on task success
-  2. agent.decision.completion event on task failure
+  1. normal model-first completion does not emit completion/advisor gates
+  2. historical failure/runtime diagnostics remain queryable
   3. agent.decision.context_policy event on compaction
   4. decision.list RPC filtering
   5. proposal.list RPC
@@ -88,10 +88,10 @@ def _insert_trace(store: SQLiteStore, *, task_id: str, session_id: str, event_ty
 # ---------------------------------------------------------------------------
 
 class TestCompletionDecisionEvent:
-    """agent.decision.completion events are emitted on task lifecycle."""
+    """Completion decisions are diagnostics, not normal success gates."""
 
-    def test_completion_event_on_success(self, tmp_path: Any) -> None:
-        """Task completion publishes agent.decision.completion with decision='completed'."""
+    def test_no_completion_decision_event_on_normal_success(self, tmp_path: Any) -> None:
+        """Model-first completion finishes without a post-hoc completion gate."""
         server, store = _make_harness(tmp_path)
         session = _setup_session(server, store, tmp_path)
         # Send a message via mock provider — it returns a final answer
@@ -103,23 +103,14 @@ class TestCompletionDecisionEvent:
         task_id = result.get("task", {}).get("id") or result.get("taskId")
         assert task_id is not None
 
-        # Query decision events
+        # Query decision events. Ordinary completion should look like haha-cc:
+        # the model/tool loop ends without a backend completion/advisor gate.
         decisions = _call(server, "decision.list", {"taskId": task_id})
         decision_types = [d["type"] for d in decisions["decisions"]]
-        assert "agent.decision.completion" in decision_types
-
-        completion_events = [
-            d for d in decisions["decisions"]
-            if d["type"] == "agent.decision.completion"
-        ]
-        assert len(completion_events) >= 1
-        payload = completion_events[0]["payload"]
-        assert payload["decision"] == "completed"
-        assert "whyComplete" in payload
-        assert isinstance(payload["whyComplete"], str)
+        assert "agent.decision.completion" not in decision_types
 
     def test_completion_event_on_failure(self, tmp_path: Any) -> None:
-        """Task failure publishes agent.decision.completion with decision='failed'."""
+        """Historical failure diagnostics remain queryable through decision.list."""
         server, store = _make_harness(tmp_path)
         session = _setup_session(server, store, tmp_path)
 

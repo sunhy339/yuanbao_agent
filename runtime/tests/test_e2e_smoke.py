@@ -513,7 +513,7 @@ def test_streaming_provider_failure_without_partial_output_does_not_fallback(tmp
     assert len(provider.post_requests) == 0
     assert turns[0]["failureRecovery"]["category"] == "timeout"
     assert turns[0]["failureRecovery"]["strategy"] == "surface_error"
-    assert turns[0]["failureRecovery"]["advisorGate"]["reason"] == "no_partial_output"
+    assert turns[0]["failureRecovery"]["runtimeGate"]["reason"] == "no_partial_output"
     assert not any(event["type"] == "provider.stream.fallback_non_stream" for event in trace)
 
 

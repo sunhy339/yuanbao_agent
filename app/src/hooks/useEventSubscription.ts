@@ -462,7 +462,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         sequence: event.seq ?? event.ts,
         visibility: event.visibility,
         uiReplayScope: "chat",
-        yuanbao: event.yuanbao ?? event.hahaCc,
+        yuanbao: event.yuanbao,
       };
       const existingIndex = current.findIndex((item) => item.id === trace.id);
       if (existingIndex >= 0) {

@@ -30,6 +30,7 @@ export type AgentEventType =
   | "task.resumed"
   | "task.created"
   | "task.routing.decided"
+  | "runtime.context.prepared"
   | "task.worktree.bound"
   | "task.worktree.bind_failed"
   | "task.worktree.merged"
@@ -98,7 +99,7 @@ export interface AgentEventEnvelope<TPayload = unknown> {
   payload: TPayload;
   visibility?: EventVisibility;
   yuanbao?: YuanbaoServerMessage;
-  hahaCc?: HahaCcServerMessage;
+  hahaCc?: YuanbaoServerMessage;
 }
 
 export interface TaskUpdatedPayload {
@@ -191,11 +192,54 @@ export type HahaCcTeamMemberStatus = YuanbaoTeamMemberStatus;
 
 export type YuanbaoServerMessage =
   | { type: "connected"; sessionId: string }
-  | { type: "content_start"; blockType: "text" | "tool_use"; toolName?: string; toolUseId?: string; parentToolUseId?: string }
-  | { type: "content_delta"; text?: string; toolInput?: string; toolOutput?: string; outputStream?: "stdout" | "stderr" | "activity" | "result_preview" | string }
-  | { type: "tool_use_complete"; toolName: string; toolUseId: string; input: unknown; parentToolUseId?: string }
-  | { type: "tool_result"; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string }
-  | { type: "permission_request"; requestId: string; toolName: string; toolUseId?: string; input: unknown; description?: string }
+  | ({
+      type: "content_start";
+      blockType: "text" | "tool_use";
+      toolName?: string;
+      toolUseId?: string;
+      parentToolUseId?: string;
+    } & Partial<ToolPresentationFields>)
+  | ({
+      type: "content_delta";
+      text?: string;
+      toolInput?: string;
+      toolOutput?: string;
+      outputStream?: "stdout" | "stderr" | "activity" | "result_preview" | string;
+      toolName?: string;
+      toolUseId?: string;
+      parentToolUseId?: string;
+    } & Partial<ToolPresentationFields>)
+  | ({
+      type: "tool_use_complete";
+      toolName: string;
+      toolUseId: string;
+      input: unknown;
+      parentToolUseId?: string;
+    } & Partial<ToolPresentationFields>)
+  | ({
+      type: "tool_result";
+      toolUseId: string;
+      toolName?: string;
+      content: unknown;
+      isError: boolean;
+      parentToolUseId?: string;
+      resultSummary?: string;
+      resultPreview?: Array<{ label: string; value: string }>;
+      durationMs?: number;
+    } & Partial<ToolPresentationFields>)
+  | ({
+      type: "permission_request";
+      requestId: string;
+      toolName: string;
+      toolUseId?: string;
+      input: unknown;
+      description?: string;
+      target?: string;
+      inputSummary?: string;
+      filesChanged?: number;
+      changedPaths?: string[];
+      diffText?: string;
+    } & Partial<ToolPresentationFields>)
   | { type: "computer_use_permission_request"; requestId: string; request: Record<string, unknown> }
   | { type: "message_complete"; usage: YuanbaoTokenUsage }
   | { type: "thinking"; text: string }
@@ -210,15 +254,38 @@ export type YuanbaoServerMessage =
   | { type: "task_update"; taskId: string; status: string; progress?: string }
   | { type: "session_title_updated"; sessionId: string; title: string };
 
-export type HahaCcServerMessage = YuanbaoServerMessage;
+export interface ToolPresentationFields {
+  target?: string;
+  inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+}
 
 export interface ContentStartPayload {
   blockType: "text" | "tool_use";
   messageId?: Identifier;
+  contentBlockId?: Identifier;
+  blockIndex?: number;
   toolName?: string;
   toolUseId?: Identifier;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   parentToolUseId?: Identifier;
   toolGroupId?: Identifier;
   toolIndex?: number;
@@ -234,6 +301,8 @@ export interface ContentStartPayload {
 
 export interface ContentDeltaPayload {
   messageId?: Identifier;
+  contentBlockId?: Identifier;
+  blockIndex?: number;
   text?: string;
   toolInput?: string;
   toolOutput?: string;
@@ -242,6 +311,10 @@ export interface ContentDeltaPayload {
   toolName?: string;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   parentToolUseId?: Identifier;
   toolGroupId?: Identifier;
   toolIndex?: number;
@@ -272,6 +345,10 @@ export interface ToolUseCompletePayload {
   input: unknown;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   parentToolUseId?: Identifier;
   toolGroupId?: Identifier;
   toolIndex?: number;
@@ -293,6 +370,10 @@ export interface ToolResultPayload {
   parentToolUseId?: Identifier;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   resultSummary?: string;
   resultPreview?: Array<{ label: string; value: string }>;
   durationMs?: number;
@@ -314,6 +395,12 @@ export interface PermissionRequestPayload {
   toolUseId?: Identifier;
   input: unknown;
   description?: string;
+  target?: string;
+  inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   preview?: Array<{ label: string; value: string }>;
   previewSections?: Array<{
     kind: string;
@@ -384,6 +471,10 @@ export interface ToolLifecyclePayload {
   arguments?: Record<string, unknown>;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   result?: unknown;
   resultSummary?: string;
   resultPreview?: Array<{ label: string; value: string }>;
@@ -413,6 +504,10 @@ export interface ToolOutputPayload {
   toolName?: string;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   toolCategory?: string;
   toolPhaseId?: string;
   toolPhaseLabel?: string;
@@ -434,6 +529,10 @@ export interface CommandOutputPayload {
   toolName?: string;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   parentToolUseId?: Identifier;
   toolGroupId?: Identifier;
   toolIndex?: number;
@@ -455,6 +554,10 @@ export interface CommandLifecyclePayload {
   toolName?: string;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   parentToolUseId?: Identifier;
   toolGroupId?: Identifier;
   toolIndex?: number;
@@ -523,6 +626,8 @@ export interface MessageCreatedPayload {
 export interface MessageDeltaPayload {
   delta: string;
   messageId: Identifier;
+  contentBlockId?: Identifier;
+  blockIndex?: number;
   taskId?: Identifier;
 }
 

@@ -6,6 +6,7 @@ from .models import RuntimeEvent
 
 
 _DIRECT_EVENT_TYPES = {
+    "status",
     "content_start",
     "content_delta",
     "tool_use_complete",
@@ -16,6 +17,12 @@ _DIRECT_EVENT_TYPES = {
     "thinking",
     "api_retry",
     "system_notification",
+}
+
+_CHAT_COMPAT_ALIAS_EVENT_TYPES = {
+    "message.delta",
+    "message.completed",
+    "assistant.message.completed",
 }
 
 _SYSTEM_NOTIFICATION_EVENT_TYPES = {
@@ -42,6 +49,7 @@ _TASK_PROGRESS_EVENT_TYPES = {
 }
 
 _TASK_STARTED_STATUSES = {"queued", "starting", "started", "running", "active", "in_progress"}
+_CHAT_STATUS_STATES = {"idle", "thinking", "compacting", "tool_executing", "streaming", "permission_pending"}
 _SYSTEM_NOTIFICATION_SUBTYPES = {
     "init",
     "compact_summary",
@@ -52,32 +60,65 @@ _SYSTEM_NOTIFICATION_SUBTYPES = {
     "session_state_changed",
 }
 
-_TOOL_MESSAGE_METADATA_FIELDS = {
-    "durationMs",
-    "inputSummary",
-    "parentToolUseId",
-    "resultPreview",
-    "resultSummary",
+_TOOL_PRESENTATION_FIELDS = {
     "target",
+    "inputSummary",
+    "displayTitle",
+    "displaySummary",
+    "displayTarget",
+    "displayKind",
     "toolCategory",
-    "toolGroupId",
-    "toolIndex",
-    "toolName",
-    "toolOperationId",
-    "toolOperationLabel",
     "toolPhaseId",
     "toolPhaseLabel",
     "toolSemanticParentId",
     "toolSemanticParentLabel",
+    "toolGroupId",
+    "toolIndex",
     "toolTotal",
-    "toolUseId",
+    "toolOperationId",
+    "toolOperationLabel",
 }
 
 _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
-    "content_start": {"type", "blockType", *_TOOL_MESSAGE_METADATA_FIELDS},
-    "content_delta": {"type", "text", "toolInput", "toolOutput", "outputStream", *_TOOL_MESSAGE_METADATA_FIELDS},
-    "tool_use_complete": {"type", "input", *_TOOL_MESSAGE_METADATA_FIELDS},
-    "tool_result": {"type", "content", "isError", *_TOOL_MESSAGE_METADATA_FIELDS},
+    "content_start": {
+        "type",
+        "blockType",
+        "toolName",
+        "toolUseId",
+        "parentToolUseId",
+        *_TOOL_PRESENTATION_FIELDS,
+    },
+    "content_delta": {
+        "type",
+        "text",
+        "toolInput",
+        "toolOutput",
+        "outputStream",
+        "toolName",
+        "toolUseId",
+        "parentToolUseId",
+        *_TOOL_PRESENTATION_FIELDS,
+    },
+    "tool_use_complete": {
+        "type",
+        "toolName",
+        "toolUseId",
+        "input",
+        "parentToolUseId",
+        *_TOOL_PRESENTATION_FIELDS,
+    },
+    "tool_result": {
+        "type",
+        "toolUseId",
+        "toolName",
+        "content",
+        "isError",
+        "parentToolUseId",
+        "resultSummary",
+        "resultPreview",
+        "durationMs",
+        *_TOOL_PRESENTATION_FIELDS,
+    },
     "permission_request": {
         "type",
         "requestId",
@@ -85,19 +126,22 @@ _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
         "toolUseId",
         "input",
         "description",
-        "preview",
+        "previewRows",
         "previewSections",
+        "resolved",
+        "decision",
+        "status",
+        "target",
+        "inputSummary",
         "filesChanged",
         "changedPaths",
         "diffText",
-        "resolved",
-        "decision",
-        "decidedBy",
-        "decidedAt",
+        *_TOOL_PRESENTATION_FIELDS,
     },
     "computer_use_permission_request": {"type", "requestId", "request"},
     "message_complete": {"type", "usage"},
     "thinking": {"type", "text"},
+    "status": {"type", "state", "verb", "elapsed", "tokens"},
     "api_retry": {
         "type",
         "attempt",
@@ -127,6 +171,7 @@ _SERVER_MESSAGE_REQUIRED_FIELDS: dict[str, set[str]] = {
     "computer_use_permission_request": {"type", "requestId", "request"},
     "message_complete": {"type", "usage"},
     "thinking": {"type", "text"},
+    "status": {"type", "state"},
     "api_retry": {"type", "attempt", "maxRetries", "retryDelayMs", "errorStatus"},
     "error": {"type", "message", "code"},
     "system_notification": {"type", "subtype"},
@@ -144,6 +189,8 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
 
     payload = event.payload if isinstance(event.payload, dict) else {}
     message: dict[str, Any] | None = None
+    if event.type in _CHAT_COMPAT_ALIAS_EVENT_TYPES and not _is_chat_compat_payload(payload):
+        return None
     if event.type == "system_notification":
         message = _system_notification_message(event.type, payload)
     elif event.type in _DIRECT_EVENT_TYPES:
@@ -154,22 +201,15 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
         message = _flatten_payload(event.type, payload)
         if event.type == "connected" and not message.get("sessionId"):
             message["sessionId"] = event.session_id
-    elif event.type == "assistant.token":
-        if _is_chat_compat_payload(payload):
-            return None
-        delta = _delta_text_value(payload.get("delta"))
-        if delta:
-            message = {"type": "content_delta", "text": delta}
     elif event.type == "message.delta":
+        if not _is_chat_compat_payload(payload):
+            return None
         delta = _delta_text_value(payload.get("delta"), payload.get("text"))
         if delta:
             message = {"type": "content_delta", "text": delta}
-    elif event.type == "message.completed":
-        message = {
-            "type": "message_complete",
-            "usage": normalize_yuanbao_usage(payload.get("usage") or _raw_usage(payload)),
-        }
-    elif event.type == "assistant.message.completed":
+    elif event.type in {"message.completed", "assistant.message.completed"}:
+        if not _is_chat_compat_payload(payload):
+            return None
         message = {
             "type": "message_complete",
             "usage": normalize_yuanbao_usage(payload.get("usage") or _raw_usage(payload)),
@@ -187,8 +227,6 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
         message = _team_message(event.type, payload)
     elif event.type in _SYSTEM_NOTIFICATION_EVENT_TYPES:
         message = _system_notification_message(event.type, payload)
-    elif event.type in _PROGRESS_NOTIFICATION_EVENT_TYPES:
-        message = _progress_notification_message(event.type, payload)
 
     return _server_message_shape(message) if message is not None else None
 
@@ -213,19 +251,13 @@ def to_yuanbao_output_frames(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "payload": payload,
         }
     ]
-    message = yuanbao_message_from_event_payload(payload)
-    if message is not None:
-        frames.extend(
-            [
-                {
-                    "kind": "yuanbao_message",
-                    "payload": message,
-                },
-                {
-                    "kind": "haha_cc_message",
-                    "payload": message,
-                },
-            ]
+    yuanbao = yuanbao_message_from_event_payload(payload)
+    if yuanbao is not None:
+        frames.append(
+            {
+                "kind": "yuanbao_message",
+                "payload": yuanbao,
+            }
         )
     return frames
 
@@ -341,9 +373,15 @@ def _server_message_shape(message: dict[str, Any]) -> dict[str, Any] | None:
             return None
         if isinstance(shaped[key], str) and not shaped[key]:
             return None
-    if event_type == "content_delta" and not any(
-        key in shaped for key in ("text", "toolInput", "toolOutput")
-    ):
+    if event_type == "content_delta" and ("toolInput" in shaped or "toolOutput" in shaped) and not shaped.get("toolUseId"):
+        shaped.pop("toolInput", None)
+        shaped.pop("toolOutput", None)
+        shaped.pop("outputStream", None)
+        for key in _TOOL_PRESENTATION_FIELDS:
+            shaped.pop(key, None)
+    if event_type == "content_delta" and not any(key in shaped for key in ("text", "toolInput", "toolOutput")):
+        return None
+    if event_type == "status" and shaped.get("state") not in _CHAT_STATUS_STATES:
         return None
     return shaped
 
@@ -432,7 +470,7 @@ def _task_update_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[s
 
 
 def _should_emit_task_update(event: RuntimeEvent, payload: dict[str, Any]) -> bool:
-    if event.type == "task.routing.decided":
+    if event.type in {"task.routing.decided", "runtime.context.prepared"}:
         return False
     if event.type in {"task.failed", "task.cancelled", "task.runtime_work_waiting"}:
         return True

@@ -558,7 +558,7 @@ describe("computeApprovalCards completion evidence", () => {
     expect(card.completionEvidence?.issues).toContain("run_command: pytest failed");
   });
 
-  it("surfaces advisor evidence adapter status", () => {
+  it("keeps legacy advisor evidence adapters without surfacing them as completion highlights", () => {
     const [card] = computeApprovalCards([
       approvalRequested({
         reason: "Advisor requested browser evidence before completion.",
@@ -584,9 +584,9 @@ describe("computeApprovalCards completion evidence", () => {
     ]);
 
     expect(card.completionEvidence?.advisorEvidenceAdapters?.status).toBe("approval_required");
-    expect(card.completionEvidence?.metrics).toContainEqual({ label: "evidence adapters", value: "1" });
-    expect(card.completionEvidence?.metrics).toContainEqual({ label: "adapter approvals", value: "1" });
-    expect(card.completionEvidence?.issues).toContain("browser_inspection_adapter: browser inspection needs approval");
+    expect(card.completionEvidence?.metrics).not.toContainEqual({ label: "evidence adapters", value: "1" });
+    expect(card.completionEvidence?.metrics).not.toContainEqual({ label: "adapter approvals", value: "1" });
+    expect(card.completionEvidence?.issues).not.toContain("browser_inspection_adapter: browser inspection needs approval");
   });
 
   it("attaches completion review conclusions from resolved approvals", () => {

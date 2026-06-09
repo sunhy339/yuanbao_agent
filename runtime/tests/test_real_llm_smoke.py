@@ -8,7 +8,6 @@ import pytest
 
 from local_agent_runtime.main import build_server
 from local_agent_runtime.provider.adapter import ProviderAdapter
-from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 
 
 def _env(name: str, default: str = "") -> str:
@@ -167,23 +166,6 @@ def test_real_llm_accepts_tool_result_roundtrip_messages() -> None:
     assert response.get("finish_reason")
 
 
-def _force_simple_react_route(server: Any) -> None:
-    router = server._orchestrator._meta_router  # noqa: SLF001
-
-    def route(_goal: str, _context: dict[str, Any] | None = None) -> RoutingDecision:
-        return RoutingDecision(
-            scenario=Scenario.SIMPLE_QUERY,
-            strategy=ExecutionStrategy.REACT_STANDARD,
-            confidence=0.99,
-            max_steps=1,
-            enable_reflection=False,
-            enable_planning=False,
-            reasoning="forced-real-provider-hook-smoke",
-        )
-
-    router.route = route
-
-
 @pytest.mark.real_llm
 def test_real_llm_provider_turn_runs_hook_side_effects(tmp_path: Path) -> None:
     if _env("YUANBAO_REAL_LLM_SMOKE") != "1":
@@ -193,7 +175,6 @@ def test_real_llm_provider_turn_runs_hook_side_effects(tmp_path: Path) -> None:
     config["streamingEnabled"] = False
     server = build_server(database_path=str(tmp_path / "real_llm_hooks.sqlite3"))
     store = server._store  # noqa: SLF001
-    _force_simple_react_route(server)
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     workspace = server._handlers["workspace.open"]({"path": str(workspace_root)})["workspace"]  # noqa: SLF001

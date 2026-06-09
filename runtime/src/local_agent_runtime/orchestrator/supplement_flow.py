@@ -265,7 +265,7 @@ class SupplementFlowMixin:
             "taskStatusAtReceipt": task.get("status"),
             "source": decision.get("source") or "rule_fallback",
         }
-        for key in ("intent", "reason", "targetGoal", "handoffFocus", "proposalRecordId", "advisorProposalId"):
+        for key in ("intent", "reason", "targetGoal", "handoffFocus", "proposalRecordId"):
             if decision.get(key):
                 takeover[key] = decision[key]
         takeover_history.append(takeover)
@@ -276,93 +276,10 @@ class SupplementFlowMixin:
 
     def _user_takeover_decision(self, *, task: dict[str, Any], content: str) -> dict[str, Any]:
         fallback_state = self._classify_user_takeover(content)
-        decision: dict[str, Any] = {
+        return {
             "state": fallback_state,
             "source": "rule_fallback",
         }
-        advisor = getattr(self, "_decision_advisor", None)
-        if advisor is None:
-            return decision
-        try:
-            input_context = {
-                "message": str(content or ""),
-                "task_status": task.get("status"),
-                "task_goal": task.get("goal"),
-                "current_step": task.get("currentStep"),
-                "main_workflow": (task.get("routing") or {}).get("mainWorkflow")
-                if isinstance(task.get("routing"), dict)
-                else None,
-            }
-            result = advisor.advise("user_takeover", input_context)
-            payload = result.payload if isinstance(result.payload, dict) else {}
-            if result.accepted and payload.get("state"):
-                decision.update({
-                    "state": str(payload.get("state")),
-                    "source": result.source,
-                    "intent": str(payload.get("intent") or "")[:500],
-                    "reason": str(payload.get("reason") or result.rationale or "")[:500],
-                    "targetGoal": str(payload.get("target_goal") or "")[:1000],
-                    "handoffFocus": str(payload.get("handoff_focus") or "")[:1000],
-                    "advisorProposalId": result.proposal_id,
-                })
-            record_id = self._record_user_takeover_proposal(
-                task=task,
-                content=content,
-                advice=result,
-                runtime_state=decision["state"],
-            )
-            if record_id:
-                decision["proposalRecordId"] = record_id
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("User takeover advisor failed for task %s: %s", task.get("id"), exc)
-        return decision
-
-    def _record_user_takeover_proposal(
-        self,
-        *,
-        task: dict[str, Any],
-        content: str,
-        advice: Any,
-        runtime_state: str,
-    ) -> str | None:
-        try:
-            proposal = dict(getattr(advice, "payload", None) or {})
-            proposal.setdefault("state", runtime_state)
-            proposal["runtimeState"] = runtime_state
-            source = {
-                "type": getattr(advice, "source", "unknown"),
-                "confidence": getattr(advice, "confidence", None),
-                "rationale": getattr(advice, "rationale", None),
-                "fallbackReason": getattr(advice, "fallback_reason", None),
-                "advisorProposalId": getattr(advice, "proposal_id", None),
-            }
-            model_id = getattr(advice, "model_id", None)
-            if model_id:
-                source["model_id"] = model_id
-            record = self._store.create_proposal({
-                "kind": "user_takeover",
-                "sessionId": task["sessionId"],
-                "taskId": task["id"],
-                "proposal": proposal,
-                "source": source,
-                "inputSummary": str(content or "")[:500],
-                "modelId": model_id,
-            })
-            proposal_id = record["proposal"]["id"]
-            accepted = bool(getattr(advice, "accepted", False))
-            reasons = [] if accepted else (
-                list(getattr(advice, "validation_reasons", None) or [])
-                or [str(getattr(advice, "fallback_reason", None) or "advisor rejected")]
-            )
-            self._store.validate_proposal({
-                "proposalId": proposal_id,
-                "status": "accepted" if accepted else "rejected",
-                "reasons": reasons,
-            })
-            return proposal_id
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to record user takeover proposal", exc_info=True)
-            return None
 
     def _apply_resumable_takeover_convergence(
         self,

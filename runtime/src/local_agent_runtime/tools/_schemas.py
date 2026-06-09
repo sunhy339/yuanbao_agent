@@ -52,8 +52,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "list_dir",
         "description": (
-            "List files and directories under a workspace-relative directory. Use this first to inspect structure; "
-            "results honor ignore patterns and never traverse outside workspaceRoot."
+            "List files and directories under a workspace-relative directory when a directory inventory is needed. "
+            "Results honor ignore patterns and never traverse outside workspaceRoot."
         ),
         "input_schema": {
             "type": "object",
@@ -98,8 +98,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use path='.' with recursive=false for a quick top-level inventory.",
-            "Set recursive=true and max_depth=2 or 3 when looking for likely source files.",
+            "path='.' refers to the workspace root.",
+            "recursive and max_depth control how many descendants are returned.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -110,8 +110,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "search_files",
         "description": (
-            "Search files inside the workspace by content or filename. Prefer this before read_file when the relevant "
-            "path is unknown; glob and ignore filters narrow the scan."
+            "Search files inside the workspace by content or filename when the relevant path is unknown. "
+            "Glob and ignore filters narrow the scan."
         ),
         "input_schema": {
             "type": "object",
@@ -163,8 +163,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use mode='filename' when the user names a file or extension.",
-            "Use max_results=8-20 for agent loops to keep context small.",
+            "mode='filename' matches file paths and names; mode='content' scans file text.",
+            "max_results bounds the number of returned matches.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -175,8 +175,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "read_file",
         "description": (
-            "Read a single workspace-relative file as text. Use after list_dir or search_files identifies a likely "
-            "target; max_bytes can limit large files."
+            "Read a single workspace-relative file as text. Use it when the file content is needed; "
+            "max_bytes can limit large files."
         ),
         "input_schema": {
             "type": "object",
@@ -220,8 +220,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Read the smallest relevant file first.",
-            "Set max_bytes for large generated files or logs.",
+            "max_bytes limits the returned content for large generated files or logs.",
+            "ignore rejects paths that match additional patterns.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -343,8 +343,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "hints": [
             "Ask only when continuing would require guessing user intent.",
-            "Prefer one focused question; use up to three only when the choices are independent.",
-            "Include options for common paths and mark a recommended option when there is a clear default.",
+            "One to three independent questions can be included in a single pause.",
+            "Options can present clear choices when a genuinely blocking decision is needed.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -355,8 +355,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "enter_plan_mode",
         "description": (
-            "Enter a read-only planning mode for the current task. Use this before making changes when the user asked "
-            "for a plan-first workflow or when the task needs exploration before execution."
+            "Enter read-only planning mode for the current task when a plan-first workflow is explicitly needed. "
+            "Writable and command tools remain unavailable until the plan is submitted."
         ),
         "input_schema": {
             "type": "object",
@@ -380,8 +380,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use read-only tools while in plan mode.",
-            "Call exit_plan_mode with a clear plan when ready for user approval.",
+            "Only read-only tools plus exit_plan_mode are available while plan mode is active.",
+            "exit_plan_mode submits the proposed plan for user approval.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -470,8 +470,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Make the plan specific enough for the user to approve.",
-            "After approval, continue with the original task using the approved plan as constraints.",
+            "Plans can include summary, steps, subtasks, risks, and the original or refined goal.",
+            "The task pauses until the user approves or rejects the proposed plan.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -483,8 +483,7 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "agent",
         "description": (
             "Launch a focused child agent for independent research, review, summarization, or bounded implementation. "
-            "Use this when the user asks for multiple agents, when work can be parallelized, or when a deep investigation "
-            "would otherwise fill the main context. Do not duplicate work already delegated to a child agent."
+            "Child agents run with their own prompt, role, mode, and optional tool allowlist."
         ),
         "input_schema": {
             "type": "object",
@@ -559,9 +558,9 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "When the user explicitly asks to use multiple agents, call agent for the independent parts instead of only saying you used agent perspectives.",
-            "Use this for focused investigation, review, summarization, or bounded implementation subtasks.",
-            "Prefer the default read-only allowlist unless the child agent must edit files.",
+            "description/title are short labels shown in the agent activity panel.",
+            "mode and tool_allowlist define the child agent's execution boundary.",
+            "Children default to the read-only allowlist unless write or command tools are included.",
         ],
         "metadata": {
             "rate_limit": 10,
@@ -572,8 +571,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "task",
         "description": (
-            "Create and execute a structured child task inline. Use this for a specific delegated subtask that should "
-            "show up as task/team progress, especially in multi-agent or collaboration-style work."
+            "Create and execute a structured child task inline with task/team progress, retry metadata, "
+            "timeout metadata, and an optional child tool allowlist."
         ),
         "input_schema": {
             "type": "object",
@@ -687,8 +686,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use this when you want a structured child collaboration task instead of a shell command.",
-            "Keep prompts short and action-oriented so the child task result stays focused.",
+            "description/title are short labels shown in task/team progress.",
+            "retry, timeoutMs, and cancellation describe the child task boundary.",
         ],
         "metadata": {
             "rate_limit": 10,
@@ -780,9 +779,9 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Prefer read-only commands first, such as tests, git status, or file listings.",
-            "Use explicit timeouts for long-running test/build commands.",
-            "Set background=true when the command should keep running while the runtime continues other work.",
+            "Commands are policy-gated and should be non-interactive.",
+            "timeoutMs bounds long-running commands.",
+            "background=true returns immediately for long-lived jobs.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -893,8 +892,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use before editing when the user warns about parallel workers.",
-            "Use cwd for monorepos with nested repositories.",
+            "cwd selects the repository root for nested projects.",
+            "Returned changes are porcelain-style repository metadata.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -942,8 +941,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use staged=true to review the index before commit.",
-            "Pass path for focused review of a single file or subtree.",
+            "staged=true returns index diff instead of working-tree diff.",
+            "path limits the diff to one file or subtree.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -1007,8 +1006,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Prefer apply_patch for small edits to existing files.",
-            "Use write_file for creating new files, large files, or full replacements.",
+            "write_file creates files or performs full-file replacements.",
+            "apply_patch supports targeted patch payloads for edits.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -1150,9 +1149,9 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use mode='definition' to find class/function declarations.",
-            "Use mode='reference' to find where a symbol is used.",
-            "Use mode='symbol' for a combined definition + reference search.",
+            "mode='definition' finds class/function declarations.",
+            "mode='reference' finds where a symbol is used.",
+            "mode='symbol' performs a combined definition and reference search.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -1207,9 +1206,9 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use list_cells first to see the notebook structure.",
-            "Use get_cell to inspect a specific cell's source and outputs.",
-            "Use execute_cell only when you need to re-run a code cell.",
+            "action='list_cells' returns the notebook structure.",
+            "action='get_cell' returns a specific cell's source and outputs.",
+            "action='execute_cell' re-runs a code cell and is approval-gated.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -1266,8 +1265,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use action='read' for extracting article or documentation text.",
-            "Use action='raw' when you need the HTML structure.",
+            "action='read' extracts article or documentation text.",
+            "action='raw' returns the HTML structure.",
         ],
         "metadata": {
             "rate_limit": 20,
@@ -1353,12 +1352,12 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             ],
         },
         "hints": [
-            "Use inspect when you need permission to look at the active app/window.",
-            "Use inspect with target='browser' and url/pageId/browserContextId when you need the current page title, text, and interactive element hints.",
-            "For click, provide x/y coordinates unless a browser DOM/accessibility executor with click.selector support is available.",
-            "For selector-based click/type/scroll, include url/pageId/browserContextId when known; without an injected browser DOM/accessibility executor the runtime will block with selector_executor_required.",
+            "action='inspect' returns information about an approved app, window, browser target, or desktop target.",
+            "Browser targets can include url, pageId, or browserContextId when available.",
+            "click can use x/y coordinates or a supported selector executor.",
+            "selector-based click/type/scroll require an injected browser DOM/accessibility executor.",
             "Set LOCAL_AGENT_COMPUTER_USE_PLAYWRIGHT=1 with the optional computer-use-browser extra/playwright package installed to enable the built-in browser session executor.",
-            "Use a clear permission string so the user knows exactly what is being requested.",
+            "permission is the user-facing description shown in the approval card.",
         ],
         "metadata": {
             "rate_limit": 12,

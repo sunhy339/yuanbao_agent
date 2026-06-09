@@ -1,4 +1,4 @@
-import type { HahaCcServerMessage, YuanbaoServerMessage } from "./events";
+import type { YuanbaoServerMessage } from "./events";
 
 export type Identifier = string;
 
@@ -33,8 +33,7 @@ export type ApprovalKind =
   | "plan"
   | "write_file"
   | "worktree_merge"
-  | "completion_review"
-  | "advisor_tool";
+  | "completion_review";
 export type ApprovalDecision = "approved" | "rejected";
 export type ToolCallStatus = "started" | "completed" | "failed";
 export type CommandStatus =
@@ -478,6 +477,10 @@ export interface CommandLogRecord {
   toolSemanticParentLabel?: string;
   target?: string;
   inputSummary?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
   command: string;
   cwd: string;
   shell?: "powershell" | "bash" | "zsh";
@@ -517,7 +520,7 @@ export interface TraceEventRecord<TPayload = unknown> {
   visibility?: EventVisibility;
   uiReplayScope?: "chat" | "panel";
   yuanbao?: YuanbaoServerMessage;
-  hahaCc?: HahaCcServerMessage;
+  hahaCc?: YuanbaoServerMessage;
 }
 
 export type ErrorSource = "task" | "command" | "patch" | "provider" | "tool";

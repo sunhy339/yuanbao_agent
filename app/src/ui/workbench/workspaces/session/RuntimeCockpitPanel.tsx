@@ -62,8 +62,6 @@ function formatApprovalLabel(kind?: string) {
       return "合并审批";
     case "completion_review":
       return "完成确认";
-    case "advisor_tool":
-      return "证据执行审批";
     default:
       return kind.replace(/_/g, " ");
   }
@@ -144,13 +142,17 @@ function formatBudgetRatio(contextPreview?: SessionWorkspaceContextPreview) {
 
 function latestCompletionEvidence(approvals?: SessionWorkspaceApproval[]) {
   return approvals
-    ?.filter((approval) => approval.completionEvidence)
+    ?.filter((approval) => approval.completionEvidence && !isLegacyAdvisorApproval(approval))
     .sort((left, right) => (right.requestedAt ?? 0) - (left.requestedAt ?? 0))[0]?.completionEvidence;
+}
+
+function isLegacyAdvisorApproval(approval: SessionWorkspaceApproval) {
+  return approval.kind === "advisor_tool";
 }
 
 function latestBlockingApproval(approvals?: SessionWorkspaceApproval[]) {
   return approvals
-    ?.filter((approval) => approval.status === "pending")
+    ?.filter((approval) => approval.status === "pending" && !isLegacyAdvisorApproval(approval))
     .sort((left, right) => (right.requestedAt ?? 0) - (left.requestedAt ?? 0))[0];
 }
 
@@ -257,25 +259,6 @@ function approvalAuditSignals(completionEvidence: ReturnType<typeof latestComple
           label: "审批记录",
           value: `${counts.approved ?? 0} 已批准 / ${counts.pending ?? 0} 待处理 / ${counts.rejected ?? 0} 已拒绝`,
           tone: (counts.rejected ?? 0) > 0 ? "danger" : (counts.pending ?? 0) > 0 ? "warning" : "success",
-        }
-      : null,
-    audit?.completionAdvisor
-      ? {
-          label: "完成建议",
-          value: compactSignals([
-            { label: "source", value: audit.completionAdvisor.source ?? "" },
-            {
-              label: "confidence",
-              value:
-                typeof audit.completionAdvisor.confidence === "number"
-                  ? `${Math.round(audit.completionAdvisor.confidence * 100)}%`
-                  : "",
-            },
-            { label: "proposal", value: audit.completionAdvisor.proposalRecordId ?? "" },
-          ], 3)
-            .map((signal) => signal.value)
-            .join(" | "),
-          tone: audit.completionAdvisor.accepted === false ? "warning" : "info",
         }
       : null,
   ]);

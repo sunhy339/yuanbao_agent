@@ -159,6 +159,25 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
         assert function["parameters"] == source_schema["input_schema"]
 
 
+def test_builtin_tool_schemas_do_not_encode_fixed_probe_workflow() -> None:
+    serialized = json.dumps(BUILTIN_TOOL_SCHEMAS, ensure_ascii=False).lower()
+
+    fixed_workflow_markers = [
+        "use this first",
+        "use after list_dir",
+        "quick top-level inventory",
+        "agent loops",
+        "before making changes when",
+        "task needs exploration before execution",
+        "prefer read-only commands first",
+        "use before editing",
+        "list_cells first",
+    ]
+
+    for marker in fixed_workflow_markers:
+        assert marker not in serialized
+
+
 def test_context_builder_outputs_openai_function_tools(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     try:
@@ -471,15 +490,15 @@ def test_trace_replay_keeps_chat_compat_message_delta_flat_frames_for_adapter_hi
 
         events = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
 
-        assert events[0]["hahaCc"] == {"type": "content_delta", "text": "hello"}
-        assert events[0]["yuanbao"] == events[0]["hahaCc"]
-        assert events[1]["hahaCc"] == {
+        assert events[0]["yuanbao"] == {"type": "content_delta", "text": "hello"}
+        assert "hahaCc" not in events[0]
+        assert events[1]["yuanbao"] == {
             "type": "message_complete",
             "usage": {"input_tokens": 0, "output_tokens": 0},
         }
-        assert events[1]["yuanbao"] == events[1]["hahaCc"]
-        assert events[2]["hahaCc"] == {"type": "content_delta", "text": "direct flat text"}
-        assert events[2]["yuanbao"] == events[2]["hahaCc"]
+        assert "hahaCc" not in events[1]
+        assert events[2]["yuanbao"] == {"type": "content_delta", "text": "direct flat text"}
+        assert "hahaCc" not in events[2]
     finally:
         store.close()
 
@@ -647,7 +666,8 @@ def test_approval_trace_uses_public_request_payload(tmp_path: Path) -> None:
             request_json = json.dumps(request, ensure_ascii=False)
             assert "workspaceRoot" not in request
             assert "secret body" not in request_json
-            assert event["payload"]["diffText"]["omitted"] is True
+            assert isinstance(event["payload"]["diffText"], str)
+            assert event["payload"]["diffText"].startswith("diff --git a/README.md")
             assert request["diffText"]["omitted"] is True
             assert request["files"] == [{"path": "README.md"}]
 

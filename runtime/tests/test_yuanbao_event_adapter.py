@@ -39,17 +39,36 @@ def test_yuanbao_adapter_keeps_only_server_message_fields() -> None:
     assert message == {
         "type": "content_delta",
         "text": "hello",
-        "toolOutput": "local envelope only",
-        "target": "npm test",
+    }
+
+
+def test_yuanbao_adapter_keeps_tool_presentation_fields_when_tool_delta_has_id() -> None:
+    assert to_yuanbao_server_message(
+        _event(
+            "content_delta",
+            {
+                "toolUseId": "call_1",
+                "toolOutput": "read README.md",
+                "target": "README.md",
+                "displayTitle": "读取 README.md",
+                "displaySummary": "读取文件完成",
+                "_chatCompat": True,
+                "workspaceRoot": "D:/py/test_pro",
+            },
+        )
+    ) == {
+        "type": "content_delta",
+        "toolUseId": "call_1",
+        "toolOutput": "read README.md",
+        "target": "README.md",
+        "displayTitle": "读取 README.md",
+        "displaySummary": "读取文件完成",
     }
 
 
 def test_yuanbao_adapter_rejects_missing_required_fields() -> None:
     assert to_yuanbao_server_message(_event("content_start", {"toolName": "read_file"})) is None
-    assert to_yuanbao_server_message(_event("content_delta", {"toolOutput": "stdout only"})) == {
-        "type": "content_delta",
-        "toolOutput": "stdout only",
-    }
+    assert to_yuanbao_server_message(_event("content_delta", {"toolOutput": "stdout only"})) is None
     assert (
         to_yuanbao_server_message(_event("tool_result", {"toolUseId": "call_1", "content": "ok"}))
         is None
@@ -60,13 +79,17 @@ def test_yuanbao_adapter_rejects_missing_required_fields() -> None:
     )
 
 
-def test_yuanbao_adapter_keeps_runtime_status_out_of_flat_chat_protocol() -> None:
-    assert to_yuanbao_server_message(_event("status", {"state": "thinking", "phase": "private"})) is None
-    assert to_yuanbao_server_message(_event("status", {"state": "retrying_provider"})) is None
+def test_yuanbao_adapter_maps_haha_cc_status_states() -> None:
+    assert to_yuanbao_server_message(_event("status", {"state": "thinking", "phase": "private"})) == {
+        "type": "status",
+        "state": "thinking",
+    }
+    assert to_yuanbao_server_message(_event("status", {"state": "retrying_provider", "_chatCompat": True})) is None
 
 
-def test_yuanbao_adapter_maps_direct_message_delta_to_content_delta() -> None:
-    assert to_yuanbao_server_message(_event("message.delta", {"messageId": "msg_1", "delta": "hello"})) == {
+def test_yuanbao_adapter_maps_chat_compat_message_delta_to_content_delta() -> None:
+    assert to_yuanbao_server_message(_event("message.delta", {"messageId": "msg_1", "delta": "hello"})) is None
+    assert to_yuanbao_server_message(_event("message.delta", {"messageId": "msg_1", "delta": "hello", "_chatCompat": True})) == {
         "type": "content_delta",
         "text": "hello",
     }
@@ -97,10 +120,7 @@ def test_yuanbao_adapter_does_not_flatten_bridge_assistant_token() -> None:
         )
         is None
     )
-    assert to_yuanbao_server_message(_event("assistant.token", {"delta": "hello"})) == {
-        "type": "content_delta",
-        "text": "hello",
-    }
+    assert to_yuanbao_server_message(_event("assistant.token", {"delta": "hello"})) is None
 
 
 def test_yuanbao_adapter_normalizes_usage() -> None:
@@ -122,7 +142,7 @@ def test_yuanbao_adapter_normalizes_usage() -> None:
 
 
 def test_haha_cc_compat_exports_yuanbao_message_alias() -> None:
-    event = _event("thinking", {"text": "plan"})
+    event = _event("thinking", {"text": "plan", "_chatCompat": True})
 
     assert to_haha_cc_server_message(event) == to_yuanbao_server_message(event)
 
@@ -136,7 +156,6 @@ def test_yuanbao_output_frames_keep_flat_messages_in_sync() -> None:
         "payload": {"text": "hello"},
         "visibility": "chat",
         "yuanbao": {"type": "content_delta", "text": "hello"},
-        "hahaCc": {"type": "content_delta", "text": "hello"},
     }
 
     frames = to_yuanbao_output_frames(payload)
@@ -144,10 +163,8 @@ def test_yuanbao_output_frames_keep_flat_messages_in_sync() -> None:
     assert frames == [
         {"kind": "event", "payload": payload},
         {"kind": "yuanbao_message", "payload": {"type": "content_delta", "text": "hello"}},
-        {"kind": "haha_cc_message", "payload": {"type": "content_delta", "text": "hello"}},
     ]
     assert "eventId" not in frames[1]["payload"]
-    assert frames[1]["payload"] == frames[2]["payload"]
 
 
 def test_yuanbao_output_frames_fall_back_to_legacy_haha_cc_payload() -> None:
@@ -161,7 +178,6 @@ def test_yuanbao_output_frames_fall_back_to_legacy_haha_cc_payload() -> None:
     assert yuanbao_message_from_event_payload(payload) == {"type": "thinking", "text": "plan"}
     assert to_yuanbao_output_frames(payload)[1:] == [
         {"kind": "yuanbao_message", "payload": {"type": "thinking", "text": "plan"}},
-        {"kind": "haha_cc_message", "payload": {"type": "thinking", "text": "plan"}},
     ]
 
 
@@ -265,46 +281,33 @@ def test_yuanbao_adapter_does_not_map_backend_assistant_progress_to_flat_output(
     ) is None
 
 
-def test_yuanbao_adapter_maps_tool_progress_events_to_task_progress_notifications() -> None:
+def test_yuanbao_adapter_keeps_raw_tool_progress_out_of_flat_chat_protocol() -> None:
     assert to_yuanbao_server_message(
         _event("tool.progress", {"toolName": "read_file", "message": "Read package.json"})
-    ) == {
-        "type": "system_notification",
-        "subtype": "task_progress",
-        "message": "Read package.json",
-        "data": {"toolName": "read_file", "message": "Read package.json"},
-    }
+    ) is None
     assert to_yuanbao_server_message(
         _event("command.output", {"commandId": "cmd_1", "stream": "stdout", "chunk": "pytest passed"})
-    ) == {
-        "type": "system_notification",
-        "subtype": "task_progress",
-        "message": "pytest passed",
-        "data": {"commandId": "cmd_1", "stream": "stdout", "chunk": "pytest passed"},
-    }
+    ) is None
 
 
-def test_yuanbao_adapter_truncates_large_progress_data_only_on_flat_message() -> None:
+def test_yuanbao_adapter_does_not_flatten_raw_tool_output() -> None:
     chunk = "x" * 600
     message = to_yuanbao_server_message(_event("tool.output", {"toolName": "run_command", "chunk": chunk}))
 
-    assert message is not None
-    assert message["type"] == "system_notification"
-    assert message["subtype"] == "task_progress"
-    assert len(message["data"]["chunk"]) < len(chunk)
-    assert message["data"]["chunkTruncated"] is True
+    assert message is None
 
 
 def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
     events = [
         _event("connected", {"sessionId": "sess_1"}),
-        _event("status", {"state": "thinking", "verb": "plan", "phase": "local-only"}),
+        _event("status", {"state": "thinking", "verb": "plan", "phase": "local-only", "_chatCompat": True}),
         _event("message.created", {"message": {"id": "msg_1", "role": "assistant", "content": ""}}),
-        _event("content_start", {"blockType": "text", "messageId": "msg_1"}),
-        _event("content_delta", {"text": "Hi", "messageId": "msg_1"}),
+        _event("content_start", {"blockType": "text", "messageId": "msg_1", "_chatCompat": True}),
+        _event("content_delta", {"text": "Hi", "messageId": "msg_1", "_chatCompat": True}),
         _event(
             "message_complete",
             {
+                "_chatCompat": True,
                 "usage": {
                     "inputTokens": 10,
                     "outputTokens": 2,
@@ -319,13 +322,12 @@ def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
             "eventId": event.event_id,
             "sessionId": event.session_id,
             "taskId": event.task_id,
-            "type": event.type,
-            "ts": event.ts,
-            "payload": event.payload,
-            "visibility": event.visibility,
-            "yuanbao": to_yuanbao_server_message(event),
-            "hahaCc": to_yuanbao_server_message(event),
-        }
+        "type": event.type,
+        "ts": event.ts,
+        "payload": event.payload,
+        "visibility": event.visibility,
+        "yuanbao": to_yuanbao_server_message(event),
+    }
         for event in events
     ]
 
@@ -338,6 +340,7 @@ def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
 
     assert flat_messages == [
         {"type": "connected", "sessionId": "sess_1"},
+        {"type": "status", "state": "thinking", "verb": "plan"},
         {"type": "content_start", "blockType": "text"},
         {"type": "content_delta", "text": "Hi"},
         {
@@ -367,15 +370,15 @@ def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
 def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
     messages = [
         to_yuanbao_server_message(_event("connected", {"sessionId": "sess_1"})),
-        to_yuanbao_server_message(_event("content_start", {"blockType": "tool_use", "toolName": "read_file", "toolUseId": "call_1"})),
-        to_yuanbao_server_message(_event("content_delta", {"text": "hello"})),
-        to_yuanbao_server_message(_event("tool_use_complete", {"toolName": "read_file", "toolUseId": "call_1", "input": {"path": "README.md"}})),
-        to_yuanbao_server_message(_event("tool_result", {"toolUseId": "call_1", "content": "ok", "isError": False})),
-        to_yuanbao_server_message(_event("permission_request", {"requestId": "approval_1", "toolName": "run_command", "input": {"command": "pytest"}})),
-        to_yuanbao_server_message(_event("computer_use_permission_request", {"requestId": "approval_2", "request": {"action": "click"}})),
-        to_yuanbao_server_message(_event("message_complete", {"usage": {"inputTokens": 1, "outputTokens": 2}})),
-        to_yuanbao_server_message(_event("thinking", {"text": "plan"})),
-        to_yuanbao_server_message(_event("api_retry", {"attempt": 1, "maxRetries": 3, "retryDelayMs": 250, "errorStatus": 429})),
+        to_yuanbao_server_message(_event("content_start", {"blockType": "tool_use", "toolName": "read_file", "toolUseId": "call_1", "_chatCompat": True})),
+        to_yuanbao_server_message(_event("content_delta", {"text": "hello", "_chatCompat": True})),
+        to_yuanbao_server_message(_event("tool_use_complete", {"toolName": "read_file", "toolUseId": "call_1", "input": {"path": "README.md"}, "_chatCompat": True})),
+        to_yuanbao_server_message(_event("tool_result", {"toolUseId": "call_1", "content": "ok", "isError": False, "_chatCompat": True})),
+        to_yuanbao_server_message(_event("permission_request", {"requestId": "approval_1", "toolName": "run_command", "input": {"command": "pytest"}, "_chatCompat": True})),
+        to_yuanbao_server_message(_event("computer_use_permission_request", {"requestId": "approval_2", "request": {"action": "click"}, "_chatCompat": True})),
+        to_yuanbao_server_message(_event("message_complete", {"usage": {"inputTokens": 1, "outputTokens": 2}, "_chatCompat": True})),
+        to_yuanbao_server_message(_event("thinking", {"text": "plan", "_chatCompat": True})),
+        to_yuanbao_server_message(_event("api_retry", {"attempt": 1, "maxRetries": 3, "retryDelayMs": 250, "errorStatus": 429, "_chatCompat": True})),
         to_yuanbao_server_message(_event("message.failed", {"content": "failed", "errorCode": "MODEL_ERROR"})),
         to_yuanbao_server_message(_event("system_notification", {"summary": "notice"})),
         to_yuanbao_server_message(_event("pong", {})),

@@ -36,6 +36,10 @@ class BackgroundCommandRequest:
     tool_semantic_parent_label: str | None
     target: str | None
     input_summary: str | None
+    display_title: str | None
+    display_summary: str | None
+    display_target: str | None
+    display_kind: str | None
     command: str
     cwd: str
     shell: str
@@ -74,6 +78,14 @@ def _tool_metadata_payload(request: BackgroundCommandRequest) -> dict[str, Any]:
         payload["target"] = request.target
     if request.input_summary:
         payload["inputSummary"] = request.input_summary
+    if request.display_title:
+        payload["displayTitle"] = request.display_title
+    if request.display_summary:
+        payload["displaySummary"] = request.display_summary
+    if request.display_target:
+        payload["displayTarget"] = request.display_target
+    if request.display_kind:
+        payload["displayKind"] = request.display_kind
     return payload
 
 

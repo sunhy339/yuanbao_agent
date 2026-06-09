@@ -16,12 +16,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.provider.adapter import ProviderAdapter
-from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import ToolRegistry
@@ -157,19 +155,18 @@ def test_skill_mcp_result_survives_compaction_handoff(tmp_path: Any) -> None:
             },
         },
     )
-    routing = RoutingDecision(
-        scenario=Scenario.CODE_EDIT,
-        strategy=ExecutionStrategy.REACT_STANDARD,
-        confidence=0.96,
-        skill_id="kb_release_skill",
-        max_steps=5,
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "prepare release answer",
+                "skillId": "kb_release_skill",
+            },
+        ),
+        "task",
     )
-
-    with patch.object(runtime.orchestrator._meta_router, "route", return_value=routing):
-        task = _call_result(
-            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "prepare release answer"}),
-            "task",
-        )
 
     assert task["status"] == "completed"
     first_context = runtime.provider.main_calls[0]["context"]
@@ -235,19 +232,18 @@ def test_failed_mcp_tool_is_structured_in_compaction_handoff(tmp_path: Any) -> N
             },
         },
     )
-    routing = RoutingDecision(
-        scenario=Scenario.CODE_EDIT,
-        strategy=ExecutionStrategy.REACT_STANDARD,
-        confidence=0.96,
-        skill_id="kb_release_skill",
-        max_steps=5,
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "prepare release answer",
+                "skillId": "kb_release_skill",
+            },
+        ),
+        "task",
     )
-
-    with patch.object(runtime.orchestrator._meta_router, "route", return_value=routing):
-        task = _call_result(
-            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "prepare release answer"}),
-            "task",
-        )
 
     assert task["status"] == "waiting_approval"
     budget = _rpc(runtime, "context.budget", {"taskId": task["id"]})["result"]

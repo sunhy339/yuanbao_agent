@@ -583,50 +583,7 @@ class ContextCompactor:
 
     @staticmethod
     def _handoff_pending_evidence(task: dict[str, Any] | None) -> list[dict[str, Any]]:
-        if not task:
-            return []
-        structured = task.get("structuredResult")
-        evidence = structured.get("completionEvidence") if isinstance(structured, dict) else None
-        if not isinstance(evidence, dict):
-            return []
-        pending: list[dict[str, Any]] = []
-        requests = evidence.get("advisorRequestedEvidence")
-        if isinstance(requests, list):
-            for item in requests:
-                if not isinstance(item, dict):
-                    continue
-                status = str(item.get("status") or "").strip()
-                if status == "satisfied":
-                    continue
-                pending.append({
-                    "kind": item.get("kind"),
-                    "status": status or "requested",
-                    "blocking": item.get("blocking") is True,
-                    "summary": item.get("summary"),
-                    "target": item.get("target"),
-                    "source": item.get("source"),
-                })
-        executors = evidence.get("advisorEvidenceExecutor")
-        if isinstance(executors, list):
-            for item in executors:
-                if not isinstance(item, dict):
-                    continue
-                status = str(item.get("status") or "").strip()
-                if status == "satisfied":
-                    continue
-                pending.append({
-                    "kind": item.get("requestKind"),
-                    "status": status or "requested",
-                    "blocking": item.get("blocking") is True,
-                    "summary": item.get("summary"),
-                    "target": item.get("target"),
-                    "executorId": item.get("id"),
-                    "adapterKind": item.get("adapterKind") or item.get("executionType"),
-                })
-        return ContextCompactor._dedupe_records(
-            pending,
-            keys=("kind", "status", "blocking", "summary", "target", "executorId", "adapterKind"),
-        )
+        return []
 
     @staticmethod
     def _handoff_failed_tools(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -685,29 +642,6 @@ class ContextCompactor:
     @staticmethod
     def _handoff_decisions(task: dict[str, Any] | None, summary: str | None) -> list[str]:
         decisions: list[str] = []
-        if task:
-            routing = task.get("routing") or {}
-            if isinstance(routing, dict):
-                strategy = routing.get("strategy")
-                scenario = routing.get("scenario")
-                if strategy or scenario:
-                    decisions.append(f"routing: scenario={scenario or 'unknown'}, strategy={strategy or 'unknown'}")
-                skill_id = routing.get("skill_id") or routing.get("skillId")
-                if skill_id:
-                    decisions.append(f"skill: {skill_id}")
-                skill_fallback = routing.get("skillFallback") or routing.get("skill_fallback")
-                if isinstance(skill_fallback, dict):
-                    requested = skill_fallback.get("requestedSkillId") or skill_fallback.get("requested_skill_id")
-                    reason = skill_fallback.get("reason") or "unknown"
-                    decisions.append(f"skill fallback: {requested or skill_id or 'unknown'} ({reason})")
-                workflow = routing.get("mainWorkflow")
-                if isinstance(workflow, dict):
-                    takeover = workflow.get("userTakeover")
-                    if isinstance(takeover, dict) and takeover.get("state"):
-                        decisions.append(f"user takeover state: {takeover['state']}")
-                    budget = workflow.get("budget")
-                    if isinstance(budget, dict) and budget.get("exhausted"):
-                        decisions.append(f"budget exhausted: {budget.get('exhaustedReason') or 'unknown'}")
         if summary:
             decisions.append(str(summary)[:300])
         return ContextCompactor._dedupe_text(decisions)
@@ -787,13 +721,6 @@ class ContextCompactor:
         if handoff.get("risks"):
             lines.append("Risks:")
             lines.extend(f"- {item}" for item in handoff["risks"][:5])
-        if handoff.get("pendingEvidence"):
-            lines.append("Pending advisor evidence:")
-            for item in handoff["pendingEvidence"][:5]:
-                label = item.get("summary") or item.get("kind") or "advisor evidence"
-                status = item.get("status") or "requested"
-                blocking = " blocking" if item.get("blocking") else ""
-                lines.append(f"- {label} ({status}{blocking})")
         if handoff.get("nextCommand"):
             lines.append(f"Next action: {handoff['nextCommand']}")
         return "\n".join(lines)

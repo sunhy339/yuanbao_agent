@@ -65,8 +65,7 @@ function envelopeFromTrace(trace: TraceEventRecord): AgentEventEnvelope {
     seq: trace.sequence,
     payload: trace.payload,
     visibility: trace.visibility,
-    yuanbao: trace.yuanbao,
-    hahaCc: trace.hahaCc,
+    yuanbao: trace.yuanbao ?? trace.hahaCc,
   };
 }
 
@@ -92,13 +91,32 @@ function readPayloadChunk(payload: unknown, keys: string[]): string {
   return "";
 }
 
+function toolPresentationFields(payload: {
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
+}): {
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
+} {
+  return {
+    displayTitle: payload.displayTitle,
+    displaySummary: payload.displaySummary,
+    displayTarget: payload.displayTarget,
+    displayKind: payload.displayKind,
+  };
+}
+
 function looksLikeInternalDisplayText(value: string): boolean {
   const text = value.trim();
   if (!text) return true;
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
   if (
     lines.length >= 3 &&
-    /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
+    /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|provider|rawJson|toolProgress|tool_progress|trace|uiReplayScope|visibility|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
   ) {
     return true;
   }
@@ -110,18 +128,32 @@ function looksLikeInternalDisplayText(value: string): boolean {
         return keys.some((key) => [
           "_chatCompat",
           "context",
+          "currentTaskId",
           "eventId",
+          "frames",
           "messages",
           "metadata",
           "options",
           "payload",
+          "progress",
+          "provider",
+          "providerRequest",
+          "providerResponse",
           "questions",
+          "rawJson",
           "requestId",
           "sessionId",
           "taskId",
+          "taskStatus",
           "toolCallId",
+          "toolProgress",
+          "tool_progress",
           "tool_results",
+          "trace",
+          "uiReplayScope",
+          "visibility",
           "workspaceRoot",
+          "yuanbao",
         ].includes(key));
       }
     } catch {
@@ -135,6 +167,11 @@ function safePayloadDisplayText(value: string): string {
   const text = value.trim();
   if (!text || looksLikeInternalDisplayText(text)) return "";
   return text;
+}
+
+function safePayloadChunk(payload: unknown, keys: string[]): string {
+  const chunk = readPayloadChunk(payload, keys);
+  return chunk && !looksLikeInternalDisplayText(chunk) ? chunk : "";
 }
 
 function isChatCompatPayload(payload: unknown): boolean {
@@ -155,16 +192,34 @@ function suppressesChatReplay(payload: unknown): boolean {
 }
 
 const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
-const INTERNAL_APPROVAL_KINDS = new Set(["completion_review"]);
+const INTERNAL_APPROVAL_KINDS = new Set(["completion_review", "advisor_tool"]);
+
+function normalizedKind(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : "";
+}
 
 function isControlFlowToolPayload(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
-  const toolName = String((payload as { toolName?: unknown }).toolName ?? "").toLowerCase();
+  const toolName = normalizedKind((payload as { toolName?: unknown }).toolName);
   return CONTROL_FLOW_TOOL_NAMES.has(toolName);
 }
 
 function isInternalApprovalKind(value: unknown): boolean {
-  return typeof value === "string" && INTERNAL_APPROVAL_KINDS.has(value);
+  return INTERNAL_APPROVAL_KINDS.has(normalizedKind(value));
+}
+
+function internalApprovalKindFromPayload(payload: unknown): string {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+  const record = payload as Record<string, unknown>;
+  for (const key of ["toolName", "kind", "approvalKind", "toolKind", "name"]) {
+    const candidate = normalizedKind(record[key]);
+    if (INTERNAL_APPROVAL_KINDS.has(candidate)) return candidate;
+  }
+  for (const key of ["request", "input", "metadata", "payload"]) {
+    const nested = internalApprovalKindFromPayload(record[key]);
+    if (nested) return nested;
+  }
+  return "";
 }
 
 function shouldSuppressCancelledTaskReplayEvent(event: AgentEventEnvelope, cancelledTaskIds: ReadonlySet<string>): boolean {
@@ -292,6 +347,7 @@ function replayTraceEvent(
         toolName: payload.toolName,
         target: payload.target,
         inputSummary: payload.inputSummary,
+        ...toolPresentationFields(payload),
         parentToolUseId: payload.parentToolUseId,
         toolGroupId: payload.toolGroupId,
         toolIndex: payload.toolIndex,
@@ -314,13 +370,19 @@ function replayTraceEvent(
   if (event.type === "content_delta") {
     const payload = event.payload as ContentDeltaPayload;
     let next = current;
-    if (typeof payload.text === "string" && payload.text) {
+    if (typeof payload.text === "string" && payload.text && !looksLikeInternalDisplayText(payload.text)) {
       const messageId =
         typeof payload.messageId === "string" && payload.messageId.trim()
           ? payload.messageId
           : `assistant_${event.taskId}`;
       next = appendOrUpdateAssistantMessageDelta(next, {
         messageId,
+        contentBlockId: typeof payload.contentBlockId === "string" && payload.contentBlockId.trim()
+          ? payload.contentBlockId
+          : undefined,
+        blockIndex: typeof payload.blockIndex === "number" && Number.isFinite(payload.blockIndex)
+          ? payload.blockIndex
+          : undefined,
         sessionId: event.sessionId,
         taskId: event.taskId,
         delta: payload.text,
@@ -342,6 +404,7 @@ function replayTraceEvent(
         toolName: payload.toolName,
         target: payload.target,
         inputSummary: payload.inputSummary,
+        ...toolPresentationFields(payload),
         parentToolUseId: payload.parentToolUseId,
         toolGroupId: payload.toolGroupId,
         toolIndex: payload.toolIndex,
@@ -360,7 +423,7 @@ function replayTraceEvent(
       });
       next = markToolReplayMarker(next, toolUseId, marker);
     }
-    if (typeof payload.toolOutput === "string" && payload.toolOutput) {
+    if (typeof payload.toolOutput === "string" && payload.toolOutput && !looksLikeInternalDisplayText(payload.toolOutput)) {
       const toolUseId = typeof payload.toolUseId === "string" && payload.toolUseId ? payload.toolUseId : `pending_${event.taskId}`;
       const marker = replayMarker(event, "toolOutput");
       if (hasToolReplayMarker(next, toolUseId, marker)) {
@@ -375,6 +438,7 @@ function replayTraceEvent(
         toolName: payload.toolName,
         target: payload.target,
         inputSummary: payload.inputSummary,
+        ...toolPresentationFields(payload),
         parentToolUseId: payload.parentToolUseId,
         toolGroupId: payload.toolGroupId,
         toolIndex: payload.toolIndex,
@@ -410,6 +474,7 @@ function replayTraceEvent(
       input: payload.input,
       target: payload.target,
       inputSummary: payload.inputSummary,
+      ...toolPresentationFields(payload),
       parentToolUseId: payload.parentToolUseId,
       toolGroupId: payload.toolGroupId,
       toolIndex: payload.toolIndex,
@@ -452,6 +517,7 @@ function replayTraceEvent(
       isError: payload.isError,
       target: payload.target,
       inputSummary: payload.inputSummary,
+      ...toolPresentationFields(payload),
       resultSummary: payload.resultSummary,
       resultPreview: payload.resultPreview,
       durationMs: payload.durationMs,
@@ -476,6 +542,7 @@ function replayTraceEvent(
       input: payload.arguments,
       target: payload.target,
       inputSummary: payload.inputSummary,
+      ...toolPresentationFields(payload),
       parentToolUseId: payload.parentToolUseId,
       toolGroupId: payload.toolGroupId,
       toolIndex: payload.toolIndex,
@@ -531,6 +598,7 @@ function replayTraceEvent(
       lifecycleStatus: event.type.slice("tool.".length),
       target: payload.target,
       inputSummary: payload.inputSummary,
+      ...toolPresentationFields(payload),
       resultSummary: payload.resultSummary ?? payload.reason,
       resultPreview: payload.resultPreview,
       durationMs: payload.durationMs,
@@ -545,7 +613,7 @@ function replayTraceEvent(
     const payload = event.payload as ToolOutputPayload;
     const toolUseId = payload.toolUseId ?? payload.toolCallId;
     if (!toolUseId) return current;
-    const delta = readPayloadChunk(payload, ["chunk", "delta", "toolOutput", "message", "summary", "text"]);
+    const delta = safePayloadChunk(payload, ["chunk", "delta", "toolOutput", "message", "summary", "text"]);
     if (!delta) return current;
     const marker = replayMarker(event, "toolOutput");
     if (hasToolReplayMarker(current, toolUseId, marker)) return current;
@@ -558,6 +626,7 @@ function replayTraceEvent(
       toolName: payload.toolName,
       target: payload.target,
       inputSummary: payload.inputSummary,
+      ...toolPresentationFields(payload),
       parentToolUseId: payload.parentToolUseId,
       toolGroupId: payload.toolGroupId,
       toolIndex: payload.toolIndex,
@@ -591,6 +660,7 @@ function replayTraceEvent(
       toolName: payload.toolName ?? "run_command",
       target: commandTarget,
       inputSummary: payload.inputSummary ?? commandTarget,
+      ...toolPresentationFields(payload),
       parentToolUseId: payload.parentToolUseId,
       toolGroupId: payload.toolGroupId,
       toolIndex: payload.toolIndex,
@@ -622,6 +692,7 @@ function replayTraceEvent(
       toolName: payload.toolName ?? "run_command",
       target: payload.target,
       inputSummary: payload.inputSummary,
+      ...toolPresentationFields(payload),
       parentToolUseId: payload.parentToolUseId,
       toolGroupId: payload.toolGroupId,
       toolIndex: payload.toolIndex,
@@ -664,6 +735,7 @@ function replayTraceEvent(
       toolName: payload.toolName ?? "run_command",
       target: commandTarget,
       inputSummary: payload.inputSummary ?? commandTarget,
+      ...toolPresentationFields(payload),
       parentToolUseId: payload.parentToolUseId,
       toolGroupId: payload.toolGroupId,
       toolIndex: payload.toolIndex,
@@ -702,8 +774,10 @@ function replayTraceEvent(
       messageId?: unknown;
       delta?: unknown;
       text?: unknown;
+      contentBlockId?: unknown;
+      blockIndex?: unknown;
     };
-    const delta = readPayloadChunk(payload, ["delta", "text"]);
+    const delta = safePayloadChunk(payload, ["delta", "text"]);
     if (!delta) return current;
     const messageId =
       typeof payload.messageId === "string" && payload.messageId.trim()
@@ -711,6 +785,12 @@ function replayTraceEvent(
         : `assistant_${event.taskId}`;
     return appendOrUpdateAssistantMessageDelta(current, {
       messageId,
+      contentBlockId: typeof payload.contentBlockId === "string" && payload.contentBlockId.trim()
+        ? payload.contentBlockId
+        : undefined,
+      blockIndex: typeof payload.blockIndex === "number" && Number.isFinite(payload.blockIndex)
+        ? payload.blockIndex
+        : undefined,
       sessionId: event.sessionId,
       taskId: event.taskId,
       delta,
@@ -787,18 +867,20 @@ function replayTraceEvent(
   if (event.type === "permission_request") {
     const payload = event.payload as PermissionRequestPayload;
     if (!payload.requestId) return current;
-    if (isInternalApprovalKind(payload.toolName)) return current;
+    if (internalApprovalKindFromPayload(payload)) return current;
     if (payload.resolved) {
       return resolvePermissionRequestMessage(current, {
         requestId: payload.requestId,
         decision: payload.decision ?? "approved",
         toolName: payload.toolName,
+        toolUseId: payload.toolUseId,
         input: payload.input,
         preview: payload.preview,
         previewSections: payload.previewSections,
         filesChanged: payload.filesChanged,
         changedPaths: payload.changedPaths,
         diffText: payload.diffText,
+        ...toolPresentationFields(payload),
         sessionId: event.sessionId,
         taskId: event.taskId,
         createIfMissing: true,
@@ -814,6 +896,7 @@ function replayTraceEvent(
       {
         requestId: payload.requestId,
         toolName: payload.toolName,
+        toolUseId: payload.toolUseId,
         input: payload.input,
         description: payload.description,
         preview: payload.preview,
@@ -821,6 +904,7 @@ function replayTraceEvent(
         filesChanged: payload.filesChanged,
         changedPaths: payload.changedPaths,
         diffText: payload.diffText,
+        ...toolPresentationFields(payload),
         sessionId: event.sessionId,
         taskId: event.taskId,
         now: event.ts,
@@ -876,21 +960,37 @@ function replayTraceEvent(
       filesChanged?: unknown;
       changedPaths?: unknown;
       diffText?: unknown;
+      toolUseId?: unknown;
+      toolCallId?: unknown;
+      displayTitle?: string;
+      displaySummary?: string;
+      displayTarget?: string;
+      displayKind?: string;
+      target?: string;
+      inputSummary?: string;
     };
     if (typeof payload.approvalId !== "string" || !payload.approvalId.trim()) return current;
-    if (isInternalApprovalKind(payload.kind)) return current;
+    if (internalApprovalKindFromPayload(payload)) return current;
     const approvalId = payload.approvalId.trim();
     return resolveSpecialApprovalMessage(
       resolvePermissionRequestMessage(current, {
         requestId: approvalId,
         decision: typeof payload.decision === "string" ? payload.decision : "approved",
         toolName: typeof payload.kind === "string" ? payload.kind : undefined,
+        toolUseId: typeof payload.toolUseId === "string"
+          ? payload.toolUseId
+          : typeof payload.toolCallId === "string"
+            ? payload.toolCallId
+            : undefined,
         input: payload.request,
         preview: payload.preview,
         previewSections: payload.previewSections,
         filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
         changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths.filter((item): item is string => typeof item === "string") : undefined,
         diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,
+        target: payload.target,
+        inputSummary: payload.inputSummary,
+        ...toolPresentationFields(payload),
         sessionId: event.sessionId,
         taskId: event.taskId,
         createIfMissing: true,

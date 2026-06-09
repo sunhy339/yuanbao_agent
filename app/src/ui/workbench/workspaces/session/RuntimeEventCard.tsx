@@ -93,7 +93,7 @@ function readableTraceTitle(item: RuntimeTimelineItem) {
 
 function buildCollapsedCommandBody(item: RuntimeTimelineItem) {
   const primaryDetail = sanitizeRuntimeDetail(
-    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail,
+    item.kind === "command" ? buildCommandOutput(item) : runtimeDiagnosticDetail(item),
   );
   const actionLead =
     item.kind === "command" && item.summary
@@ -121,6 +121,24 @@ function buildCollapsedCommandBody(item: RuntimeTimelineItem) {
     .slice(0, 3);
   const combined = [actionLead, ...lines.filter((line) => line !== actionLead)].filter(Boolean).join("\n");
   return compactText(combined, 220);
+}
+
+function hasRuntimeDiff(item: RuntimeTimelineItem) {
+  return Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
+}
+
+function isDiagnosticRuntimeStatus(status?: string | null) {
+  return ["failed", "error", "blocked", "cancelled", "rejected"].includes(status?.toLowerCase() ?? "");
+}
+
+function runtimeDiagnosticDetail(item: RuntimeTimelineItem) {
+  if (hasRuntimeDiff(item)) {
+    return item.rawDetail || "";
+  }
+  if (!isDiagnosticRuntimeStatus(item.status)) {
+    return "";
+  }
+  return item.rawDetail || item.code || "";
 }
 
 function CompletionEvidenceCard({ item }: { item: RuntimeTimelineItem }) {
@@ -216,7 +234,7 @@ function ProcessRuntimeCard({
   const statusLabel = getProcessStatusLabel(item.status);
   const timeLabel = getProcessTimeLabel(item, now, fallbackStartedAt);
   const primaryDetail = sanitizeRuntimeDetail(
-    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail,
+    item.kind === "command" ? buildCommandOutput(item) : runtimeDiagnosticDetail(item),
   );
   const secondaryPathDetail = item.kind === "command" ? buildCommandPathDetail(item) : "";
   const showSecondaryDetail = expanded || inFlight;

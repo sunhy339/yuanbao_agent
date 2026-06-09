@@ -4,7 +4,7 @@ Covers:
   1. Returns task summary (goal, status, sessionId)
   2. Returns autonomy profile from config
   3. Returns agent soul profile from config
-  4. Returns routing decision from task + proposal
+  4. Returns routing decision metadata without advisor routing proposal
   5. Returns metrics from task_metrics
   6. Returns approvals and policy gate outcomes
   7. Returns patches (file writes)
@@ -321,27 +321,21 @@ class TestAutonomyReportRpc:
         assert result["contextBudget"] is not None
         assert result["contextBudget"]["tokenEstimate"] == 5000
 
-    def test_returns_routing_decision_with_proposal(self, tmp_path: Any) -> None:
-        """autonomy.report returns routing from task.routing_json + proposal."""
+    def test_returns_routing_metadata_without_routing_proposal(self, tmp_path: Any) -> None:
+        """autonomy.report returns task routing metadata; routing proposals are gone."""
         server, store = _make_harness(tmp_path)
         session = _setup_session(store, tmp_path)
-        task = _create_task(store, session)
-
-        # Create a routing proposal
-        store.create_proposal({
-            "kind": "routing_strategy",
-            "sessionId": session["id"],
-            "taskId": task["id"],
-            "inputSummary": "goal: fix bug",
-            "proposal": {"strategy": "react", "scenario": "code_task"},
-        })
-        prop = store.list_proposals({"taskId": task["id"]})["proposals"][0]
-        store.validate_proposal({"proposalId": prop["id"], "status": "accepted", "reasons": []})
+        task = _create_task(
+            store,
+            session,
+            routing={"scenario": "free_form", "strategy": "react_standard"},
+        )
 
         result = _call(server, "autonomy.report", {"taskId": task["id"]})
         assert result["routing"] is not None
-        assert result["routing"]["proposal"] is not None
-        assert result["routing"]["proposal"]["kind"] == "routing_strategy"
+        assert result["routing"]["scenario"] == "free_form"
+        assert result["routing"]["strategy"] == "react_standard"
+        assert result["routing"]["proposal"] is None
 
     def test_handles_task_without_extras(self, tmp_path: Any) -> None:
         """autonomy.report works for a bare task with no metrics/approvals/patches."""

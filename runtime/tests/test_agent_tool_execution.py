@@ -223,7 +223,7 @@ def test_child_agent_profile_drives_context_hints_and_plan_mode(tmp_path: Any, m
     assert "Preferred pytest command" not in hint_text
 
 
-def test_provider_tools_hide_subagent_tools_for_simple_and_child_contexts(tmp_path: Any) -> None:
+def test_provider_tools_are_model_first_and_child_allowlist_is_enforced(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path)
     tools = build_builtin_tools(
         policy_guard=PolicyGuard(),
@@ -232,39 +232,35 @@ def test_provider_tools_hide_subagent_tools_for_simple_and_child_contexts(tmp_pa
     )
     runtime.orchestrator._tool_registry = ToolRegistry(tools)  # noqa: SLF001
 
-    simple_tools = runtime.orchestrator._provider_tools({"routing": {"strategy": "react_standard"}})  # noqa: SLF001
+    simple_tools = runtime.orchestrator._provider_tools({"routing": {"mode": "model_first"}})  # noqa: SLF001
     simple_names = {tool["name"] for tool in simple_tools}
-    assert "agent" not in simple_names
-    assert "task" not in simple_names
+    assert {"agent", "task"}.issubset(simple_names)
     simple_decision = runtime.orchestrator._tool_policy_decision_for_turn(  # noqa: SLF001
         task={"role": "root"},
-        context={"routing": {"strategy": "react_standard"}},
+        context={"routing": {"mode": "model_first"}},
         tool_results=[],
         cached_provider_tools=simple_tools,
     )
+    assert {"agent", "task"}.issubset(set(simple_decision.allowed_tool_names))
     assert "enter_plan_mode" not in simple_decision.allowed_tool_names
     assert "exit_plan_mode" not in simple_decision.allowed_tool_names
 
     explicit_plan_tools = runtime.orchestrator._provider_tools({  # noqa: SLF001
-        "routing": {"strategy": "react_standard", "planModeToolsEnabled": True},
+        "routing": {"mode": "model_first", "planModeToolsEnabled": True},
     })
     explicit_decision = runtime.orchestrator._tool_policy_decision_for_turn(  # noqa: SLF001
         task={"role": "root"},
-        context={"routing": {"strategy": "react_standard", "planModeToolsEnabled": True}},
+        context={"routing": {"mode": "model_first", "planModeToolsEnabled": True}},
         tool_results=[],
         cached_provider_tools=explicit_plan_tools,
     )
     assert {"enter_plan_mode", "exit_plan_mode"}.issubset(set(explicit_decision.allowed_tool_names))
 
-    swarm_tools = runtime.orchestrator._provider_tools({"routing": {"strategy": "plan_swarm"}})  # noqa: SLF001
-    swarm_names = {tool["name"] for tool in swarm_tools}
-    assert {"agent", "task"}.issubset(swarm_names)
-
     child_tools = runtime.orchestrator._provider_tools({  # noqa: SLF001
         "_child_worker": True,
         "_child_tool_allowlist": ["read_file", "agent", "task"],
         "runtimeRole": "worker",
-        "routing": {"strategy": "plan_swarm"},
+        "routing": {"mode": "model_first"},
     })
     child_decision = runtime.orchestrator._tool_policy_decision_for_turn(  # noqa: SLF001
         task={"role": "worker"},
@@ -294,31 +290,6 @@ def test_provider_tools_empty_for_minimal_simple_context(tmp_path: Any) -> None:
     })
 
     assert names == []
-
-
-def test_model_tool_swarm_injects_delegation_guidance_only_for_model_tools(tmp_path: Any) -> None:
-    runtime = _make_runtime(tmp_path)
-    context = {
-        "messages": [
-            {"role": "system", "content": "base"},
-            {"role": "user", "content": "Current user request:\nUse multiple agents."},
-        ]
-    }
-
-    plain = runtime.orchestrator._context_with_model_tool_guidance(  # noqa: SLF001
-        context,
-        {"strategy": "plan_swarm"},
-    )
-    assert "Available delegation tools:" not in plain["messages"][-1]["content"]
-
-    guided = runtime.orchestrator._context_with_model_tool_guidance(  # noqa: SLF001
-        context,
-        {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
-    )
-
-    assert "Available delegation tools:" in guided["messages"][-1]["content"]
-    assert "agent({description, subagent_type, prompt})" in guided["messages"][-1]["content"]
-    assert "Do not claim multi-agent collaboration unless you actually call agent or task." in guided["messages"][-1]["content"]
 
 
 def test_agent_result_uses_task_result_synthesis_gate(tmp_path: Any) -> None:

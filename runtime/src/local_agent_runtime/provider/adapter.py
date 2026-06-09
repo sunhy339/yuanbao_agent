@@ -106,7 +106,7 @@ def _is_retryable_provider_error(exc: ProviderAdapterError) -> bool:
 
 
 class ProviderAdapter:
-    """Provider facade with deterministic fallback for local/test flows."""
+    """Provider facade for model-driven chat/tool-call turns."""
 
     def __init__(
         self,
@@ -177,12 +177,10 @@ class ProviderAdapter:
             "message": message,
             "prompt": prompt,
             "context": context,
+            "final": message,
+            "final_answer": message,
+            "finish_reason": "mock_final",
         }
-        route = self._route_goal(prompt)
-        if route.get("kind") == "search" and not self._deterministic_fallback_enabled(context):
-            response["final"] = message
-            response["final_answer"] = message
-            response["finish_reason"] = "mock_final"
         return response
 
     def chat(
@@ -401,87 +399,6 @@ class ProviderAdapter:
             )
         return normalized or None
 
-    def choose_tool_sequence(self, goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
-        search_config = context.get("search_config", {})
-        route = self._route_goal(goal)
-
-        if route["kind"] == "run_command":
-            return [{
-                "name": "run_command",
-                "arguments": {
-                    "workspaceRoot": context["workspace_root"],
-                    "cwd": ".",
-                    "command": route["value"],
-                },
-                "plan_step_id": "run-command",
-                "start_token": f"Preparing to run command: {route['value']}",
-            }]
-
-        if route["kind"] == "apply_patch":
-            return [{
-                "name": "apply_patch",
-                "arguments": {
-                    "workspaceRoot": context["workspace_root"],
-                    "patchText": route["value"],
-                    "dry_run": False,
-                },
-                "plan_step_id": "apply-patch",
-                "start_token": "Preparing to apply the explicit patch...",
-            }]
-
-        if route["kind"] == "git_status":
-            return [{
-                "name": "git_status",
-                "arguments": {
-                    "workspaceRoot": context["workspace_root"],
-                },
-                "plan_step_id": "git-status",
-                "start_token": "Checking git status...",
-            }]
-
-        if route["kind"] == "git_diff":
-            return [{
-                "name": "git_diff",
-                "arguments": {
-                    "workspaceRoot": context["workspace_root"],
-                },
-                "plan_step_id": "git-diff",
-                "start_token": "Inspecting git diff...",
-            }]
-
-        sequence: list[dict[str, Any]] = [
-            {
-                "name": "list_dir",
-                "arguments": {
-                    "workspaceRoot": context["workspace_root"],
-                    "path": ".",
-                    "recursive": False,
-                    "max_depth": 2,
-                    "ignore": search_config.get("ignore", []),
-                },
-                "plan_step_id": "inspect-workspace",
-                "start_token": f"Inspecting the top-level structure of {context.get('workspace_name', 'the project')}...",
-            }
-        ]
-        search_query = context.get("search_query", "")
-        if search_query:
-            sequence.append(
-                {
-                    "name": "search_files",
-                    "arguments": {
-                        "workspaceRoot": context["workspace_root"],
-                        "query": search_query,
-                        "mode": context.get("search_mode", "content"),
-                        "glob": search_config.get("glob", []),
-                        "ignore": search_config.get("ignore", []),
-                        "max_results": 8,
-                    },
-                    "plan_step_id": "search-relevant-files",
-                    "start_token": f"Searching for files related to: {search_query}",
-                }
-            )
-        return sequence
-
     def summarize_findings(
         self,
         goal: str,
@@ -532,35 +449,6 @@ class ProviderAdapter:
             parts.append("Completed the requested tool action.")
         return " ".join(part for part in parts if part)
 
-    def pick_follow_up_tool(
-        self,
-        context: dict[str, Any],
-        tool_results: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        search_result = self._find_tool_result(tool_results, "search_files")
-        if not search_result:
-            return None
-
-        matches = search_result.get("result", {}).get("matches", [])
-        if not matches:
-            return None
-
-        first_match = matches[0]
-        path = first_match.get("path")
-        if not path:
-            return None
-
-        return {
-            "name": "read_file",
-            "arguments": {
-                "workspaceRoot": context["workspace_root"],
-                "path": path,
-                "max_bytes": 4000,
-            },
-            "plan_step_id": "search-relevant-files",
-            "start_token": f"Reading the first relevant file: {path}",
-        }
-
     def _find_tool_result(self, tool_results: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
         for item in tool_results:
             if item["name"] == name:
@@ -577,14 +465,6 @@ class ProviderAdapter:
         provider_config = self._merged_provider_config(context)
         stream_flag = self._provider_stream_flag(provider_config)
         return stream_flag is True
-
-    def _deterministic_fallback_enabled(self, context: dict[str, Any] | None) -> bool:
-        value = self._merged_provider_config(context).get("deterministicFallback")
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().lower() in {"true", "1", "yes", "on"}
-        return False
 
     @staticmethod
     def _settings_for_request(
@@ -1014,7 +894,7 @@ class ProviderAdapter:
             "search_config": {"ignore": []},
         }
 
-    def _route_goal(self, goal: str) -> dict[str, str]:
+    def _parse_explicit_command_hint(self, goal: str) -> dict[str, str]:
         lowered = goal.lower().strip()
         for kind, prefixes in (
             ("run_command", ("run command:", "execute command:", "cmd:")),

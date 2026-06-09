@@ -388,9 +388,90 @@ const FAILURE_TEXT_RE =
 const PROVIDER_TRANSIENT_FAILURE_RE =
   /\b(concurrency limit exceeded|rate limit(?:ed| exceeded)?|rate_limit_exceeded|429|too many requests|temporarily unavailable|service unavailable|overloaded|please retry later)\b|并发额度|限流|稍后重试|暂时满/i;
 
+const INTERNAL_APPROVAL_TOOL_NAMES = new Set(["completion_review", "advisor_tool"]);
+
 function messageMetadataKind(message: SessionWorkspaceMessage) {
   const kind = message.metadata?.kind ?? message.kind;
   return typeof kind === "string" ? kind : "";
+}
+
+function normalizeMetadataKind(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : "";
+}
+
+function isInternalApprovalToolName(value: unknown) {
+  return INTERNAL_APPROVAL_TOOL_NAMES.has(normalizeMetadataKind(value));
+}
+
+function metadataObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function messageLooksLikeInternalApproval(message: SessionWorkspaceMessage) {
+  const metadata = metadataObject(message.metadata) ?? {};
+  const candidates = [
+    message.toolName,
+    messageMetadataKind(message),
+    metadata.toolName,
+    metadata.kind,
+    metadata.approvalKind,
+    metadata.toolKind,
+    metadata.name,
+  ];
+  if (candidates.some(isInternalApprovalToolName)) return true;
+
+  for (const key of ["request", "input", "payload", "metadata"]) {
+    const nested = metadataObject(metadata[key]);
+    if (!nested) continue;
+    if (
+      isInternalApprovalToolName(nested.toolName) ||
+      isInternalApprovalToolName(nested.kind) ||
+      isInternalApprovalToolName(nested.approvalKind) ||
+      isInternalApprovalToolName(nested.toolKind)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function looksLikeInternalProgressJson(value: string) {
+  const text = value.trim();
+  if (!text) return false;
+  if (/^[{\[]/.test(text)) {
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object") return false;
+      const keys = Object.keys(parsed as Record<string, unknown>);
+      return keys.some((key) => [
+        "_chatCompat",
+        "eventId",
+        "frames",
+        "metadata",
+        "payload",
+        "progress",
+        "provider",
+        "providerRequest",
+        "providerResponse",
+        "rawJson",
+        "sessionId",
+        "taskId",
+        "toolCallId",
+        "toolProgress",
+        "tool_progress",
+        "tool_results",
+        "trace",
+        "uiReplayScope",
+        "visibility",
+        "workspaceRoot",
+      ].includes(key));
+    } catch {
+      return true;
+    }
+  }
+  return /(^|\n)\s*(provider|rawJson|toolProgress|tool_progress|trace|uiReplayScope|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text);
 }
 
 function messageLifecycleStatus(message: SessionWorkspaceMessage) {
@@ -464,6 +545,14 @@ function hasStructuredPlanUpdatePayload(message: SessionWorkspaceMessage) {
 
 function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
   if (isLowSignalStreamingPlaceholder(message)) {
+    return true;
+  }
+
+  if (messageLooksLikeInternalApproval(message)) {
+    return true;
+  }
+
+  if (message.role === "assistant" && looksLikeInternalProgressJson(message.content)) {
     return true;
   }
 

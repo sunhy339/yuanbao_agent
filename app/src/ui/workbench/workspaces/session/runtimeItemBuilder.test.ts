@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildRuntimeItems } from "./runtimeItemBuilder";
+import type { SessionWorkspaceTrace } from "./types";
 
 describe("runtimeItemBuilder", () => {
   it("keeps patch diff text and filters synthetic patch titles from file summaries", () => {
@@ -59,6 +60,71 @@ describe("runtimeItemBuilder", () => {
     expect(items[0]?.kind).toBe("approval");
     expect(items[0]?.toolName).toBe("apply_patch");
     expect(items[0]?.code).toContain("snake_game/game.py");
+    expect(items[0]?.rawDetail).toBeUndefined();
+  });
+
+  it("keeps file approval diff but never falls back to full request json", () => {
+    const diff = "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new";
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-write",
+          title: "write_file",
+          status: "pending",
+          kind: "write_file",
+          filesChanged: 1,
+          changedPaths: ["src/app.ts"],
+          diff,
+          parametersPreview: JSON.stringify({
+            path: "src/app.ts",
+            content: "<secret full file>",
+          }),
+          fullInput: JSON.stringify({
+            workspaceRoot: "D:/py/test_pro",
+            path: "src/app.ts",
+            content: "<secret full file>",
+          }),
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.rawDetail).toBe(diff);
+    expect(items[0]?.code).toContain("src/app.ts");
+    expect(items[0]?.code).not.toContain("<secret full file>");
+  });
+
+  it("does not keep non-diff approval fullInput as runtime raw detail", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-cmd",
+          title: "run_command",
+          status: "pending",
+          kind: "run_command",
+          command: "npm run typecheck",
+          parametersPreview: "npm run typecheck",
+          fullInput: JSON.stringify({ workspaceRoot: "D:/py/test_pro", command: "npm run typecheck" }),
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items[0]?.rawDetail).toBeUndefined();
+    expect(items[0]?.code).toBe("npm run typecheck");
   });
 
   it("does not surface internal completion review approvals as runtime cards", () => {
@@ -75,6 +141,61 @@ describe("runtimeItemBuilder", () => {
           title: "completion review",
           status: "pending",
           kind: "completion_review",
+          parametersPreview: JSON.stringify({ advisorRequestedEvidence: [{ summary: "internal" }] }),
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items).toEqual([]);
+  });
+
+  it("keeps completion review evidence panel-only when present", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-review",
+          title: "completion review",
+          status: "pending",
+          kind: "completion_review",
+          summary: "Completion gate summary",
+          completionEvidence: {
+            summary: "Evidence summary",
+            evidenceLevel: "summary_only",
+            metrics: [],
+            issues: [],
+          },
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.kind).toBe("completion");
+    expect(items[0]?.visibility).toBe("panel");
+    expect(items[0]?.rawDetail).toBeUndefined();
+  });
+
+  it("does not surface legacy advisor_tool approvals as runtime cards", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-advisor",
+          title: "advisor tool",
+          status: "pending",
+          kind: "advisor_tool",
           parametersPreview: JSON.stringify({ advisorRequestedEvidence: [{ summary: "internal" }] }),
           requestedAt: 1,
         },
@@ -110,6 +231,71 @@ describe("runtimeItemBuilder", () => {
           visibility: "trace",
         },
       ],
+    });
+
+    expect(items).toEqual([]);
+  });
+
+  it("keeps canonical chat stream traces out of runtime cards", () => {
+    const traces: SessionWorkspaceTrace[] = [
+      {
+        id: "trace-token",
+        type: "assistant.token",
+        source: "provider",
+        summary: "hello",
+        payload: {
+          delta: "hello",
+          _bridge: {
+            internal: true,
+            derivedBy: "message.delta",
+            suppressRealtimeFlat: true,
+            suppressChatReplay: true,
+          },
+        },
+        visibility: "trace",
+      },
+      {
+        id: "trace-delta",
+        type: "message.delta",
+        source: "message",
+        summary: "hello",
+        payload: { messageId: "msg_1", delta: "hello", _chatCompat: true },
+        visibility: "chat",
+      },
+      {
+        id: "trace-content",
+        type: "content_delta",
+        source: "chat",
+        summary: "hello",
+        payload: { text: "hello", _chatCompat: true },
+        visibility: "chat",
+      },
+      {
+        id: "trace-thinking",
+        type: "thinking",
+        source: "provider",
+        summary: "Inspecting",
+        payload: { text: "Inspecting", source: "provider_reasoning_delta" },
+        visibility: "chat",
+      },
+      {
+        id: "trace-status",
+        type: "status",
+        source: "provider",
+        summary: "Thinking",
+        payload: { state: "thinking", verb: "Thinking" },
+        visibility: "chat",
+      },
+    ];
+
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      traces,
     });
 
     expect(items).toEqual([]);
@@ -362,6 +548,136 @@ describe("runtimeItemBuilder", () => {
     expect(items[0]?.summary).toContain("read snake_game/README.md");
     expect(items[0]?.previewRows).toEqual([{ label: "文件", value: "snake_game/README.md" }]);
     expect(items[0]?.rawDetail).toBe("");
+  });
+
+  it("prefers backend display fields for successful tool runtime items", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_display",
+          toolUseId: "call_display",
+          toolName: "read_file",
+          status: "completed",
+          displayTitle: "Read app shell",
+          displayTarget: "src/app.ts",
+          displaySummary: "Read app shell summary",
+          resultSummary: "raw fallback summary",
+          rawInput: JSON.stringify({ path: "src/app.ts", content: "raw input content" }),
+          rawOutput: JSON.stringify({ status: "completed", content: "raw result content" }),
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    const item = items[0]!;
+    expect(item.title).toBe("Read app shell");
+    expect(item.summary).toContain("Read app shell summary");
+    expect((item.meta ?? []).join(" ")).toContain("src/app.ts");
+    expect(item.rawDetail).toBe("");
+    expect(item.code).not.toContain("raw input content");
+  });
+
+  it("does not keep successful non-command stdout as raw runtime detail", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_read_stdout",
+          toolUseId: "call_read_stdout",
+          toolName: "read_file",
+          status: "completed",
+          target: "index.html",
+          resultSummary: "read index.html (21000 bytes)",
+          stdout: "<!doctype html><html>full file content</html>",
+          rawInput: JSON.stringify({ path: "index.html" }),
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.summary).toContain("read index.html");
+    expect(items[0]?.rawDetail).toBe("");
+    expect(items[0]?.code).toBe("index.html");
+  });
+
+  it("summarizes write_file tool calls without exposing raw content input", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_write",
+          toolUseId: "call_write",
+          toolName: "write_file",
+          status: "completed",
+          target: "index.html",
+          resultSummary: "wrote index.html (21920 bytes)",
+          resultPreview: [{ label: "文件", value: "index.html" }],
+          rawInput: JSON.stringify({
+            path: "index.html",
+            content: "<!doctype html><html>full page</html>",
+            overwrite: true,
+          }),
+          rawOutput: JSON.stringify({
+            status: "completed",
+            changedPaths: ["index.html"],
+            filesChanged: 1,
+          }),
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.title).toContain("index.html");
+    expect(items[0]?.code).toBe("index.html");
+    expect(items[0]?.rawDetail).toBe("");
+    expect(items[0]?.summary).toContain("wrote index.html");
+    expect(items[0]?.code).not.toContain("<!doctype");
+  });
+
+  it("keeps failed non-command stdout and stderr as diagnostics", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_read_failed",
+          toolUseId: "call_read_failed",
+          toolName: "read_file",
+          status: "failed",
+          target: "missing.md",
+          resultSummary: "read failed",
+          stdout: "attempted missing.md",
+          stderr: "ENOENT",
+          rawInput: JSON.stringify({ path: "missing.md" }),
+        },
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.rawDetail).toContain("标准输出");
+    expect(items[0]?.rawDetail).toContain("attempted missing.md");
+    expect(items[0]?.rawDetail).toContain("标准错误");
+    expect(items[0]?.rawDetail).toContain("ENOENT");
   });
 
   it("hides control-flow tools from runtime panel tool rows", () => {

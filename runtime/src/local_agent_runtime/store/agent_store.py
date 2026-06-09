@@ -618,16 +618,9 @@ class AgentStoreMixin:
         ).fetchone()
         metrics = dict(metrics_row) if metrics_row else None
 
-        # 4. Routing decision from task + proposal
+        # 4. Routing decision from task metadata
         routing = task.get("routing") or {}
         routing_proposal = None
-        if task_id:
-            prop_rows = self._conn.execute(
-                "SELECT * FROM proposal_records WHERE task_id = ? AND kind = 'routing_strategy' ORDER BY created_at DESC LIMIT 1",
-                (task_id,),
-            ).fetchall()
-            if prop_rows:
-                routing_proposal = self._serialize_proposal(dict(prop_rows[0]))
 
         # 5. Decision trace events
         decision_rows = self._conn.execute(

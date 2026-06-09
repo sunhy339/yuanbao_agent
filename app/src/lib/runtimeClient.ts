@@ -51,12 +51,8 @@ import type {
   EventsAfterResult,
   YuanbaoEventsAfterParams,
   YuanbaoEventsAfterResult,
-  HahaCcEventsAfterParams,
-  HahaCcEventsAfterResult,
   YuanbaoTeamSnapshotParams,
   YuanbaoTeamSnapshotResult,
-  HahaCcTeamSnapshotParams,
-  HahaCcTeamSnapshotResult,
   MessageListParams,
   MessageListResult,
   MessageDeleteParams,
@@ -162,7 +158,6 @@ import type {
   WorkspaceMemoryClearResult,
   WorkspaceOpenResult,
   YuanbaoServerMessage,
-  HahaCcServerMessage,
 } from "@shared";
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -178,7 +173,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 
 const EVENT_CHANNEL = "agent://event";
 const YUANBAO_EVENT_CHANNEL = "yuanbao://message";
-const HAHA_CC_EVENT_CHANNEL = "haha-cc://message";
 const TERMINAL_EVENT_CHANNEL = "terminal://event";
 const RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE =
   "桌面运行时桥接不可用。请通过 Tauri 桌面应用打开 Yuanbao Agent，或为测试/预览显式启用浏览器预览模式。";
@@ -197,12 +191,10 @@ export interface AppPathOpenResult {
   path: string;
 }
 
-export interface HahaCcConnectionOptions extends RuntimePingParams {
+export interface YuanbaoConnectionOptions extends RuntimePingParams {
   keepAliveMs?: number;
   onKeepAliveError?: (reason: unknown) => void;
 }
-
-export interface YuanbaoConnectionOptions extends HahaCcConnectionOptions {}
 
 // Client-side cache for Tauri results — used for optimistic updates and local reads
 interface ClientCache {
@@ -229,7 +221,6 @@ export interface HostStatus {
   runtimeTransport: string;
   eventChannel: string;
   yuanbaoEventChannel: string;
-  hahaCcEventChannel: string;
   runtimeRunning: boolean;
   repoRoot: string;
   pythonModule: string;
@@ -717,27 +708,11 @@ export class RuntimeClient {
   }
 
   async yuanbaoEventsAfter(payload: YuanbaoEventsAfterParams): Promise<YuanbaoEventsAfterResult> {
-    try {
-      return await invokePayloadOrReject<YuanbaoEventsAfterResult>("yuanbao_events_after", payload);
-    } catch (reason) {
-      return invokePayloadOrReject<YuanbaoEventsAfterResult>("haha_cc_events_after", payload);
-    }
-  }
-
-  async hahaCcEventsAfter(payload: HahaCcEventsAfterParams): Promise<HahaCcEventsAfterResult> {
-    return this.yuanbaoEventsAfter(payload);
+    return invokePayloadOrReject<YuanbaoEventsAfterResult>("yuanbao_events_after", payload);
   }
 
   async yuanbaoTeamSnapshot(payload: YuanbaoTeamSnapshotParams): Promise<YuanbaoTeamSnapshotResult> {
-    try {
-      return await invokePayloadOrReject<YuanbaoTeamSnapshotResult>("yuanbao_team_snapshot", payload);
-    } catch (reason) {
-      return invokePayloadOrReject<YuanbaoTeamSnapshotResult>("haha_cc_team_snapshot", payload);
-    }
-  }
-
-  async hahaCcTeamSnapshot(payload: HahaCcTeamSnapshotParams): Promise<HahaCcTeamSnapshotResult> {
-    return this.yuanbaoTeamSnapshot(payload);
+    return invokePayloadOrReject<YuanbaoTeamSnapshotResult>("yuanbao_team_snapshot", payload);
   }
 
   async getConfig(): Promise<ConfigGetResult> {
@@ -921,16 +896,6 @@ export class RuntimeClient {
     };
   }
 
-  async subscribeHahaCcMessages(handler: (message: HahaCcServerMessage) => void): Promise<() => void> {
-    assertRuntimeBridgeAvailable("haha_cc_event_subscribe");
-    const unlisten = await listen<HahaCcServerMessage>(HAHA_CC_EVENT_CHANNEL, (event) => {
-      handler(event.payload);
-    });
-    return () => {
-      unlisten();
-    };
-  }
-
   async connectYuanbaoMessages(
     handler: (message: YuanbaoServerMessage) => void,
     options: YuanbaoConnectionOptions = {},
@@ -946,53 +911,6 @@ export class RuntimeClient {
         return;
       }
       for (const message of result.yuanbaoMessages) {
-        if (!includeConnected && message.type === "connected") {
-          continue;
-        }
-        handler(message);
-      }
-    };
-
-    try {
-      await emitPing(true);
-    } catch (reason) {
-      stopped = true;
-      unlisten();
-      throw reason;
-    }
-
-    if (keepAliveMs > 0) {
-      keepAliveTimer = setInterval(() => {
-        void emitPing(false).catch((reason) => {
-          onKeepAliveError?.(reason);
-        });
-      }, keepAliveMs);
-    }
-
-    return () => {
-      stopped = true;
-      if (keepAliveTimer !== undefined) {
-        clearInterval(keepAliveTimer);
-      }
-      unlisten();
-    };
-  }
-
-  async connectHahaCcMessages(
-    handler: (message: HahaCcServerMessage) => void,
-    options: HahaCcConnectionOptions = {},
-  ): Promise<() => void> {
-    const { keepAliveMs = 30_000, onKeepAliveError, ...pingPayload } = options;
-    const unlisten = await this.subscribeHahaCcMessages(handler);
-    let stopped = false;
-    let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
-
-    const emitPing = async (includeConnected: boolean): Promise<void> => {
-      const result = await this.runtimePing(pingPayload);
-      if (stopped) {
-        return;
-      }
-      for (const message of result.hahaCcMessages) {
         if (!includeConnected && message.type === "connected") {
           continue;
         }

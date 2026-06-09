@@ -9,204 +9,67 @@ import logging
 import re
 import threading
 from copy import deepcopy
-from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
 from subprocess import CompletedProcess, DEVNULL, PIPE, SubprocessError, run as subprocess_run
 
 logger = logging.getLogger(__name__)
 
-_WRITE_WORKTREE_SCENARIOS = {
-    "code_edit",
-    "debug",
-    "test_write",
-    "multi_step_task",
-    "supervised_task",
-}
-_WRITE_INTENT_GOAL_RE = re.compile(
-    r"\b(?:fix|modify|change|implement|refactor|update|write|create|generate|build|edit|"
-    r"replace|append|add|delete|remove|commit|apply|run|execute|test)\b|"
-    r"修复|修改|实现|重构|更新|写入|编写|生成|创建|编辑|替换|追加|新增|删除|移除|提交|执行|运行|测试",
-    re.IGNORECASE,
-)
-_READ_ONLY_GOAL_RE = re.compile(
-    r"\b(?:read[- ]?only|do not modify|don't modify|without modifying|no changes?|do not edit|"
-    r"don't edit|don't change|no write|do not write|just answer|answer only)\b|"
-    r"只读|不要修改|不修改|不要改|不改动|不要写入|不要编辑|不要变更|一句话回答|直接回答",
-    re.IGNORECASE,
-)
-_WORKSPACE_EVIDENCE_GOAL_RE = re.compile(
-    r"("
-    r"当前(?:项目|仓库|工程|代码|进度|任务|清单)|"
-    r"现状(?:清单|总结|梳理|分析)|"
-    r"项目(?:任务清单|进度|路线图|状态|现状|文档|说明)|"
-    r"任务清单|待办|TODO|todo|路线图|roadmap|progress|status list|"
-    r"README|readme|文档|说明文档|生成(?:一份)?文档|"
-    r"检查(?:一下)?(?:当前|项目|仓库|进展|状态)|"
-    r"基于(?:当前|仓库|项目|代码)|结合(?:当前|仓库|项目|代码)|"
-    r"查看(?:当前|项目|仓库)|整理(?:当前|项目|仓库)"
-    r")",
-    re.IGNORECASE,
-)
-_CURRENT_WORKSPACE_REFERENCE_RE = re.compile(
-    r"("
-    r"current\s+(?:project|repo|repository|workspace|codebase|snake\s+game|app|application)|"
-    r"this\s+(?:project|repo|repository|workspace|codebase|snake\s+game|app|application)|"
-    r"the\s+(?:current\s+)?(?:project|repo|repository|workspace|codebase|snake\s+game)\s+(?:status|state|progress|plan|roadmap|docs?|documentation|README)|"
-    r"基于(?:当前|这个|本地|仓库|项目|代码)|结合(?:当前|这个|本地|仓库|项目|代码)|"
-    r"当前(?:项目|仓库|工程|代码|进度|任务|清单|状态)|这个(?:项目|仓库|工程|代码)"
-    r")",
-    re.IGNORECASE,
-)
-_WORKSPACE_EVIDENCE_DELIVERABLE_RE = re.compile(
-    r"("
-    r"status|progress|roadmap|next[- ]?step|plan|todo|task\s+list|current\s+state|"
-    r"document(?:ation)?|docs?|readme|summary|summari[sz]e|analy[sz]e|proposal|"
-    r"路线图|计划|方案|下一步|进度|状态|现状|任务清单|待办|文档|说明|总结|梳理|分析"
-    r")",
-    re.IGNORECASE,
-)
-
 _INLINE_FILE_REFERENCE_PATTERN = re.compile(r"(^|\s)@([^\s@]+)")
 _INLINE_FILE_REFERENCE_TRAILING = "),.;:!?，。；：！？）"
 _INLINE_FILE_REFERENCE_TERMINATORS = ("，", "。", "；", "！", "？")
 
-_CLEANUP_GOAL_RE = re.compile(
-    r"(delete|remove|cleanup|clean up|删|删除|删掉|移除|清理|不需要|不要)",
-    re.IGNORECASE,
-)
-_GENERATED_LOCAL_PATH_RE = re.compile(
-    r"(%SystemDrive%|systemdrive|__pycache__|\.pyc\b|\.pytest_cache|\.idea[/\\]workspace\.xml|"
-    r"MEMORY(?:\.local)?\.md|YUANBAO\.md|tmp_.*\.(?:png|jpe?g|webp)|"
-    r"generated|cache|local-only|未跟踪|占位|缓存|生成|本地)",
-    re.IGNORECASE,
-)
 
 
 class MessageRoutingMixin:
     """Mixin providing message routing and background dispatch."""
 
-    def _routing_dict_from_decision(self, routing: Any, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        strategy = routing.strategy.value
-        tool_continuation = self._routing_tool_continuation_from_decision(routing, strategy)
-        profile = self._routing_profile_from_decision(routing)
-        metadata = getattr(routing, "metadata", None)
-        orchestration_mode = metadata.get("orchestrationMode") if isinstance(metadata, dict) else None
-        runtime_mode = metadata.get("runtime") if isinstance(metadata, dict) else None
-        intent_hints = metadata.get("intentHints") if isinstance(metadata, dict) else None
-        legacy_flags: dict[str, bool] = {}
-        if isinstance(metadata, dict):
-            for key in (
-                "legacyPlanner",
-                "legacy_planner",
-                "legacyPlanExecution",
-                "legacy_plan_execution",
-                "useLegacyPlanner",
-                "use_legacy_planner",
-            ):
-                if metadata.get(key) is True:
-                    legacy_flags[key] = True
-        goal_text = ""
-        if isinstance(context, dict):
-            goal_text = str(context.get("goal") or context.get("userGoal") or context.get("content") or "")
-        if self._goal_mentions_generated_local_cleanup(goal_text):
-            profile = dict(profile or {})
-            profile.setdefault("toolPolicy", "cleanup_noise")
-        return {
-            "scenario": routing.scenario.value,
-            "strategy": strategy,
-            "confidence": routing.confidence,
-            "max_steps": routing.max_steps,
-            "enable_reflection": routing.enable_reflection,
-            "enable_planning": routing.enable_planning,
-            "reasoning": routing.reasoning,
-            "skill_id": routing.skill_id,
-            "toolContinuation": tool_continuation,
-            **({"orchestrationMode": orchestration_mode} if isinstance(orchestration_mode, str) and orchestration_mode else {}),
-            **({"runtime": runtime_mode} if isinstance(runtime_mode, str) and runtime_mode else {}),
-            **({"intentHints": deepcopy(intent_hints)} if isinstance(intent_hints, dict) else {}),
-            **legacy_flags,
-            **({"profile": profile} if profile else {}),
-            "profile_snapshot": self._runtime_profile_snapshot(context),
-            "worktreeBindingRequired": False,
-            "roleSnapshot": {
-                "runtimeRole": "root",
-                "agentType": "root",
-                "profileId": None,
-                "profileVersion": 1,
-                "agentProfile": {
-                    "agentType": "root",
-                    "baseRuntimeRole": "root",
-                    "toolPolicy": "routing",
-                    "capabilities": ["orchestrate", "delegate", "synthesize"],
-                    "scopes": [],
-                    "riskLevel": "medium",
-                    "source": "runtime_default",
-                    "version": 1,
-                },
-                "toolPolicy": "routing",
-                "scopes": [],
-                "riskLevel": "medium",
-                "budget": {},
+    def _model_first_routing_context(
+        self,
+        *,
+        goal: str,
+        session: dict[str, Any],
+        params: dict[str, Any],
+        requested_skill_id: str | None,
+    ) -> dict[str, Any]:
+        """Build the minimal runtime context for the provider/tool loop.
+
+        This is deliberately not an intent router.  The provider decides the
+        actual trajectory by producing assistant text and tool calls; the
+        backend only carries stable execution metadata and explicit user or
+        session constraints.
+        """
+        max_steps = self._safe_int(
+            params.get("maxSteps"),
+            params.get("max_steps"),
+            (self._store.get_config({})["config"].get("policy") or {}).get("maxTaskSteps"),
+            30,
+        )
+        routing: dict[str, Any] = {
+            "mode": "model_first",
+            "max_steps": max_steps,
+            "skill_id": requested_skill_id,
+            "toolContinuation": {
+                "allowToolsAfterTaskResults": True,
+                "allowMoreSubtasksAfterTaskResults": True,
+                "source": "model_first_default",
             },
         }
-
-    @staticmethod
-    def _routing_profile_from_decision(routing: Any) -> dict[str, Any]:
-        metadata = getattr(routing, "metadata", None)
-        if not isinstance(metadata, dict):
-            return {}
-        profile = metadata.get("profile")
-        return dict(profile) if isinstance(profile, dict) else {}
-
-    @staticmethod
-    def _goal_mentions_generated_local_cleanup(goal: str) -> bool:
-        text = str(goal or "")
-        return bool(_CLEANUP_GOAL_RE.search(text) and _GENERATED_LOCAL_PATH_RE.search(text))
-
-    def _routing_tool_continuation_from_decision(self, routing: Any, strategy: str) -> dict[str, Any]:
-        metadata = getattr(routing, "metadata", None)
-        raw = metadata.get("toolContinuation") if isinstance(metadata, dict) else None
-        if isinstance(raw, dict) and isinstance(raw.get("allowToolsAfterTaskResults"), bool):
-            continuation = {
-                "allowToolsAfterTaskResults": raw["allowToolsAfterTaskResults"],
-                "allowMoreSubtasksAfterTaskResults": raw.get("allowMoreSubtasksAfterTaskResults") is True,
-                "maxTaskToolCalls": self._bounded_routing_task_call_budget(raw.get("maxTaskToolCalls")),
-                "source": str(raw.get("source") or "routing_metadata"),
-            }
-            rationale = raw.get("rationale")
-            if isinstance(rationale, str) and rationale.strip():
-                continuation["rationale"] = rationale.strip()[:500]
-            return continuation
-        if strategy in {"plan_execute", "plan_supervise", "plan_swarm"}:
-            return {
-                "allowToolsAfterTaskResults": True,
-                "allowMoreSubtasksAfterTaskResults": False,
-                "source": "strategy_default_post_task_continuation",
-            }
-        return {
-            "allowToolsAfterTaskResults": True,
-            "allowMoreSubtasksAfterTaskResults": False,
-            "source": "default_post_task_continuation",
-        }
-
-    @staticmethod
-    def _bounded_routing_task_call_budget(value: Any) -> int:
-        try:
-            budget = int(value)
-        except (TypeError, ValueError):
-            return 1
-        if budget <= 0:
-            return 1
-        return min(budget, 20)
-
-    @staticmethod
-    def _should_use_minimal_context(routing: dict[str, Any]) -> bool:
-        return (
-            routing.get("scenario") == "simple_query"
-            and routing.get("strategy") == "react_fast"
-            and not routing.get("skill_id")
+        if requested_skill_id:
+            routing["requestedSkillId"] = requested_skill_id
+        if self._explicit_plan_mode_requested(params):
+            routing["planModeToolsEnabled"] = True
+            routing["explicitPlanMode"] = True
+        if params.get("background") is True:
+            routing["background"] = True
+        routing = self._apply_session_launch_to_routing(routing, session)
+        return self._attach_main_workflow_state(
+            routing=routing,
+            session=session,
+            goal=goal,
+            params=params,
         )
+
 
     def _attach_main_workflow_state(
         self,
@@ -221,7 +84,6 @@ class MessageRoutingMixin:
         autonomy_profile = self._active_config_profile(config, "autonomy") or {}
         policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
         approval_mode = str(policy.get("approvalMode") or "on_write_or_command")
-        confidence = self._safe_float(routing.get("confidence"), 0.0)
         automation = self._main_workflow_automation(
             approval_mode=approval_mode,
             autonomy_profile=autonomy_profile,
@@ -233,17 +95,10 @@ class MessageRoutingMixin:
             autonomy_profile=autonomy_profile,
         )
         workflow = {
-            "intentConfidence": {
-                "score": confidence,
-                "band": self._intent_confidence_band(confidence),
-                "scenario": routing.get("scenario"),
-                "strategy": routing.get("strategy"),
-                "reasoning": routing.get("reasoning"),
-            },
             "automation": automation,
             "budget": budget,
             "convergence": self._initial_main_workflow_convergence(automation=automation, budget=budget),
-            "workspaceSnapshot": self._main_workflow_workspace_snapshot(session),
+            "workspaceSnapshot": self._main_workflow_workspace_snapshot(session, include_git=False),
             "userTakeover": {
                 "state": "none",
                 "mode": params.get("mode") or ("background" if params.get("background") is True else "new_task"),
@@ -279,14 +134,6 @@ class MessageRoutingMixin:
             return float(value)
         except (TypeError, ValueError):
             return default
-
-    @staticmethod
-    def _intent_confidence_band(confidence: float) -> str:
-        if confidence >= 0.8:
-            return "high"
-        if confidence >= 0.5:
-            return "medium"
-        return "low"
 
     @staticmethod
     def _automation_level(
@@ -335,7 +182,7 @@ class MessageRoutingMixin:
                 "continueAfterConvergence": "requires_user_action",
             },
             "convergencePolicy": {
-                "advisorKind": "budget_convergence",
+                "decisionKind": "budget_convergence",
                 "onBudgetPressure": "record_and_continue",
                 "onBudgetExhaustion": "summarize_partial_for_review",
                 "autoContinuePastHardBudget": False,
@@ -371,7 +218,7 @@ class MessageRoutingMixin:
             "commandTimeoutMs": self._safe_int(policy.get("commandTimeoutMs"), 600000),
             "providerTimeoutSeconds": self._safe_int(provider.get("timeout"), 30),
             "maxContextTokens": max_context_tokens,
-            "routingMaxStepsHint": self._safe_int(routing.get("max_steps"), 0),
+            "runtimeMaxStepsHint": self._safe_int(routing.get("max_steps"), 0),
             "pressure": "normal",
             "exhausted": False,
             "convergenceRequired": True,
@@ -432,7 +279,7 @@ class MessageRoutingMixin:
                 continue
         return 0
 
-    def _main_workflow_workspace_snapshot(self, session: dict[str, Any]) -> dict[str, Any]:
+    def _main_workflow_workspace_snapshot(self, session: dict[str, Any], *, include_git: bool = False) -> dict[str, Any]:
         workspace_root = self._session_workspace_root(session)
         snapshot: dict[str, Any] = {
             "workspaceId": session.get("workspaceId"),
@@ -440,7 +287,7 @@ class MessageRoutingMixin:
             "exists": bool(workspace_root and Path(workspace_root).exists()),
             "git": {"isRepo": False},
         }
-        if not workspace_root or not Path(workspace_root).exists():
+        if not include_git or not workspace_root or not Path(workspace_root).exists():
             return snapshot
         root = Path(workspace_root)
         git_info = self._git_workspace_status(root)
@@ -620,43 +467,6 @@ class MessageRoutingMixin:
             return False
         return workspace_git_root == configured
 
-    def _routing_has_write_worktree_intent(self, routing: dict[str, Any], goal: str | None = None) -> bool:
-        goal_text = str(goal or routing.get("goal") or routing.get("userGoal") or "").strip()
-        if goal_text and _READ_ONLY_GOAL_RE.search(goal_text):
-            return False
-        scenarios: set[str] = set()
-        scenario = str(routing.get("scenario") or "").strip()
-        if scenario:
-            scenarios.add(scenario)
-        intent_hints = routing.get("intentHints")
-        if isinstance(intent_hints, dict):
-            rule_candidate = intent_hints.get("ruleCandidate")
-            if isinstance(rule_candidate, dict):
-                candidate_scenario = str(rule_candidate.get("scenario") or "").strip()
-                if candidate_scenario:
-                    scenarios.add(candidate_scenario)
-        if scenarios & _WRITE_WORKTREE_SCENARIOS:
-            return True
-        if not goal_text:
-            return False
-        return _WRITE_INTENT_GOAL_RE.search(goal_text) is not None
-
-    def _mark_worktree_binding_required(self, routing: dict[str, Any], goal: str | None = None) -> dict[str, Any]:
-        if getattr(self, "_worktree_service", None) is None:
-            return routing
-        if routing.get("disableWorktreeBinding") is True:
-            return routing
-        if routing.get("orchestrationMode") == "model_tools" and routing.get("worktreeBindingRequired") is not True:
-            return routing
-        if routing.get("worktreeBindingRequired") is True:
-            return routing
-        worktree_config = self._worktree_config()
-        if worktree_config.get("autoBindWriteTasks", False) is not True and routing.get("preferredWorktree") is not True:
-            return routing
-        if not self._routing_has_write_worktree_intent(routing, goal=goal):
-            return routing
-        return {**routing, "worktreeBindingRequired": True}
-
     def _return_worktree_binding_failed_task(
         self,
         *,
@@ -683,8 +493,9 @@ class MessageRoutingMixin:
         self._publish(
             session["id"],
             task,
-            "task.routing.decided",
+            "runtime.context.prepared",
             {**routing_dict, "latency_ms": latency_ms},
+            visibility="trace",
         )
         failed = self._fail_task(
             session_id=session["id"],
@@ -800,28 +611,6 @@ class MessageRoutingMixin:
         bound_context["messages"] = messages
         return bound_context
 
-    @staticmethod
-    def _context_with_model_tool_guidance(context: dict[str, Any], routing: dict[str, Any]) -> dict[str, Any]:
-        if routing.get("orchestrationMode") != "model_tools":
-            return context
-        if routing.get("strategy") not in {"plan_swarm", "plan_execute", "plan_supervise"}:
-            return context
-        guidance = "\n".join([
-            "Available delegation tools:",
-            "- Use agent({description, subagent_type, prompt}) for focused independent work when the user asks for multiple agents or the task benefits from parallel analysis.",
-            "- Use task({description, prompt}) when a delegated subtask should be tracked as structured task progress.",
-            "- Do not claim multi-agent collaboration unless you actually call agent or task.",
-            "- Keep child prompts short and scoped; prefer read-only child work unless edits are required.",
-        ])
-        messages = list(context.get("messages") or [])
-        if messages and messages[-1].get("role") == "user":
-            content = str(messages[-1].get("content") or "")
-            if "Available delegation tools:" not in content:
-                messages[-1] = {**messages[-1], "content": f"{content}\n\n{guidance}"}
-        else:
-            messages.append({"role": "user", "content": guidance})
-        return {**context, "messages": messages}
-
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._shutting_down:
             raise RuntimeError("服务正在关闭，暂不接受新任务")
@@ -885,16 +674,11 @@ class MessageRoutingMixin:
         if params.get("mode") == "queued":
             active_task = self._find_open_session_task(session["id"])
             if active_task is not None:
-                routing = self._route_goal(goal)
-                routing = self._routing_with_requested_skill(routing, requested_skill_id)
-                routing_dict = self._routing_dict_from_decision(routing, context={"goal": goal})
-                routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
-                routing_dict = self._mark_worktree_binding_required(routing_dict, goal=goal)
-                routing_dict = self._attach_main_workflow_state(
-                    routing=routing_dict,
-                    session=session,
+                routing_dict = self._model_first_routing_context(
                     goal=goal,
+                    session=session,
                     params=params,
+                    requested_skill_id=requested_skill_id,
                 )
                 queued_task = self._store.create_task(
                     session_id=session["id"],
@@ -920,60 +704,33 @@ class MessageRoutingMixin:
                 self._publish(
                     session["id"],
                     queued_task,
-                    "task.routing.decided",
+                    "runtime.context.prepared",
                     {**routing_dict, "latency_ms": 0},
+                    visibility="trace",
                 )
                 return {"task": queued_task, "userMessage": user_msg, "acceptedMode": "queued"}
 
-        # --- Phase 0: MetaRouter scenario classification ---
-        import time as _time
-        _route_t0 = _time.monotonic()
-        routing_span = self._tracer.start_span("routing_decision", attributes={"goal": goal[:200]})
-        try:
-            routing = self._route_goal(goal)
-            routing = self._routing_with_requested_skill(routing, requested_skill_id)
-        except Exception:
-            self._tracer.end_span(routing_span.span_id, status="error")
-            raise
-        _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
-        routing_dict = self._routing_dict_from_decision(routing, context={"goal": goal})
-        routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
-        routing_dict = self._mark_worktree_binding_required(routing_dict, goal=goal)
-        routing_dict = self._attach_main_workflow_state(
-            routing=routing_dict,
-            session=session,
+        _route_latency_ms = 0
+        routing_dict = self._model_first_routing_context(
             goal=goal,
+            session=session,
             params=params,
-        )
-        minimal_context = self._should_use_minimal_context(routing_dict)
-        if minimal_context:
-            routing_dict["contextMode"] = "minimal"
-        self._tracer.end_span(
-            routing_span.span_id,
-            status="ok",
-            attributes={
-                "scenario": routing.scenario.value,
-                "strategy": routing.strategy.value,
-                "confidence": routing.confidence,
-                "skill_id": routing.skill_id,
-                "latency_ms": _route_latency_ms,
-            },
+            requested_skill_id=requested_skill_id,
         )
 
         if params.get("background") is True:
             # Pass routing info to the background worker without blocking on
             # context build — the worker will build context with routing data.
-            plan = self._planner.plan(goal, context={"routing": routing_dict})
             task = self._store.create_task(
                 session_id=session["id"],
                 task_type="edit",
                 goal=goal,
-                plan=plan,
+                plan=[],
                 acceptance_criteria=self._default_acceptance_criteria(goal),
                 out_of_scope=self._default_out_of_scope(),
                 routing=routing_dict,
             )
-            runtime_task = {**task, "plan": plan}
+            runtime_task = {**task, "plan": []}
             user_msg = self._store.create_message(
                 session_id=session["id"],
                 task_id=runtime_task["id"],
@@ -1017,13 +774,6 @@ class MessageRoutingMixin:
                     summary="Write-oriented background task requires an active worktree, but worktree binding failed.",
                     latency_ms=_route_latency_ms,
                 )
-            self._record_routing_proposal(
-                session_id=session["id"],
-                task_id=runtime_task["id"],
-                goal=goal,
-                routing=routing,
-                routing_dict=routing_dict,
-            )
             self._publish(
                 session_id=session["id"],
                 task=runtime_task,
@@ -1045,8 +795,9 @@ class MessageRoutingMixin:
             self._publish(
                 session_id=session["id"],
                 task=runtime_task,
-                event_type="task.routing.decided",
+                event_type="runtime.context.prepared",
                 payload={**routing_dict, "latency_ms": _route_latency_ms},
+                visibility="trace",
             )
             self._start_background_message(
                 session_id=session["id"],
@@ -1054,50 +805,44 @@ class MessageRoutingMixin:
                 goal=goal,
                 context=None,
                 routing=routing_dict,
-                skill_id=routing.skill_id,
+                skill_id=requested_skill_id,
             )
             self._record_skill_usage(
                 task_id=runtime_task["id"],
                 session_id=session["id"],
-                skill_id=routing.skill_id,
+                skill_id=requested_skill_id,
             )
             return {"task": runtime_task, "userMessage": user_msg, "assistantMessage": assistant_msg, "acceptedMode": "new"}
 
         context = self._context_builder.build(
             session_id=session["id"],
             goal=goal,
-            skill_id=routing.skill_id,
-            lightweight=minimal_context,
-            minimal=minimal_context,
+            skill_id=requested_skill_id,
+            lightweight=True,
             current_message_metadata=message_metadata,
         )
-        if minimal_context:
-            context["minimal"] = True
         if isinstance(context.get("skillFallback"), dict):
             routing_dict["skillFallback"] = context["skillFallback"]
         routing_dict["profile_snapshot"] = self._runtime_profile_snapshot(context)
-        # Inject routing decision into context as a plain dict for JSON safety.
+        # Attach runtime metadata to context as a plain dict for JSON safety.
         context["routing"] = routing_dict
-        context = self._context_with_model_tool_guidance(context, routing_dict)
         # Emit tool filter event if skill filtering was applied
-        self._maybe_publish_tool_filter(context, routing.skill_id)
+        self._maybe_publish_tool_filter(context, requested_skill_id)
         logger.info(
-            "Routing decision: scenario=%s strategy=%s confidence=%.2f max_steps=%d skill=%s",
-            routing.scenario.value, routing.strategy.value,
-            routing.confidence, routing.max_steps, routing.skill_id,
+            "Prepared model-first runtime context: max_steps=%d skill=%s background=%s",
+            routing_dict.get("max_steps", 0), requested_skill_id, routing_dict.get("background") is True,
         )
 
-        plan = self._planner.plan(goal, context=context)
         task = self._store.create_task(
             session_id=session["id"],
             task_type="edit",
             goal=goal,
-            plan=plan,
+            plan=[],
             acceptance_criteria=self._default_acceptance_criteria(goal),
             out_of_scope=self._default_out_of_scope(),
             routing=routing_dict,
         )
-        runtime_task = {**task, "plan": plan}
+        runtime_task = {**task, "plan": []}
         user_msg = self._store.create_message(
             session_id=session["id"],
             task_id=runtime_task["id"],
@@ -1144,18 +889,10 @@ class MessageRoutingMixin:
                 latency_ms=_route_latency_ms,
             )
 
-        self._record_routing_proposal(
-            session_id=session["id"],
-            task_id=runtime_task["id"],
-            goal=goal,
-            routing=routing,
-            routing_dict=routing_dict,
-        )
-
         self._record_skill_usage(
             task_id=runtime_task["id"],
             session_id=session["id"],
-            skill_id=routing.skill_id,
+            skill_id=requested_skill_id,
         )
 
         self._publish(
@@ -1185,15 +922,16 @@ class MessageRoutingMixin:
                 "plan": runtime_task["plan"],
                 "currentStep": runtime_task.get("currentStep"),
                 "context": self._event_context_summary(context),
-                "routing": context["routing"],
             },
+            visibility="panel",
         )
         self._fire_hooks("before_task_start", session["id"], runtime_task, extra_context={"routing": context.get("routing")})
         self._publish(
             session_id=session["id"],
             task=runtime_task,
-            event_type="task.routing.decided",
+            event_type="runtime.context.prepared",
             payload={**routing_dict, "latency_ms": _route_latency_ms},
+            visibility="trace",
         )
         result = self._execute_message_task(
             session_id=session["id"],
@@ -1203,21 +941,6 @@ class MessageRoutingMixin:
         )
         result.setdefault("acceptedMode", "new")
         return result
-
-    def _route_goal(self, goal: str) -> Any:
-        route_context = {"config": self._store.get_config({})["config"]}
-        route = self._meta_router.route
-        try:
-            params = signature(route).parameters
-            accepts_context = (
-                len(params) >= 2
-                or any(param.kind == Parameter.VAR_KEYWORD for param in params.values())
-            )
-        except (TypeError, ValueError):
-            accepts_context = True
-        if accepts_context:
-            return route(goal, route_context)
-        return route(goal)
 
     def _start_background_message(
         self,
@@ -1307,20 +1030,3 @@ class MessageRoutingMixin:
                 if isinstance(key, str) and value not in (None, "", [])
             }
         return metadata
-
-    def _routing_with_requested_skill(self, routing: Any, requested_skill_id: str | None) -> Any:
-        if requested_skill_id is None:
-            return routing
-        try:
-            routing.skill_id = requested_skill_id
-        except Exception:
-            return routing
-        metadata = getattr(routing, "metadata", None)
-        if not isinstance(metadata, dict):
-            metadata = {}
-            try:
-                routing.metadata = metadata
-            except Exception:
-                return routing
-        metadata["requestedSkillId"] = requested_skill_id
-        return routing

@@ -4,7 +4,7 @@ import {
   CommandOutputPanel,
   ContextBudgetBar,
   PatchPlanCard,
-  RoutingDecisionCard,
+  ProviderSelectionCard,
   RuntimeSignalCard,
   ToolTraceCard,
 } from "../../../v2/components/runtime";
@@ -96,7 +96,7 @@ export function ComponentPlaygroundWorkspace({
           <div className="playground-runtime-stack">
             <RuntimeSignalCard title="运行时" value="就绪" tone="success" description="本地智能体已连接" />
             <ContextBudgetBar usedTokens={38240} reservedTokens={6000} maxTokens={64000} />
-            <RoutingDecisionCard
+            <ProviderSelectionCard
               decision={{
                 providerMode: "auto",
                 model: "gpt-5.4",

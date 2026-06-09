@@ -132,6 +132,12 @@ function normalizedToolName(value?: string | null) {
   return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 }
 
+const INTERNAL_APPROVAL_TOOL_NAMES = new Set(["completion_review", "advisor_tool"]);
+
+function isInternalApprovalToolName(value?: string | null) {
+  return INTERNAL_APPROVAL_TOOL_NAMES.has(normalizedToolName(value));
+}
+
 function looksLikeInternalPayloadText(value: string) {
   const text = value.trim();
   if (!text) return true;
@@ -150,18 +156,32 @@ function looksLikeInternalPayloadText(value: string) {
         return keys.some((key) => [
           "_chatCompat",
           "context",
+          "currentTaskId",
           "eventId",
+          "frames",
           "messages",
           "metadata",
           "options",
           "payload",
+          "progress",
+          "provider",
+          "providerRequest",
+          "providerResponse",
           "questions",
+          "rawJson",
           "requestId",
           "sessionId",
           "taskId",
+          "taskStatus",
           "toolCallId",
+          "toolProgress",
+          "tool_progress",
           "tool_results",
+          "trace",
+          "uiReplayScope",
+          "visibility",
           "workspaceRoot",
+          "yuanbao",
         ].includes(key));
       }
     } catch {
@@ -253,6 +273,11 @@ function toolInlineSummary(message: SessionWorkspaceMessage) {
   if (isAskUserToolMessage(message)) {
     return compactText(toolQuestionText(message) || "等待你补充信息", 170);
   }
+  const displaySummary = cleanInlineDisplayText(readMetadataString(message, ["displaySummary", "resultSummary"]));
+  const previewSummary = metadataPreviewRows(message.metadata?.resultPreview)
+    .map((row) => `${row.label}: ${row.value}`)
+    .join(" 路 ");
+  if (displaySummary || previewSummary) return compactText(displaySummary || previewSummary, 170);
   const structuredResult = cleanInlineDisplayText(readString(message.metadata?.resultSummary));
   const result = summarizeToolResultText(readString(message.metadata?.resultText));
   if (structuredResult || result) return compactText(structuredResult || result, 170);
@@ -294,6 +319,26 @@ function toolGroupSummary(items: RuntimeTimelineItem[]) {
     .join("、");
 }
 
+function runtimeItemToolTarget(item: RuntimeTimelineItem, toolName: string) {
+  const inputRecord = parseJson(item.code || "");
+  const targetFromInput = readRecordString(inputRecord, ["path", "file", "cwd", "root", "target", "query", "url", "command", "cmd"]);
+  if (targetFromInput) return targetFromInput;
+  const title = item.title?.trim() ?? "";
+  const normalized = normalizedToolName(toolName);
+  const verbPattern =
+    normalized === "read_file" ? /^(?:read|读取)\s+/i :
+    normalized === "search_files" || normalized === "code_search" ? /^(?:search|搜索)\s+/i :
+    normalized === "list_dir" || normalized === "list_directory" ? /^(?:list|view|查看|列出)\s+/i :
+    normalized === "write_file" ? /^(?:write|写入)\s+/i :
+    normalized === "run_command" ? /^(?:run|运行)\s+/i :
+    null;
+  if (verbPattern) {
+    const stripped = title.replace(verbPattern, "").trim();
+    if (stripped && stripped !== title) return stripped;
+  }
+  return item.meta?.[0] || "";
+}
+
 function runtimeItemToToolMessage(item: RuntimeTimelineItem): SessionWorkspaceMessage | null {
   if (!["tool", "command", "patch"].includes(item.kind)) {
     return null;
@@ -301,10 +346,16 @@ function runtimeItemToToolMessage(item: RuntimeTimelineItem): SessionWorkspaceMe
   const toolName =
     item.toolName ||
     (item.kind === "command" ? "run_command" : item.kind === "patch" ? "apply_patch" : normalizeRuntimeToolName(item));
+  const normalizedStatus = item.status?.toLowerCase() ?? "";
+  const needsDiagnostics = ["failed", "error", "blocked", "cancelled", "rejected"].includes(normalizedStatus);
+  const safeInputText = needsDiagnostics && item.code && !looksLikeInternalPayloadText(item.code) ? item.code : "";
+  const safeResultText = needsDiagnostics && item.rawDetail && !looksLikeInternalPayloadText(item.rawDetail) ? item.rawDetail : "";
+  const target = runtimeItemToolTarget(item, toolName);
+  const content = item.summary || "";
   return {
     id: `tool_activity:${item.toolUseId || item.sourceId || item.id}`,
     role: "assistant",
-    content: item.code || item.summary || "",
+    content,
     taskId: item.taskId,
     toolName,
     status: item.status,
@@ -324,11 +375,11 @@ function runtimeItemToToolMessage(item: RuntimeTimelineItem): SessionWorkspaceMe
       toolPhaseLabel: item.toolPhaseLabel,
       toolSemanticParentId: item.toolSemanticParentId,
       toolSemanticParentLabel: item.toolSemanticParentLabel,
-      inputText: item.code,
-      resultText: item.rawDetail || item.summary,
+      inputText: safeInputText,
+      resultText: safeResultText || item.summary,
       resultPreview: item.previewRows,
       durationMs: item.durationMs,
-      target: item.meta?.[0],
+      target,
       inputSummary: item.title,
     },
   };
@@ -969,7 +1020,7 @@ function readMetadataPreviewRows(message: SessionWorkspaceMessage, keys: string[
 
 function messageTitleForKind(kind: CleanTranscriptKind | string, message: SessionWorkspaceMessage) {
   const title = readMetadataString(message, ["title", "label", "action", "event", "state"]);
-  if (title) return title;
+  if (title && !looksLikeInternalTaskReference(title) && !isInternalApprovalToolName(title)) return title;
   const labels: Record<string, string> = {
     api_retry: "API 重试",
     ask_user_question: "需要你补充信息",
@@ -1260,22 +1311,29 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
   const question = toolQuestionText(message);
   const input = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
   const result = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
-  const metadataTarget = cleanInlineDisplayText(readMetadataString(message, ["target", "inputSummary"]));
+  const metadataTarget = cleanInlineDisplayText(readMetadataString(message, ["displayTarget", "target", "inputSummary"]));
   const fallbackInput = metadataTarget ? JSON.stringify({ target: metadataTarget }) : "";
   const previewRows = metadataPreviewRows(message.metadata?.resultPreview);
   const safeContent = cleanInlineDisplayText(message.content);
   const extraContent = safeContent && safeContent !== input && safeContent !== result ? safeContent : "";
+  const needsDiagnostics = Boolean(blocked || failed || cancelled);
+  const safeInputDetail = needsDiagnostics && input && !looksLikeInternalPayloadText(input) ? `输入\n${input}` : "";
+  const safeResultDetail = needsDiagnostics && result && !looksLikeInternalPayloadText(result) ? `结果\n${result}` : "";
+  const safeExtraDetail = needsDiagnostics && extraContent && !looksLikeInternalPayloadText(extraContent) ? extraContent : "";
   const details = askUserTool
     ? [
         question ? `问题\n${question}` : "",
         result && !looksLikeInternalPayloadText(result) ? `结果\n${result}` : "",
       ].filter(Boolean).join("\n\n")
-    : [input ? `输入\n${input}` : "", result ? `结果\n${result}` : "", extraContent].filter(Boolean).join("\n\n");
+    : [safeInputDetail, safeResultDetail, safeExtraDetail].filter(Boolean).join("\n\n");
+  const displayTitle = cleanInlineDisplayText(readMetadataString(message, ["displayTitle"]));
   const title = askUserTool
     ? "需要你补充信息"
-    : toolActionTitle({
+    : displayTitle
+      ? displayTitle
+      : toolActionTitle({
         toolName: message.toolName,
-        title: cleanInlineDisplayText(readMetadataString(message, ["target", "inputSummary", "title", "label", "action"])),
+        title: cleanInlineDisplayText(readMetadataString(message, ["displayTitle", "displayTarget", "displaySummary", "target", "inputSummary", "title", "label", "action"])),
         input: input || fallbackInput,
         rawDetail: result && !looksLikeInternalPayloadText(result) ? result : safeContent,
       });
@@ -1380,8 +1438,11 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
   const busy = Boolean(requestId && busyId === requestId);
   const approvalKind = readMetadataString(message, ["approvalKind", "kind"]) || message.toolName;
   const canAlwaysAllow = Boolean(onApproveAlways && supportsAlwaysAllowKind(approvalKind));
-  const inputText = readMetadataString(message, ["parametersPreview", "inputText", "fullInput", "command"]);
-  const detailText = isGenericApprovalText(message.content) ? "" : message.content.trim();
+  const inputText = readMetadataString(message, ["parametersPreview", "inputText", "command"]);
+  const contentLooksStructured = Boolean(parseJson(message.content.trim()));
+  const detailText = isGenericApprovalText(message.content) || looksLikeInternalPayloadText(message.content) || contentLooksStructured
+    ? ""
+    : message.content.trim();
   const previewRows = readMetadataPreviewRows(message, ["previewRows", "preview"]);
   const changedPaths = readMetadataList(message, ["changedPaths", "paths", "files"]);
   const filesChanged = readMetadataString(message, ["filesChanged"]);
@@ -1644,23 +1705,35 @@ const SPECIAL_EVENT_METADATA_BLOCKLIST = new Set([
   "currentStep",
   "eventId",
   "fingerprint",
+  "frames",
   "messages",
   "options",
   "agentTasks",
   "agentResults",
   "members",
   "plan",
+  "progress",
+  "provider",
+  "providerRequest",
+  "providerResponse",
   "payload",
   "questions",
+  "rawJson",
   "requestId",
   "sessionId",
   "stepCount",
   "taskId",
   "toolCallId",
+  "toolProgress",
+  "tool_progress",
   "tool_results",
+  "trace",
+  "uiReplayScope",
+  "visibility",
   "subtasks",
   "tasks",
   "workspaceRoot",
+  "yuanbao",
 ]);
 
 function formatAgentTaskStatus(status?: string) {
@@ -1730,6 +1803,48 @@ function displayAgentTaskTitle(title: string, id: string, agentType: string, ind
   return role ? `${role} task` : `Agent task ${index + 1}`;
 }
 
+function displayAgentTaskRecordTitle(task: Record<string, unknown>, id: string, index: number) {
+  const agentType = readString(task.agentType) || readString(task.role);
+  const candidates = [
+    readString(task.currentTask),
+    readString(task.task),
+    readString(task.title),
+    readString(task.name),
+    readString(task.summary),
+  ];
+  const safe = candidates.find((candidate) => candidate && !looksLikeRawChildTaskId(candidate));
+  return displayAgentTaskTitle(safe || "", id, agentType, index);
+}
+
+function displayGroupTitle(message: SessionWorkspaceMessage, fallback: string) {
+  const title = readMetadataString(message, ["title", "label"]);
+  if (title && !looksLikeInternalTaskReference(title) && !isInternalApprovalToolName(title)) {
+    return title;
+  }
+  const summary = readMetadataString(message, ["currentTask", "summary", "status"]);
+  if (summary && !looksLikeInternalTaskReference(summary)) {
+    return compactText(summary, 80);
+  }
+  return fallback;
+}
+
+function displayPlanSubtaskTitle(record: Record<string, unknown>, index: number) {
+  const candidates = [
+    readString(record.currentTask),
+    readString(record.task),
+    readString(record.summary),
+    readString(record.description),
+    readString(record.title),
+    readString(record.subtaskTitle),
+    readString(record.name),
+    readString(record.status),
+  ];
+  const safe = candidates.find((candidate) => candidate && !looksLikeRawChildTaskId(candidate));
+  if (safe) return safe;
+  const role = readableAgentLabel(readString(record.agentType) || readString(record.agent_type) || readString(record.role));
+  return role ? `${role} task` : `子任务 ${index + 1}`;
+}
+
 export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
   message,
 }: {
@@ -1739,7 +1854,7 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
   const tasks = readAgentGroupTasks(message);
   const results = readMetadataRecordList(message, ["agentResults"]);
   const resultSummariesByTask = useMemo(() => mergeAgentResultSummariesByTask(results), [results]);
-  const title = readMetadataString(message, ["title"]) || `派遣了 ${tasks.length} 个代理`;
+  const title = displayGroupTitle(message, `派遣了 ${tasks.length} 个代理`);
   const summary = readMetadataString(message, ["summary"]) || message.content.trim();
 
   return (
@@ -1762,7 +1877,7 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
             const description = readString(task.attention) || readString(task.summary) || readString(task.errorMessage) || resultSummary;
             const duration = readRecordNumber(task, ["durationMs"]);
             const meta = displayAgentMeta(worker, agentType, duration);
-            const title = displayAgentTaskTitle(readString(task.title), id, agentType, index);
+            const title = displayAgentTaskRecordTitle(task, id, index);
             return (
               <article key={id} data-tone={agentTaskTone(taskStatus)}>
                 <Circle size={10} />
@@ -1804,7 +1919,7 @@ export const CleanPlanUpdateBlock = memo(function CleanPlanUpdateBlock({
       }
       const record = recordFromValue(entry);
       if (!record) return null;
-      const title =
+      const title = displayPlanSubtaskTitle(record, index) ||
         readString(record.title) ||
         readString(record.subtaskTitle) ||
         readString(record.name) ||
@@ -1840,7 +1955,7 @@ export const CleanPlanUpdateBlock = memo(function CleanPlanUpdateBlock({
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <ListChecks size={15} />
-        <strong>{readMetadataString(message, ["title"]) || "计划更新"}</strong>
+        <strong>{displayGroupTitle(message, "计划更新")}</strong>
         {summary ? <span>{compactText(summary, 180)}</span> : null}
         <StatusChip status={readMetadataString(message, ["status"]) || message.status || "recorded"} />
       </button>
@@ -2339,14 +2454,18 @@ function ApprovalRuntimeBlock({
   const structured = kind === "plan" || Boolean(item.completionEvidence);
   const [expanded, setExpanded] = useState(() => shouldExpandByDefault(item) && !structured);
   const files = useMemo(() => approvalFileSummaries(item), [item]);
-  const output = item.rawDetail || item.code || "";
+  const hasDiff = Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
+  const statusForDiagnostics = item.status?.toLowerCase() ?? "";
+  const diagnosticOutput = !hasDiff && ["failed", "error", "blocked", "rejected"].includes(statusForDiagnostics)
+    ? [item.rawDetail, item.code].find((value) => value && !looksLikeInternalPayloadText(value)) ?? ""
+    : "";
+  const output = hasDiff ? item.rawDetail || "" : diagnosticOutput;
   const canApprove = Boolean(
     item.sourceId &&
       ["pending", "waiting", "waiting_approval", "queued"].includes(item.status?.toLowerCase() ?? ""),
   );
   const canAlwaysAllow = Boolean(onApproveAlways && item.supportsAlwaysAllow !== false);
   const busy = Boolean(item.sourceId && busyId === item.sourceId);
-  const hasDiff = Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
   const approvalStatus = item.status?.toLowerCase() ?? "";
   const approvalEyebrow = canApprove
     ? "需要确认"
@@ -2413,7 +2532,7 @@ function ApprovalRuntimeBlock({
       {output || hasDiff ? (
         <button type="button" className="hc-diff-toggle" onClick={() => setExpanded((open) => !open)}>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          {expanded ? "收起详情" : hasDiff ? "查看差异" : structured ? "查看原始详情" : "查看详情"}
+          {expanded ? "收起详情" : hasDiff ? "查看差异" : "查看详情"}
         </button>
       ) : null}
       {expanded && hasDiff ? <DiffPreview item={item} onCopyRuntimeText={onCopyRuntimeText} onOpenFile={onOpenFile} /> : null}
@@ -2595,7 +2714,16 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
 }) {
   const [expanded, setExpanded] = useState(shouldExpandByDefault(item));
   const files = useMemo(() => patchFileSummaries(item), [item]);
-  const output = item.kind === "command" ? buildCommandOutput(item) : item.rawDetail || item.code || "";
+  const normalizedStatus = item.status?.toLowerCase() ?? "";
+  const needsDiagnostics = ["failed", "error", "blocked", "cancelled", "rejected"].includes(normalizedStatus);
+  const hasRuntimeDiff = Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
+  const output = item.kind === "command"
+    ? buildCommandOutput(item)
+    : hasRuntimeDiff
+      ? item.rawDetail || ""
+      : needsDiagnostics
+        ? [item.rawDetail, item.code].find((value) => value && !looksLikeInternalPayloadText(value)) ?? ""
+        : "";
   const tone = statusTone(item.status);
   const busy = Boolean(item.sourceId && busyId === item.sourceId);
   const canApprove = item.kind === "approval" && item.sourceId && ["pending", "waiting", "waiting_approval", "queued"].includes(item.status?.toLowerCase() ?? "");
@@ -2724,9 +2852,16 @@ function CleanWorklogRuntimeRow({
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const output = item.kind === "command" ? buildCommandOutput(item) : item.rawDetail || item.code || "";
+  const normalizedStatus = item.status?.toLowerCase() ?? "";
+  const needsDiagnostics = ["failed", "error", "blocked", "cancelled", "rejected"].includes(normalizedStatus);
+  const commandOutput = item.kind === "command" ? buildCommandOutput(item) : "";
+  const output = item.kind === "command"
+    ? commandOutput
+    : needsDiagnostics
+      ? [item.rawDetail, item.code].find((value) => value && !looksLikeInternalPayloadText(value)) ?? ""
+      : "";
   const summary = runtimeSummary(item);
-  const detail = output || item.code || item.rawDetail || summary;
+  const detail = output || (needsDiagnostics ? summary : "");
   const kindName = runtimeKindName(item);
   return (
     <article className="hc-worklog-row" data-tone={statusTone(item.status)} data-kind={kindName} data-quiet={isQuietRuntime(item) ? "true" : "false"} data-depth={depth}>

@@ -72,8 +72,6 @@ class ChildTaskMixin:
         context["runtimeRole"] = child_role
         context["_child_worker"] = True
         context["_child_clean_context"] = clean_child_context
-        context["_skip_context_policy_advisor"] = True
-        context["_skip_completion_advisor"] = True
         context["_worker_budget"] = params.get("budget") if isinstance(params.get("budget"), dict) else {}
         preferred_cwd = self._child_preferred_cwd(profile)
         if preferred_cwd:
@@ -158,7 +156,6 @@ class ChildTaskMixin:
         if active_worktree is None and child_can_write:
             worktree_routing = {
                 **child_routing,
-                "scenario": "multi_step_task",
                 "worktreeBindingRequired": True,
             }
             worktree = self._maybe_bind_task_worktree(
@@ -226,41 +223,14 @@ class ChildTaskMixin:
                     "budget": budget.to_metadata(),
                 }
 
-            tool_results = self._run_minimal_loop(
+            failed_task = self._fail_task(
                 session_id=session["id"],
                 task=runtime_task,
-                goal=child_goal,
-                context=context,
-                budget=budget,
+                summary=f"Unexpected child ReAct status: {react_result.get('status')}",
+                error_code="CHILD_REACT_UNEXPECTED_STATUS",
+                structured_result={"reactResult": react_result},
             )
-            if runtime_task["status"] == "waiting_approval":
-                self._tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_approval"})
-                return self._waiting_child_task_response(
-                    task=runtime_task,
-                    summary="Child worker is waiting for parent approval.",
-                    budget=budget,
-                )
-            summary = self._provider.summarize_findings(
-                goal=child_goal,
-                context=context,
-                tool_results=tool_results,
-            )
-            if summary:
-                self._publish(
-                    session_id=session["id"],
-                    task=runtime_task,
-                    event_type="assistant.token",
-                    payload={"delta": summary},
-                )
-            completed_task = self._complete_task(
-                session_id=session["id"],
-                task=runtime_task,
-                summary=summary,
-                context=context,
-                tool_results=tool_results,
-                skip_drain=True,
-            )
-            final_status = str(completed_task.get("status") or "completed")
+            final_status = str(failed_task.get("status") or "failed")
             self._tracer.end_span(
                 span.span_id,
                 status="ok" if final_status == "completed" else "error",
@@ -268,8 +238,8 @@ class ChildTaskMixin:
             )
             return {
                 "status": final_status,
-                "task": completed_task,
-                "summary": completed_task.get("resultSummary") or summary,
+                "task": failed_task,
+                "summary": failed_task.get("resultSummary") or "Child ReAct loop did not produce a terminal result.",
                 "budget": budget.to_metadata(),
             }
         except Exception as exc:  # noqa: BLE001

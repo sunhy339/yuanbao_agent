@@ -6,9 +6,8 @@ Covers:
   3. _parse_turn_result inference (continue_with_tools, final_answer, failed).
   4. _parse_turn_result explicit decision detection (ask_user, needs_approval, blocked_by_policy).
   5. _parse_provider_response backward compatibility.
-  6. DecisionAdvisor registry entries for react_turn_decision and completion_decision.
-  7. Store schema: provider_turns has turn_decision and thought_summary columns.
-  8. agent.decision.react_turn event published during ReAct loop.
+  6. Store schema: provider_turns has turn_decision and thought_summary columns.
+  7. agent.decision.react_turn event published during ReAct loop.
 """
 from __future__ import annotations
 
@@ -20,13 +19,8 @@ import pytest
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
-from local_agent_runtime.policy.decision_advisor import (
-    get_decision_kind,
-    list_decision_kinds,
-)
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.react.types import ProviderTurnResult, TurnDecision
-from local_agent_runtime.router import MetaRouter
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools import build_builtin_tools
@@ -181,10 +175,7 @@ class TestParseTurnResultInference:
         assert result.final_answer == "# Final\n\n- **Done**"
         assert result.thought_summary == ""
 
-    def test_fallback_inferred_when_allowed(self, orchestrator: Orchestrator) -> None:
-        # No tool_calls, no final_answer, but allow_fallback=True and provider has fallback
-        orchestrator._provider.choose_tool_sequence = MagicMock()
-        orchestrator._provider.summarize_findings = MagicMock()
+    def test_empty_response_fails_even_when_legacy_fallback_flag_is_allowed(self, orchestrator: Orchestrator) -> None:
         response = {"message": ""}
         result = orchestrator._parse_turn_result(
             response, allow_fallback=True, allow_plain_message_final=False,
@@ -289,7 +280,7 @@ class TestParseTurnResultExplicit:
         result = orchestrator._parse_turn_result(
             response, allow_fallback=False, allow_plain_message_final=True,
         )
-        # Falls back to inference: has final_answer → FINAL_ANSWER
+        # Falls back to inference: has final_answer â?FINAL_ANSWER
         assert result.decision == TurnDecision.FINAL_ANSWER
 
     def test_camel_case_fields_recognized(self, orchestrator: Orchestrator) -> None:
@@ -306,43 +297,6 @@ class TestParseTurnResultExplicit:
         assert result.thought_summary == "Quick summary"
         assert result.why_complete == "All done"
         assert result.remaining_risks == ["minor risk"]
-
-
-# ---------------------------------------------------------------------------
-# Test: DecisionAdvisor registry
-# ---------------------------------------------------------------------------
-
-class TestDecisionAdvisorRegistry:
-    """Verify react_turn_decision and completion_decision are registered."""
-
-    def test_react_turn_decision_registered(self) -> None:
-        entry = get_decision_kind("react_turn_decision")
-        assert entry is not None
-        assert "goal" in entry.required_input_fields
-        assert "step" in entry.required_input_fields
-        assert "decision" in entry.allowed_proposal_schema
-        assert entry.trace_event == "agent.decision.react_turn"
-
-    def test_completion_decision_registered(self) -> None:
-        entry = get_decision_kind("completion_decision")
-        assert entry is not None
-        assert "goal" in entry.required_input_fields
-        assert "summary" in entry.required_input_fields
-        assert "is_complete" in entry.allowed_proposal_schema
-        assert entry.trace_event == "agent.decision.completion"
-
-    def test_product_surface_decision_registered(self) -> None:
-        entry = get_decision_kind("product_surface_decision")
-        assert entry is not None
-        assert "objective_signals" in entry.required_input_fields
-        assert "surface_type" in entry.allowed_proposal_schema
-        assert entry.trace_event == "agent.decision.product_surface"
-
-    def test_runtime_decision_kinds_in_list(self) -> None:
-        kinds = list_decision_kinds()
-        assert "react_turn_decision" in kinds
-        assert "completion_decision" in kinds
-        assert "product_surface_decision" in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -523,14 +477,10 @@ class TestReactTurnEvent:
 
     def test_event_published_on_completion(self, tmp_path: Any) -> None:
         mock_provider = MagicMock()
-        # Call #0: MetaRouter routing call (consumed by meta_router classify)
-        # Call #1: ReAct step 0 — tool call (read_file)
-        # Call #2: ReAct step 1 — final answer
+        # Call #0: ReAct step 0 - tool call (read_file)
+        # Call #1: ReAct step 0 â?tool call (read_file)
+        # Call #2: ReAct step 1 â?final answer
         mock_provider.generate.side_effect = [
-            {
-                "message": '{"scenario": "free_form", "confidence": 0.9}',
-                "usage": {"total_tokens": 10},
-            },
             {
                 "message": "I'll read the file.",
                 "tool_calls": [{

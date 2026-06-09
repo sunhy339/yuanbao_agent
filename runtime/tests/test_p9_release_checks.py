@@ -120,6 +120,7 @@ class TestEventCompatAssistantToken:
         assert "yuanbao" not in token_event
         delta_event = next(event for event in raw_events if event["type"] == "message.delta")
         assert delta_event["visibility"] == "chat"
+        assert delta_event["payload"]["messageId"] == "msg_42"
         assert delta_event["yuanbao"] == {"type": "content_delta", "text": "hello"}
         assert delta_event["hahaCc"] == {"type": "content_delta", "text": "hello"}
         assert "suppressRealtimeFlat" not in delta_event["payload"].get("_bridge", {})
@@ -280,6 +281,134 @@ class TestEventCompatAssistantToken:
             "type": "content_delta",
             "text": "hello",
         }
+
+    def test_text_blocks_keep_monotonic_ids_across_tool_calls(self, tmp_path: Any) -> None:
+        """Text chunks before and after tool calls must not overwrite the first assistant block."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_42"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="assistant.token",
+            payload={"delta": "first"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.started",
+            payload={"toolCallId": "call_1", "toolName": "read_file", "arguments": {"path": "a.md"}, "target": "a.md"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.completed",
+            payload={"toolCallId": "call_1", "toolName": "read_file", "result": {"content": "ok"}, "target": "a.md"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="assistant.token",
+            payload={"delta": "second"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.started",
+            payload={"toolCallId": "call_2", "toolName": "read_file", "arguments": {"path": "b.md"}, "target": "b.md"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.completed",
+            payload={"toolCallId": "call_2", "toolName": "read_file", "result": {"content": "ok"}, "target": "b.md"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="assistant.token",
+            payload={"delta": "third"},
+        )
+
+        text_starts = [
+            event.payload
+            for event in collected
+            if event.type == "content_start" and event.payload.get("blockType") == "text"
+        ]
+        deltas = [event.payload for event in collected if event.type == "message.delta"]
+
+        assert [payload.get("blockIndex") for payload in text_starts] == [0, 1, 2]
+        assert [payload.get("contentBlockId") for payload in text_starts] == [
+            "msg_42:text:0",
+            "msg_42:text:1",
+            "msg_42:text:2",
+        ]
+        assert [payload.get("blockIndex") for payload in deltas] == [0, 1, 2]
+        assert [payload.get("contentBlockId") for payload in deltas] == [
+            "msg_42:text:0",
+            "msg_42:text:1",
+            "msg_42:text:2",
+        ]
+
+    def test_text_block_state_recovers_after_resume(self, tmp_path: Any) -> None:
+        """Approval/resume paths reload tasks, so block numbering must recover from trace history."""
+        runtime = _make_runtime(tmp_path)
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        workspace = runtime.store.upsert_workspace(str(workspace_root))
+        session = runtime.store.create_session(workspace_id=workspace["id"], title="resume")
+        task = runtime.store.create_task(
+            session_id=session["id"],
+            task_type="chat",
+            goal="stream",
+            plan=[],
+            status="running",
+        )
+        task["activeAssistantMessageId"] = "msg_42"
+
+        runtime.orchestrator._publish(
+            session_id=session["id"],
+            task=task,
+            event_type="assistant.token",
+            payload={"delta": "first"},
+        )
+        runtime.orchestrator._publish(
+            session_id=session["id"],
+            task=task,
+            event_type="tool.started",
+            payload={"toolCallId": "call_1", "toolName": "write_file", "arguments": {"path": "a.md"}, "target": "a.md"},
+        )
+        runtime.orchestrator._publish(
+            session_id=session["id"],
+            task=task,
+            event_type="tool.completed",
+            payload={"toolCallId": "call_1", "toolName": "write_file", "result": {"content": "ok"}, "target": "a.md"},
+        )
+        runtime.orchestrator._chat_text_stream_state = {}  # noqa: SLF001
+
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+        reloaded_task = runtime.store.get_task({"taskId": task["id"]})["task"]
+        reloaded_task["activeAssistantMessageId"] = "msg_42"
+        runtime.orchestrator._publish(
+            session_id=session["id"],
+            task=reloaded_task,
+            event_type="assistant.token",
+            payload={"delta": "second"},
+        )
+
+        text_start = next(
+            event.payload
+            for event in collected
+            if event.type == "content_start" and event.payload.get("blockType") == "text"
+        )
+        delta = next(event.payload for event in collected if event.type == "message.delta")
+        assert text_start["blockIndex"] == 1
+        assert text_start["contentBlockId"] == "msg_42:text:1"
+        assert delta["blockIndex"] == 1
+        assert delta["contentBlockId"] == "msg_42:text:1"
 
     def test_non_token_events_no_extra_delta(self, tmp_path: Any) -> None:
         """Non-assistant.token events should NOT emit an extra message.delta."""
@@ -784,8 +913,8 @@ class TestEventCompatAssistantToken:
         assert "rawResultStored" not in encoded_visible
         assert "rawResultSizeChars" not in encoded_visible
 
-    def test_provider_request_emits_trace_only_thinking_status(self, tmp_path: Any) -> None:
-        """Provider requests emit runtime status for trace, not flat chat thinking."""
+    def test_provider_request_emits_haha_cc_thinking_status(self, tmp_path: Any) -> None:
+        """Provider requests emit haha-cc status without turning it into assistant thinking."""
         runtime = _make_runtime(tmp_path)
         collected: list[RuntimeEvent] = []
         runtime.event_bus.subscribe(collected.append)
@@ -804,13 +933,16 @@ class TestEventCompatAssistantToken:
         assert status_events[0].payload["state"] == "thinking"
         assert status_events[0].payload["verb"] == "model"
         assert status_events[0].payload["step"] == 2
-        assert status_events[0].visibility == "trace"
-        assert status_events[0].payload["_bridge"]["suppressRealtimeFlat"] is True
-        assert status_events[0].payload["_bridge"]["suppressChatReplay"] is True
-        assert runtime.event_bus.as_payload(status_events[0]).get("yuanbao") is None
+        assert status_events[0].visibility == "chat"
+        assert "_bridge" not in status_events[0].payload
+        assert runtime.event_bus.as_payload(status_events[0])["yuanbao"] == {
+            "type": "status",
+            "state": "thinking",
+            "verb": "model",
+        }
 
     def test_task_lifecycle_emits_ordered_status_updates(self, tmp_path: Any) -> None:
-        """Root lifecycle stays panel-only while runtime status stays out of flat chat."""
+        """Root lifecycle stays panel-only while status follows the haha-cc flat protocol."""
         runtime = _make_runtime(tmp_path)
         collected: list[RuntimeEvent] = []
         runtime.event_bus.subscribe(collected.append)
@@ -855,10 +987,12 @@ class TestEventCompatAssistantToken:
         ]
         assert status_events[0].payload["verb"] == "read_file"
         assert status_events[1].payload["verb"] == "write_file"
-        assert all(event.visibility == "trace" for event in status_events)
-        assert all(event.payload["_bridge"]["suppressRealtimeFlat"] is True for event in status_events)
-        assert all(event.payload["_bridge"]["suppressChatReplay"] is True for event in status_events)
-        assert all(runtime.event_bus.as_payload(event).get("yuanbao") is None for event in status_events)
+        assert all(event.visibility == "chat" for event in status_events)
+        assert [runtime.event_bus.as_payload(event)["yuanbao"] for event in status_events] == [
+            {"type": "status", "state": "tool_executing", "verb": "read_file"},
+            {"type": "status", "state": "permission_pending", "verb": "write_file"},
+            {"type": "status", "state": "idle"},
+        ]
         assert next(event for event in collected if event.type == "task.started").visibility == "panel"
         assert next(event for event in collected if event.type == "task.completed").visibility == "panel"
         assert next(event for event in collected if event.type == "tool.started").visibility == "trace"
@@ -966,7 +1100,7 @@ class TestEventCompatAssistantToken:
         task = {"id": "t1", "role": "root", "goal": "g", "activeAssistantMessageId": "msg_1"}
         cases = [
             ("agent.decision.completion", {"decision": "complete"}, "trace"),
-            ("task.routing.decided", {"strategy": "react_standard"}, "trace"),
+            ("runtime.context.prepared", {"mode": "model_first"}, "trace"),
             ("memory_event", {"summary": "remembered"}, "panel"),
             ("task.planning.decomposed", {"subtaskCount": 2}, "panel"),
             ("runtime.error", {"summary": "diagnostic only"}, "trace"),
@@ -988,7 +1122,7 @@ class TestEventCompatAssistantToken:
             assert raw_events[event_type].visibility == visibility
 
     def test_approval_resolved_emits_trace_only_idle_status(self, tmp_path: Any) -> None:
-        """Approval resolution records runtime idle status without a flat chat frame."""
+        """Approval resolution records haha-cc idle status without rendering chat text."""
         runtime = _make_runtime(tmp_path)
         collected: list[RuntimeEvent] = []
         runtime.event_bus.subscribe(collected.append)
@@ -1004,10 +1138,11 @@ class TestEventCompatAssistantToken:
         status_events = [event for event in collected if event.type == "status"]
         assert len(status_events) == 1
         assert status_events[0].payload["state"] == "idle"
-        assert status_events[0].visibility == "trace"
-        assert status_events[0].payload["_bridge"]["suppressRealtimeFlat"] is True
-        assert status_events[0].payload["_bridge"]["suppressChatReplay"] is True
-        assert runtime.event_bus.as_payload(status_events[0]).get("yuanbao") is None
+        assert status_events[0].visibility == "chat"
+        assert runtime.event_bus.as_payload(status_events[0])["yuanbao"] == {
+            "type": "status",
+            "state": "idle",
+        }
 
     def test_approval_resolved_emits_resolved_permission_request(self, tmp_path: Any) -> None:
         """Non-computer approvals resolve through chat-compat permission_request too."""

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -11,48 +10,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from ..policy.permission_engine import PermissionEngine, PermissionRequest
-from ..policy.tool_policy_resolver import TOOL_CAPABILITIES, ToolPolicyResolver
 from ..services.runtime_dependencies import resolve_node_executable
-from ..tools._shared import approval_request, normalize_shell
-from ..tools.run_command import _powershell_execution_command
-from .output_bridges import internal_completion_gate_bridge
-
 logger = logging.getLogger(__name__)
-
-_ADVISOR_EVIDENCE_ADAPTER_REGISTRY: tuple[dict[str, Any], ...] = (
-    {
-        "adapterKind": "browser_inspection_adapter",
-        "hints": ("browser", "page", "rendered", "dom", "screenshot"),
-        "toolCandidates": ("browser", "web_fetch"),
-        "confidence": 0.9,
-    },
-    {
-        "adapterKind": "document_render_adapter",
-        "hints": ("document", "render", "docx", "pdf", "markdown", "readme"),
-        "toolCandidates": ("read_file",),
-        "confidence": 0.6,
-    },
-    {
-        "adapterKind": "migration_dry_run_adapter",
-        "hints": ("migration", "dry-run", "dry run", "schema"),
-        "toolCandidates": (),
-        "confidence": 0.6,
-    },
-    {
-        "adapterKind": "benchmark_adapter",
-        "hints": ("benchmark", "performance", "latency", "throughput"),
-        "toolCandidates": (),
-        "confidence": 0.6,
-    },
-    {
-        "adapterKind": "external_service_probe_adapter",
-        "hints": ("service", "api", "probe", "endpoint", "webhook"),
-        "toolCandidates": ("web_fetch", "browser"),
-        "confidence": 0.85,
-    },
-)
-
 
 def _normalize_completion_text_for_merge(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
@@ -181,23 +140,6 @@ class TaskLifecycleMixin:
 
         # --- Reflection phase ---
         reflection_data = None
-        reflection_result = None if skip_reflection else self._reflect_on_result(
-            session_id=session_id,
-            task=task,
-            goal=task.get("goal", ""),
-            summary=final_summary,
-            context=context or {},
-        )
-        if reflection_result is not None:
-            reflection_data = self._reflector.to_dict(reflection_result)
-            if reflection_result.improved_summary:
-                final_summary = self._completion_summary_with_required_anchors(
-                    summary=reflection_result.improved_summary,
-                    task=task,
-                    context=context or {},
-                )
-                completion_evidence["summaryPreview"] = final_summary[:500]
-        # --- End reflection ---
 
         task["plan"] = self._planner.advance(
             task.get("plan") or [],
@@ -207,37 +149,6 @@ class TaskLifecycleMixin:
         self._validate_task_transition(task["status"], "completed", task["id"], silent=True)
         if task["status"] in {"completed", "failed", "cancelled"}:
             return {**task, "resultSummary": final_summary}
-        # --- Product surface advisory ---
-        self._apply_product_surface_advisor(
-            session_id=session_id,
-            task=task,
-            summary=final_summary,
-            context=context or {},
-            completion_evidence=completion_evidence,
-            tool_results=tool_results or [],
-        )
-        # --- Completion decision advisory ---
-        completion_advice = self._consult_completion_advisor(
-            task,
-            final_summary,
-            context or {},
-            completion_evidence=completion_evidence,
-        )
-        if completion_advice is not None:
-            self._record_completion_advisor_proposal(
-                session_id=session_id,
-                task=task,
-                summary=final_summary,
-                completion_advice=completion_advice,
-                completion_evidence=completion_evidence,
-            )
-            completion_evidence["completionAdvisor"] = completion_advice
-            refreshed_audit = self._completion_audit_context(
-                task=task,
-                completion_evidence=completion_evidence,
-            )
-            if refreshed_audit:
-                completion_evidence["audit"] = refreshed_audit
         # Build structured result from task fields
         structured_result = {
             "summary": final_summary,
@@ -270,21 +181,7 @@ class TaskLifecycleMixin:
                 skip_drain=skip_drain,
             )
         if completion_gate["action"] == "review":
-            pending_evidence_approvals = self._pending_advisor_evidence_approval_ids(completion_evidence)
-            if completion_gate.get("decision") == "advisor_evidence_requested" and pending_evidence_approvals:
-                return self._request_advisor_evidence_execution_approval(
-                    session_id=session_id,
-                    task=task,
-                    summary=final_summary,
-                    structured_result=structured_result,
-                    completion_evidence=completion_evidence,
-                    reason=completion_gate["reason"],
-                    gate_status=completion_gate.get("gateStatus"),
-                    decision=completion_gate.get("decision"),
-                    approval_ids=pending_evidence_approvals,
-                    skip_drain=skip_drain,
-                )
-            return self._handle_internal_completion_gate(
+            return self._record_completion_review_trace_and_finalize(
                 session_id=session_id,
                 task=task,
                 summary=final_summary,
@@ -292,7 +189,6 @@ class TaskLifecycleMixin:
                 reflection_data=reflection_data,
                 structured_result=structured_result,
                 completion_evidence=completion_evidence,
-                completion_advice=completion_advice,
                 tool_results=tool_results,
                 reason=completion_gate["reason"],
                 risk=completion_gate.get("risk"),
@@ -339,7 +235,6 @@ class TaskLifecycleMixin:
             structured_result=structured_result,
             completion_evidence=completion_evidence,
             reflection_data=reflection_data,
-            completion_advice=completion_advice,
             tool_results=tool_results,
             skip_drain=skip_drain,
         )
@@ -353,7 +248,6 @@ class TaskLifecycleMixin:
         structured_result: dict[str, Any],
         completion_evidence: dict[str, Any],
         reflection_data: dict[str, Any] | None,
-        completion_advice: dict[str, Any] | None,
         tool_results: list[dict[str, Any]] | None,
         skip_drain: bool,
     ) -> dict[str, Any]:
@@ -411,15 +305,6 @@ class TaskLifecycleMixin:
             "reflection": reflection_data,
             "remainingRisks": runtime_task.get("risks") or [],
         }
-        if completion_advice is not None:
-            completion_payload["advisorOutcome"] = completion_advice["source"]
-            completion_payload["advisorAccepted"] = completion_advice["accepted"]
-            if completion_advice.get("proposalRecordId"):
-                completion_payload["advisorProposalId"] = completion_advice["proposalRecordId"]
-            if completion_advice.get("rationale"):
-                completion_payload["advisorRationale"] = completion_advice["rationale"]
-            if completion_advice.get("fallback_reason"):
-                completion_payload["advisorFallbackReason"] = completion_advice["fallback_reason"]
         final_completion_audit = (
             completion_evidence.get("audit")
             if isinstance(completion_evidence.get("audit"), dict)
@@ -465,7 +350,7 @@ class TaskLifecycleMixin:
             self._drain_session_queue(session_id)
         return runtime_task
 
-    def _handle_internal_completion_gate(
+    def _record_completion_review_trace_and_finalize(
         self,
         *,
         session_id: str,
@@ -475,7 +360,6 @@ class TaskLifecycleMixin:
         reflection_data: dict[str, Any] | None,
         structured_result: dict[str, Any],
         completion_evidence: dict[str, Any],
-        completion_advice: dict[str, Any] | None,
         tool_results: list[dict[str, Any]] | None,
         reason: str,
         risk: str | None,
@@ -483,9 +367,8 @@ class TaskLifecycleMixin:
         decision: str | None,
         skip_drain: bool,
     ) -> dict[str, Any]:
-        status = gate_status or "internal_review"
+        status = gate_status or "review_recorded"
         gate_decision = decision or status
-        internal_gate_bridge = internal_completion_gate_bridge()
         review_structured_result = {
             **structured_result,
             "completionGate": {
@@ -494,33 +377,11 @@ class TaskLifecycleMixin:
                 "reason": reason,
                 "risk": risk,
                 "internal": True,
+                "terminal": False,
+                "defaultBehavior": "record_only",
             },
         }
         review_structured_result["completionEvidence"] = completion_evidence
-        advisor_requested_evidence = completion_evidence.get("advisorRequestedEvidence")
-        if isinstance(advisor_requested_evidence, list):
-            review_structured_result["completionGate"]["advisorRequestedEvidence"] = advisor_requested_evidence
-        advisor_evidence_approvals = completion_evidence.get("advisorEvidenceApprovals")
-        if isinstance(advisor_evidence_approvals, list):
-            review_structured_result["completionGate"]["advisorEvidenceApprovals"] = advisor_evidence_approvals
-        if self._completion_gate_requires_continuation(
-            gate_status=status,
-            decision=gate_decision,
-            completion_evidence=completion_evidence,
-            context=context,
-        ):
-            return self._continue_after_internal_completion_gate(
-                session_id=session_id,
-                task=task,
-                summary=summary,
-                structured_result=review_structured_result,
-                completion_evidence=completion_evidence,
-                reason=reason,
-                risk=risk,
-                gate_status=status,
-                decision=gate_decision,
-                skip_drain=skip_drain,
-            )
         self._publish(
             session_id=session_id,
             task=task,
@@ -529,8 +390,9 @@ class TaskLifecycleMixin:
                 "decision": gate_decision,
                 "whyBlocked": reason,
                 "completionEvidence": completion_evidence,
+                "completionGate": review_structured_result["completionGate"],
                 "internal": True,
-                "_bridge": internal_gate_bridge,
+                "recordOnly": True,
             },
             visibility="trace",
         )
@@ -541,294 +403,14 @@ class TaskLifecycleMixin:
             structured_result=review_structured_result,
             completion_evidence=completion_evidence,
             reflection_data=reflection_data,
-            completion_advice=completion_advice,
             tool_results=tool_results,
             skip_drain=skip_drain,
         )
-
-    def _continue_after_internal_completion_gate(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        summary: str,
-        structured_result: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        reason: str,
-        risk: str | None,
-        gate_status: str,
-        decision: str,
-        skip_drain: bool,
-    ) -> dict[str, Any]:
-        continued_structured_result = {
-            **structured_result,
-            "status": "waiting_runtime_work",
-            "completionGate": {
-                **(structured_result.get("completionGate") if isinstance(structured_result.get("completionGate"), dict) else {}),
-                "status": gate_status,
-                "decision": "continue_after_internal_review",
-                "reason": reason,
-                "risk": risk,
-                "internal": True,
-            },
-        }
-        if task.get("status") != "running":
-            self._validate_task_transition(task["status"], "running", task["id"], silent=True)
-        continued = self._store.update_task(
-            task_id=task["id"],
-            status="running",
-            plan=task.get("plan") or [],
-            summary=summary,
-            result_summary=summary,
-            structured_result=continued_structured_result,
-        )
-        runtime_task = {
-            **continued,
-            "plan": task.get("plan") or [],
-            "resultSummary": summary,
-        }
-        internal_gate_bridge = internal_completion_gate_bridge()
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="agent.decision.completion",
-            payload={
-                "decision": "continue_after_internal_review",
-                "gateStatus": gate_status,
-                "reason": reason,
-                "risk": risk,
-                "completionEvidence": completion_evidence,
-                "internal": True,
-                "_bridge": internal_gate_bridge,
-            },
-            visibility="trace",
-        )
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="task.runtime_work_waiting",
-            payload={
-                "status": "running",
-                "detail": reason,
-                "completionGate": continued_structured_result["completionGate"],
-                "internalGate": "completion_review",
-            },
-        )
-        scheduled = False
-        if not skip_drain:
-            scheduled = self._schedule_internal_completion_continuation(
-                task=runtime_task,
-                summary=summary,
-                completion_evidence=completion_evidence,
-                reason=reason,
-                gate_status=gate_status,
-                decision=decision,
-            )
-        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="running")
-        if not scheduled and not skip_drain:
-            self._drain_session_queue(session_id)
-        return runtime_task
-
-    def _schedule_internal_completion_continuation(
-        self,
-        *,
-        task: dict[str, Any],
-        summary: str,
-        completion_evidence: dict[str, Any],
-        reason: str,
-        gate_status: str,
-        decision: str,
-    ) -> bool:
-        if self._completion_gate_waits_for_external_runtime_work(completion_evidence):
-            self._publish(
-                session_id=task["sessionId"],
-                task=task,
-                event_type="task.continuation.deferred",
-                payload={
-                    "status": task.get("status"),
-                    "reason": "waiting_for_pending_runtime_work",
-                    "gateStatus": gate_status,
-                    "internalGate": "completion_review",
-                },
-            )
-            return False
-        continuation_goal = self._internal_completion_continuation_goal(
-            task=task,
-            summary=summary,
-            completion_evidence=completion_evidence,
-            reason=reason,
-            gate_status=gate_status,
-            decision=decision,
-        )
-        routing = self._internal_completion_continuation_routing(
-            task=task,
-            completion_evidence=completion_evidence,
-            gate_status=gate_status,
-            decision=decision,
-        )
-        try:
-            context = self._context_builder.build(
-                session_id=task["sessionId"],
-                goal=continuation_goal,
-                lightweight=True,
-            )
-            context["routing"] = routing
-            context["completionReviewContinuation"] = {
-                "gateStatus": gate_status,
-                "decision": decision,
-                "summary": summary,
-                "internal": True,
-            }
-            updated = self._store.update_task(
-                task_id=task["id"],
-                status=task.get("status") or "running",
-                plan=task.get("plan") or [],
-                current_step=task.get("currentStep"),
-                routing=routing,
-            )
-            runtime_task = {**task, **updated, "routing": routing, "plan": task.get("plan") or []}
-            self._publish(
-                session_id=runtime_task["sessionId"],
-                task=runtime_task,
-                event_type="task.continuation.started",
-                payload={
-                    "status": runtime_task.get("status"),
-                    "reason": "completion_gate_requires_more_work",
-                    "gateStatus": gate_status,
-                    "internalGate": "completion_review",
-                },
-            )
-            self._start_background_message(
-                session_id=runtime_task["sessionId"],
-                task=runtime_task,
-                goal=continuation_goal,
-                context=context,
-                routing=routing,
-                skill_id=routing.get("skill_id") if isinstance(routing.get("skill_id"), str) else None,
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to schedule internal completion continuation for task=%s: %s", task.get("id"), exc)
-            self._publish(
-                session_id=task["sessionId"],
-                task=task,
-                event_type="task.continuation.failed",
-                payload={
-                    "status": task.get("status"),
-                    "reason": str(exc),
-                    "gateStatus": gate_status,
-                    "internalGate": "completion_review",
-                },
-            )
-            return False
-
-    def _completion_gate_requires_continuation(
-        self,
-        *,
-        gate_status: str,
-        decision: str,
-        completion_evidence: dict[str, Any],
-        context: dict[str, Any],
-    ) -> bool:
-        continuation_context = context.get("completionReviewContinuation") if isinstance(context, dict) else None
-        if isinstance(continuation_context, dict) and continuation_context.get("internal") is True:
-            return False
-        normalized_status = gate_status.strip().casefold()
-        normalized_decision = decision.strip().casefold()
-        continuation_statuses = {
-            "advisor_needs_review",
-            "advisor_evidence_requested",
-            "needs_workspace_evidence",
-        }
-        if normalized_status in continuation_statuses:
-            return True
-        if normalized_decision in continuation_statuses:
-            return True
-        advice = completion_evidence.get("completionAdvisor")
-        if isinstance(advice, dict) and advice.get("accepted") is True:
-            payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-            confidence = advice.get("confidence")
-            if payload.get("is_complete") is False and isinstance(confidence, (int, float)) and confidence >= 0.75:
-                return True
-        return False
 
     def _completion_gate_waits_for_external_runtime_work(self, completion_evidence: dict[str, Any]) -> bool:
         return bool(
             self._completion_pending_approval_items(completion_evidence)
             or self._completion_unresolved_child_tasks(completion_evidence)
-        )
-
-    def _internal_completion_continuation_routing(
-        self,
-        *,
-        task: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        gate_status: str,
-        decision: str,
-    ) -> dict[str, Any]:
-        routing = deepcopy(task.get("routing") or {})
-        routing["strategy"] = "react_standard"
-        routing["enable_planning"] = False
-        routing["continuation"] = {
-            "kind": "completion_review",
-            "gateStatus": gate_status,
-            "decision": decision,
-            "internal": True,
-        }
-        workflow = dict(routing.get("mainWorkflow") or {})
-        workflow["continuation"] = routing["continuation"]
-        workflow.setdefault("convergence", {})
-        routing["mainWorkflow"] = workflow
-        routing["completionEvidenceSnapshot"] = {
-            "status": completion_evidence.get("status"),
-            "evidenceLevel": completion_evidence.get("evidenceLevel"),
-            "counts": completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {},
-        }
-        return routing
-
-    @staticmethod
-    def _internal_completion_continuation_goal(
-        *,
-        task: dict[str, Any],
-        summary: str,
-        completion_evidence: dict[str, Any],
-        reason: str,
-        gate_status: str,
-        decision: str,
-    ) -> str:
-        requested = completion_evidence.get("advisorRequestedEvidence")
-        requested_lines: list[str] = []
-        if isinstance(requested, list):
-            for item in requested[:5]:
-                if not isinstance(item, dict):
-                    continue
-                item_summary = str(item.get("summary") or item.get("kind") or "").strip()
-                status = str(item.get("status") or "").strip()
-                if item_summary:
-                    requested_lines.append(f"- {item_summary}" + (f" ({status})" if status else ""))
-        if not requested_lines:
-            advisor = completion_evidence.get("completionAdvisor") if isinstance(completion_evidence.get("completionAdvisor"), dict) else {}
-            payload = advisor.get("payload") if isinstance(advisor.get("payload"), dict) else {}
-            issues = payload.get("blocking_issues") or payload.get("remaining_risks") or []
-            if not isinstance(issues, list):
-                issues = [issues]
-            for item in issues[:5]:
-                text = str(item).strip()
-                if text:
-                    requested_lines.append(f"- {text}")
-        requested_text = "\n".join(requested_lines) if requested_lines else "- Continue with the smallest sufficient runtime evidence or next action."
-        original_goal = str(task.get("goal") or "").strip()
-        return (
-            "Continue the existing task after an internal completion gate.\n"
-            f"Original user goal: {original_goal}\n"
-            f"Gate status: {gate_status}\n"
-            f"Decision: {decision}\n"
-            f"Reason: {reason or 'The completion gate still requires more work.'}\n"
-            f"Previous summary:\n{summary.strip()}\n\n"
-            "Required follow-up:\n"
-            f"{requested_text}\n\n"
-            "Do not treat this as a new user request. Do not repeat the final answer. "
-            "Use only the minimal necessary tools, then update the same task with the missing evidence or finish the work."
         )
 
     def _completion_gate_decision(
@@ -852,6 +434,10 @@ class TaskLifecycleMixin:
                     "Fix the failed checks before marking the task completed."
                 ),
             }
+        explicit_completion_review = (
+            self._explicit_completion_review_required(context)
+            or self._summary_only_completion_review_required(context)
+        )
         reviews_disabled = self._completion_reviews_disabled(context)
         workspace_evidence_gate = self._completion_workspace_evidence_gate(completion_evidence)
         if workspace_evidence_gate is not None:
@@ -860,22 +446,11 @@ class TaskLifecycleMixin:
                     workspace_evidence_gate.get("reason") or "Workspace evidence is required."
                 )
             return workspace_evidence_gate
+        if not explicit_completion_review:
+            return {"action": "complete", "reason": "Read-only completion is allowed."}
         is_write_or_verification_task = self._is_write_or_verification_task(task=task, context=context)
         if not is_write_or_verification_task:
-            return {"action": "complete", "reason": "Read-only completion is allowed."}
-        advisor_gate = self._completion_advisor_gate(completion_evidence)
-        if advisor_gate is not None:
-            if reviews_disabled and advisor_gate.get("action") == "review":
-                return {
-                    "action": "complete",
-                    "decision": "advisor_review_recorded",
-                    "gateStatus": "advisor_review_recorded",
-                    "reason": (
-                        advisor_gate.get("reason")
-                        or "Completion advisor requested review, but approvals are disabled."
-                    ),
-                }
-            return advisor_gate
+            return {"action": "complete", "reason": "Explicit completion review does not apply to read-only work."}
         if force_complete_after_review:
             return {"action": "complete", "reason": "Completion review was approved."}
         if context.get("_allow_summary_only_completion") is True:
@@ -901,13 +476,6 @@ class TaskLifecycleMixin:
                     verification_match_gate.get("reason") or "Completion evidence requires review."
                 )
             return verification_match_gate
-        advisor_evidence_gate = self._completion_advisor_evidence_gate(completion_evidence)
-        if advisor_evidence_gate is not None:
-            if reviews_disabled and advisor_evidence_gate.get("action") == "review":
-                return self._completion_reviews_disabled_failure(
-                    advisor_evidence_gate.get("reason") or "Completion evidence requires review."
-                )
-            return advisor_evidence_gate
         if self._completion_needs_verification_review(completion_evidence):
             if reviews_disabled:
                 return self._completion_reviews_disabled_failure(
@@ -979,6 +547,7 @@ class TaskLifecycleMixin:
                 "reason": reason,
                 "risk": risk or "runtime has unresolved child work or pending approvals",
                 "decision": decision or "unresolved_runtime_work",
+                "internal": True,
             },
         }
         if task.get("status") != "running":
@@ -1136,13 +705,7 @@ class TaskLifecycleMixin:
             item for item in approvals
             if isinstance(item, dict)
             and str(item.get("decision") or "pending").strip().casefold() == "pending"
-            and not self._completion_approval_is_advisor_evidence_execution(item)
         ]
-
-    @staticmethod
-    def _completion_approval_is_advisor_evidence_execution(item: dict[str, Any]) -> bool:
-        kind = str(item.get("kind") or "").strip()
-        return kind in {"run_command", "advisor_tool"} and isinstance(item.get("advisorEvidence"), dict)
 
     def _completion_unresolved_child_tasks(self, completion_evidence: dict[str, Any]) -> list[dict[str, Any]]:
         child_tasks = completion_evidence.get("childTasks")
@@ -1158,78 +721,6 @@ class TaskLifecycleMixin:
                 continue
             unresolved.append(item)
         return unresolved
-
-    def _completion_advisor_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
-        advice = completion_evidence.get("completionAdvisor")
-        if not isinstance(advice, dict) or advice.get("accepted") is not True:
-            return None
-        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-        if payload.get("is_complete") is not False:
-            return None
-        confidence = advice.get("confidence")
-        if not isinstance(confidence, (int, float)) or confidence < 0.75:
-            return None
-        blocking = [
-            str(item).strip()
-            for item in (payload.get("blocking_issues") or payload.get("remaining_risks") or [])
-            if str(item).strip()
-        ]
-        reason = (
-            "Completion advisor judged this task likely incomplete"
-            f" (confidence {confidence:.2f})."
-        )
-        if blocking:
-            reason = f"{reason} Blocking issue(s): {'; '.join(blocking[:3])}"
-        return {
-            "action": "review",
-            "decision": "advisor_needs_review",
-            "gateStatus": "advisor_needs_review",
-            "risk": "LLM completion advisor judged task incomplete",
-            "reason": reason,
-        }
-
-    def _completion_advisor_evidence_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
-        requested = completion_evidence.get("advisorRequestedEvidence")
-        if not isinstance(requested, list):
-            return None
-        missing = [
-            item for item in requested
-            if isinstance(item, dict)
-            and item.get("blocking") is True
-            and item.get("status") == "missing"
-        ]
-        executor_records = completion_evidence.get("advisorEvidenceExecutor")
-        blocked_executors = [
-            item for item in executor_records
-            if isinstance(item, dict)
-            and item.get("blocking") is True
-            and str(item.get("status") or "").strip() in {"failed", "rejected", "blocked", "missing_tool"}
-        ] if isinstance(executor_records, list) else []
-        if not missing and not blocked_executors:
-            return None
-        details = [
-            str(item.get("summary") or item.get("kind") or "advisor-requested evidence").strip()
-            for item in missing
-            if str(item.get("summary") or item.get("kind") or "").strip()
-        ]
-        reason = "A product-surface advisor marked evidence as blocking before completion."
-        if details:
-            reason = f"{reason} Missing evidence: {'; '.join(details[:3])}"
-        if blocked_executors:
-            blocked_details = [
-                str(item.get("summary") or item.get("requestKind") or item.get("toolName") or "evidence executor").strip()
-                for item in blocked_executors
-                if str(item.get("summary") or item.get("requestKind") or item.get("toolName") or "").strip()
-            ]
-            if blocked_details:
-                reason = f"{reason} Blocked/failed executor: {'; '.join(blocked_details[:3])}"
-        return {
-            "action": "review",
-            "decision": "advisor_evidence_requested",
-            "gateStatus": "advisor_evidence_requested",
-            "risk": "LLM product-surface advisor requested blocking evidence",
-            "reason": reason,
-        }
 
     def _completion_workspace_evidence_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
         workspace_evidence = completion_evidence.get("workspaceEvidence")
@@ -1250,7 +741,7 @@ class TaskLifecycleMixin:
         if required_tools:
             reason = f"{reason} Expected one of: {', '.join(required_tools[:6])}."
         return {
-            "action": "review",
+            "action": "wait",
             "decision": "needs_workspace_evidence",
             "gateStatus": "needs_workspace_evidence",
             "risk": "workspace-grounded task completed without read-only workspace evidence",
@@ -1272,27 +763,50 @@ class TaskLifecycleMixin:
         mode = str(policy.get("approvalMode") or "").strip().lower() if isinstance(policy, dict) else ""
         return mode in {"none", "never", "off"}
 
+    def _explicit_completion_review_required(self, context: dict[str, Any]) -> bool:
+        if context.get("_require_completion_review") is True:
+            return True
+        if context.get("_enable_visible_completion_review") is True:
+            return True
+        config = context.get("config") if isinstance(context, dict) else {}
+        if not isinstance(config, dict):
+            return False
+        policy = config.get("policy")
+        if not isinstance(policy, dict):
+            return False
+        for key in (
+            "requireCompletionReview",
+            "visibleCompletionReview",
+            "require_completion_review",
+            "visible_completion_review",
+        ):
+            value = policy.get(key)
+            if isinstance(value, bool):
+                return value
+            if value is not None:
+                return str(value).strip().casefold() in {"1", "true", "yes", "on", "always"}
+        return False
+
     def _summary_only_completion_review_required(self, context: dict[str, Any]) -> bool:
         if context.get("_require_summary_only_completion_review") is True:
             return True
         config = context.get("config") if isinstance(context, dict) else {}
         if not isinstance(config, dict):
             return False
-        for section_name in ("advisor", "policy"):
-            section = config.get(section_name)
-            if not isinstance(section, dict):
-                continue
-            for key in (
-                "requireSummaryOnlyCompletionReview",
-                "requireSummaryOnlyReview",
-                "completionReviewOnSummaryOnly",
-                "require_summary_only_completion_review",
-            ):
-                value = section.get(key)
-                if isinstance(value, bool):
-                    return value
-                if value is not None:
-                    return str(value).strip().casefold() in {"1", "true", "yes", "on", "always"}
+        policy = config.get("policy")
+        if not isinstance(policy, dict):
+            return False
+        for key in (
+            "requireSummaryOnlyCompletionReview",
+            "requireSummaryOnlyReview",
+            "completionReviewOnSummaryOnly",
+            "require_summary_only_completion_review",
+        ):
+            value = policy.get(key)
+            if isinstance(value, bool):
+                return value
+            if value is not None:
+                return str(value).strip().casefold() in {"1", "true", "yes", "on", "always"}
         return False
 
     def _completion_tool_failure_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
@@ -1364,12 +878,6 @@ class TaskLifecycleMixin:
                     missing,
                 ):
                     return None
-                if self._completion_advisor_accepts_verification_gap(
-                    completion_evidence=completion_evidence,
-                    gap_kind="framework_mismatch",
-                    missing=missing,
-                ):
-                    return None
                 return {
                     "action": "review",
                     "decision": "needs_verification",
@@ -1382,12 +890,6 @@ class TaskLifecycleMixin:
                 }
         if self._completion_has_targeted_verification(completion_evidence):
             return None
-        if self._completion_advisor_accepts_verification_gap(
-            completion_evidence=completion_evidence,
-            gap_kind="targeted_signal_missing",
-            missing=[],
-        ):
-            return None
         return {
             "action": "review",
             "decision": "needs_verification",
@@ -1398,71 +900,6 @@ class TaskLifecycleMixin:
                 "does not include a targeted test, build, or typecheck signal."
             ),
         }
-
-    def _completion_advisor_accepts_verification_gap(
-        self,
-        *,
-        completion_evidence: dict[str, Any],
-        gap_kind: str,
-        missing: list[str],
-    ) -> bool:
-        if not self._completion_has_any_passing_verification_signal(completion_evidence):
-            return False
-        advice = completion_evidence.get("completionAdvisor")
-        if not isinstance(advice, dict) or advice.get("accepted") is not True:
-            return False
-        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-        if payload.get("is_complete") is not True:
-            return False
-        confidence = advice.get("confidence")
-        if not isinstance(confidence, (int, float)) or confidence < 0.8:
-            return False
-        blocking = [
-            str(item).strip()
-            for item in (payload.get("blocking_issues") or [])
-            if str(item).strip()
-        ]
-        if blocking:
-            return False
-        assessment = payload.get("verification_assessment")
-        assessment_status = ""
-        assessment_reason = ""
-        if isinstance(assessment, dict):
-            assessment_status = str(assessment.get("status") or "").strip().casefold()
-            assessment_reason = str(assessment.get("reason") or assessment.get("summary") or "").strip()
-        advisor_says_sufficient = payload.get("verification_sufficient") is True or assessment_status in {
-            "sufficient",
-            "acceptable",
-            "covered",
-            "satisfied",
-            "not_required",
-            "domain_sufficient",
-        }
-        if not advisor_says_sufficient:
-            return False
-        requirements = completion_evidence.get("verificationRequirements")
-        if isinstance(requirements, dict):
-            resolution = {
-                "status": "advisor_accepted",
-                "gapKind": gap_kind,
-                "missing": missing,
-                "confidence": confidence,
-                "source": advice.get("source"),
-                "proposalRecordId": advice.get("proposalRecordId"),
-                "rationale": str(advice.get("rationale") or "")[:500],
-            }
-            if assessment_status:
-                resolution["assessmentStatus"] = assessment_status
-            if assessment_reason:
-                resolution["assessmentReason"] = assessment_reason[:500]
-            requirements["advisorResolution"] = {
-                key: value
-                for key, value in resolution.items()
-                if value not in (None, "", [])
-            }
-            if requirements.get("status") == "missing":
-                requirements["status"] = "advisor_accepted"
-        return True
 
     def _completion_needs_verification_review(self, completion_evidence: dict[str, Any]) -> bool:
         if completion_evidence.get("evidenceLevel") != "runtime_evidence":
@@ -2051,22 +1488,8 @@ class TaskLifecycleMixin:
             "approvals": approvals,
             "approvalCounts": self._completion_approval_counts(approvals),
         }
-        executor_records = completion_evidence.get("advisorEvidenceExecutor")
-        if isinstance(executor_records, list) and executor_records:
-            audit["advisorEvidenceExecutor"] = [
-                record for record in executor_records
-                if isinstance(record, dict)
-            ][:20]
         if review_conclusion:
             audit["reviewConclusion"] = review_conclusion
-        if completion_evidence.get("completionAdvisor"):
-            advisor = completion_evidence["completionAdvisor"]
-            if isinstance(advisor, dict):
-                audit["completionAdvisor"] = {
-                    key: advisor.get(key)
-                    for key in ("accepted", "source", "confidence", "proposalRecordId", "fallback_reason")
-                    if advisor.get(key) not in (None, "", [])
-                }
         return {key: value for key, value in audit.items() if value not in (None, "", [], {})}
 
     def _completion_approval_audit_for_completion(
@@ -2147,14 +1570,6 @@ class TaskLifecycleMixin:
             item["reviewerSummary"] = review.get("summary") or request.get("reviewerSummary")
             item["verificationStatus"] = request.get("verificationStatus")
             item["targetBranch"] = request.get("targetBranch")
-        elif kind in {"run_command", "advisor_tool"}:
-            advisor_evidence = request.get("advisorEvidence") if isinstance(request.get("advisorEvidence"), dict) else {}
-            if advisor_evidence:
-                item["advisorEvidence"] = {
-                    key: advisor_evidence.get(key)
-                    for key in ("summary", "requestKind", "target", "surfaceType", "proposalRecordId", "executorId")
-                    if advisor_evidence.get(key) not in (None, "", [])
-                }
         return {key: value for key, value in item.items() if value not in (None, "", [], {})}
 
     @staticmethod
@@ -2194,15 +1609,6 @@ class TaskLifecycleMixin:
                 if isinstance(verification_requirements, list) and verification_requirements:
                     return True
             return bool(task.get("changedFiles") or task.get("commands") or task.get("verification"))
-        scenario = str(routing.get("scenario") or context_routing.get("scenario") or "").strip().lower()
-        model_tool_orchestration = (
-            routing.get("orchestrationMode") == "model_tools"
-            or context_routing.get("orchestrationMode") == "model_tools"
-        )
-        if scenario in {"code_edit", "debug", "test_write", "doc_write", "multi_step_task", "supervised_task"}:
-            return True
-        if scenario == "swarm_task" and not model_tool_orchestration:
-            return True
         if task.get("type") == "validate":
             return True
         if routing.get("activeWorktree") or context_routing.get("activeWorktree"):
@@ -2224,2040 +1630,6 @@ class TaskLifecycleMixin:
                 return True
         return bool(task.get("changedFiles") or task.get("commands") or task.get("verification"))
 
-    def _request_completion_review(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        summary: str,
-        structured_result: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        reason: str,
-        risk: str | None,
-        gate_status: str | None,
-        decision: str | None,
-        skip_drain: bool,
-    ) -> dict[str, Any]:
-        advisor_requested_evidence = completion_evidence.get("advisorRequestedEvidence")
-        approval_request = {
-            "summary": summary,
-            "risk": risk or "completion evidence requires review",
-            "reason": reason,
-            "gateStatus": gate_status or "needs_user_review",
-            "decision": decision or "needs_user_review",
-            "completionEvidence": completion_evidence,
-            "structuredResult": structured_result,
-        }
-        if isinstance(advisor_requested_evidence, list):
-            approval_request["advisorRequestedEvidence"] = advisor_requested_evidence
-        approval = self._store.create_approval(
-            task["id"],
-            "completion_review",
-            approval_request,
-        )
-        review_structured_result = {
-            **structured_result,
-            "status": "needs_review",
-            "completionGate": {
-                "status": gate_status or "needs_user_review",
-                "reason": reason,
-                "approvalId": approval["id"],
-            },
-        }
-        if isinstance(advisor_requested_evidence, list):
-            review_structured_result["completionGate"]["advisorRequestedEvidence"] = advisor_requested_evidence
-        self._validate_task_transition(task["status"], "waiting_approval", task["id"], silent=True)
-        review_task = self._store.update_task(
-            task_id=task["id"],
-            status="waiting_approval",
-            plan=task.get("plan") or [],
-            summary=summary,
-            result_summary=summary,
-            structured_result=review_structured_result,
-        )
-        runtime_task = {
-            **review_task,
-            "plan": task.get("plan") or [],
-            "resultSummary": summary,
-        }
-        active_msg_id = runtime_task.get("activeAssistantMessageId")
-        if active_msg_id:
-            self._store.update_message(
-                active_msg_id,
-                content=summary,
-                status="streaming",
-            )
-        internal_gate_bridge = internal_completion_gate_bridge()
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="approval.requested",
-            payload={
-                "approvalId": approval["id"],
-                "taskId": task["id"],
-                "kind": "completion_review",
-                "internal": True,
-                "_bridge": internal_gate_bridge,
-                "request": json.loads(approval.get("requestJson") or "{}"),
-            },
-            visibility="trace",
-        )
-        self._fire_hooks(
-            "on_approval_required",
-            session_id,
-            runtime_task,
-            extra_context={"approvalId": approval["id"], "kind": "completion_review"},
-        )
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="agent.decision.completion",
-            payload={
-                "decision": decision or "needs_user_review",
-                "whyBlocked": reason,
-                "completionEvidence": completion_evidence,
-                "approvalId": approval["id"],
-                "internal": True,
-                "_bridge": internal_gate_bridge,
-            },
-        )
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="task.waiting_approval",
-            payload={
-                "status": "waiting_approval",
-                "detail": reason,
-                "approvalId": approval["id"],
-                "internalGate": "completion_review",
-                "completionEvidence": completion_evidence,
-                "_bridge": internal_gate_bridge,
-            },
-            visibility="trace",
-        )
-        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="waiting_approval")
-        if not skip_drain:
-            self._drain_session_queue(session_id)
-        return runtime_task
-
-    def _request_advisor_evidence_execution_approval(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        summary: str,
-        structured_result: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        reason: str,
-        gate_status: str | None,
-        decision: str | None,
-        approval_ids: list[str],
-        skip_drain: bool,
-    ) -> dict[str, Any]:
-        advisor_requested_evidence = completion_evidence.get("advisorRequestedEvidence")
-        advisor_approvals = completion_evidence.get("advisorEvidenceApprovals")
-        wait_structured_result = {
-            **structured_result,
-            "status": "needs_review",
-            "completionGate": {
-                "status": gate_status or "advisor_evidence_requested",
-                "reason": reason,
-                "approvalIds": approval_ids,
-            },
-        }
-        if isinstance(advisor_requested_evidence, list):
-            wait_structured_result["completionGate"]["advisorRequestedEvidence"] = advisor_requested_evidence
-        if isinstance(advisor_approvals, list):
-            wait_structured_result["completionGate"]["advisorEvidenceApprovals"] = advisor_approvals
-        if task.get("status") != "waiting_approval":
-            self._validate_task_transition(task["status"], "waiting_approval", task["id"], silent=True)
-        wait_task = self._store.update_task(
-            task_id=task["id"],
-            status="waiting_approval",
-            plan=task.get("plan") or [],
-            summary=summary,
-            result_summary=summary,
-            structured_result=wait_structured_result,
-        )
-        runtime_task = {
-            **wait_task,
-            "plan": task.get("plan") or [],
-            "resultSummary": summary,
-        }
-        self._publish_task_run_snapshot(session_id=session_id, task=runtime_task)
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="agent.decision.completion",
-            payload={
-                "decision": decision or "advisor_evidence_requested",
-                "whyBlocked": reason,
-                "completionEvidence": completion_evidence,
-                "approvalIds": approval_ids,
-            },
-        )
-        self._publish(
-            session_id=session_id,
-            task=runtime_task,
-            event_type="task.waiting_approval",
-            payload={
-                "status": "waiting_approval",
-                "detail": reason,
-                "approvalIds": approval_ids,
-                "completionEvidence": completion_evidence,
-            },
-        )
-        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="waiting_approval")
-        if not skip_drain:
-            self._drain_session_queue(session_id)
-        return runtime_task
-
-    def _apply_product_surface_advisor(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        summary: str,
-        context: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        tool_results: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        advice = self._consult_product_surface_advisor(
-            task=task,
-            summary=summary,
-            context=context,
-            completion_evidence=completion_evidence,
-        )
-        if advice is None:
-            return None
-        self._record_product_surface_advisor_proposal(
-            session_id=session_id,
-            task=task,
-            summary=summary,
-            product_surface_advice=advice,
-        )
-        completion_evidence["productSurfaceAdvisor"] = advice
-        requested_evidence = self._advisor_requested_evidence_from_advice(
-            advice=advice,
-            completion_evidence=completion_evidence,
-            tool_results=tool_results,
-        )
-        execution_suggestions = self._advisor_evidence_execution_suggestions(
-            task=task,
-            context=context,
-            advice=advice,
-            requested_evidence=requested_evidence,
-        )
-        adapter_summary = self._advisor_evidence_adapter_summary(
-            requested_evidence=requested_evidence,
-            execution_suggestions=execution_suggestions,
-        )
-        executor_records = self._advisor_evidence_executor_records(
-            requested_evidence=requested_evidence,
-            execution_suggestions=execution_suggestions,
-        )
-        if requested_evidence:
-            completion_evidence["advisorRequestedEvidence"] = requested_evidence
-            completion_evidence["advisorEvidenceAdapters"] = adapter_summary
-        if execution_suggestions:
-            advisor_approvals = self._create_advisor_evidence_execution_approvals(
-                session_id=session_id,
-                task=task,
-                context=context,
-                advice=advice,
-                requested_evidence=requested_evidence,
-                execution_suggestions=execution_suggestions,
-            )
-            if advisor_approvals:
-                completion_evidence["advisorEvidenceApprovals"] = advisor_approvals
-            completion_evidence["advisorEvidenceExecutionSuggestions"] = execution_suggestions
-            executor_records = self._advisor_evidence_executor_records(
-                requested_evidence=requested_evidence,
-                execution_suggestions=execution_suggestions,
-            )
-            adapter_summary = self._advisor_evidence_adapter_summary(
-                requested_evidence=requested_evidence,
-                execution_suggestions=execution_suggestions,
-            )
-            completion_evidence["advisorEvidenceAdapters"] = adapter_summary
-        if executor_records:
-            completion_evidence["advisorEvidenceExecutor"] = executor_records
-        advisory = self._product_surface_advisory_from_advice(advice)
-        if advisory is not None:
-            completion_evidence.setdefault("productAdvisories", []).append(advisory)
-        if requested_evidence:
-            self._publish_advisor_evidence_requests(
-                session_id=session_id,
-                task=task,
-                advice=advice,
-                requested_evidence=requested_evidence,
-                execution_suggestions=execution_suggestions,
-                executor_records=executor_records,
-                adapter_summary=adapter_summary,
-                advisory=advisory,
-            )
-        return advice
-
-    def _publish_advisor_evidence_requests(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        advice: dict[str, Any],
-        requested_evidence: list[dict[str, Any]],
-        execution_suggestions: list[dict[str, Any]] | None,
-        executor_records: list[dict[str, Any]] | None,
-        adapter_summary: dict[str, Any] | None,
-        advisory: dict[str, Any] | None,
-    ) -> None:
-        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-        verification_intents = payload.get("verification_intents") if isinstance(payload.get("verification_intents"), list) else []
-        execution_suggestions = execution_suggestions or []
-        executor_records = executor_records or []
-        blocking_count = len([
-            item for item in requested_evidence
-            if isinstance(item, dict) and item.get("blocking") is True
-        ])
-        missing_blocking_count = len([
-            item for item in requested_evidence
-            if isinstance(item, dict)
-            and item.get("blocking") is True
-            and item.get("status") == "missing"
-        ])
-        event_payload = {
-            "source": "llm_product_surface_advisor",
-            "surfaceType": payload.get("surface_type") or (advisory or {}).get("surfaceType"),
-            "proposalRecordId": advice.get("proposalRecordId"),
-            "confidence": advice.get("confidence"),
-            "rationale": advice.get("rationale"),
-            "recommendedVerification": self._completion_string_list(payload.get("recommended_verification"))[:10],
-            "verificationIntents": verification_intents[:10],
-            "evidenceRequests": requested_evidence[:20],
-            "blockingCount": blocking_count,
-            "missingBlockingCount": missing_blocking_count,
-            "hasBlockingEvidenceRequest": blocking_count > 0,
-        }
-        if execution_suggestions:
-            event_payload["executionSuggestions"] = execution_suggestions[:20]
-        if executor_records:
-            event_payload["executor"] = executor_records[:20]
-        if adapter_summary:
-            event_payload["adapterSummary"] = adapter_summary
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="agent.evidence.requested",
-            payload=event_payload,
-        )
-        self._fire_hooks(
-            "on_evidence_requested",
-            session_id,
-            task,
-            extra_context={
-                "surfaceType": event_payload["surfaceType"],
-                "proposalRecordId": event_payload["proposalRecordId"],
-                "evidenceRequests": requested_evidence[:20],
-                "executionSuggestions": execution_suggestions[:20],
-                "executor": executor_records[:20],
-                "adapterSummary": adapter_summary or {},
-                "verificationIntents": verification_intents[:10],
-                "blockingCount": blocking_count,
-                "missingBlockingCount": missing_blocking_count,
-            },
-        )
-
-    def _pending_advisor_evidence_approval_ids(self, completion_evidence: dict[str, Any]) -> list[str]:
-        approvals = completion_evidence.get("advisorEvidenceApprovals")
-        if not isinstance(approvals, list):
-            return []
-        ids: list[str] = []
-        for item in approvals:
-            if not isinstance(item, dict):
-                continue
-            if item.get("decision") not in (None, "", "pending"):
-                continue
-            approval_id = str(item.get("approvalId") or "").strip()
-            if approval_id:
-                ids.append(approval_id)
-        return ids
-
-    def _advisor_evidence_adapter_summary(
-        self,
-        *,
-        requested_evidence: list[dict[str, Any]],
-        execution_suggestions: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        suggestions_by_index: dict[int, list[dict[str, Any]]] = {}
-        for suggestion in execution_suggestions:
-            if not isinstance(suggestion, dict):
-                continue
-            index = suggestion.get("requestIndex")
-            if isinstance(index, int):
-                suggestions_by_index.setdefault(index, []).append(suggestion)
-
-        adapters: list[dict[str, Any]] = []
-        counts = {
-            "total": 0,
-            "ready": 0,
-            "approvalRequired": 0,
-            "blocked": 0,
-            "missingAdapter": 0,
-            "satisfied": 0,
-        }
-        for index, request in enumerate(requested_evidence):
-            if not isinstance(request, dict):
-                continue
-            counts["total"] += 1
-            request_suggestions = suggestions_by_index.get(index) or []
-            if request.get("status") == "satisfied":
-                status = "satisfied"
-                adapter_kind = self._advisor_evidence_inferred_adapter_kind(request)
-                reason = "Evidence is already satisfied by existing runtime signals."
-            elif request_suggestions:
-                primary = request_suggestions[0]
-                adapter_kind = str(primary.get("adapterKind") or primary.get("type") or primary.get("toolName") or "tool")
-                status = self._advisor_evidence_adapter_status(primary)
-                reason = str(primary.get("permissionReason") or "").strip()
-                if not reason:
-                    reason = self._advisor_evidence_adapter_reason(status=status, suggestion=primary)
-            else:
-                adapter_kind = self._advisor_evidence_inferred_adapter_kind(request)
-                status = "missing_adapter"
-                reason = (
-                    "Advisor requested semantic evidence, but no executable command/tool/MCP adapter "
-                    "is available yet. Track this as concrete adapter expansion, not a hard-coded gate."
-                )
-
-            if status == "satisfied":
-                counts["satisfied"] += 1
-            elif status in {"blocked", "missing_tool"}:
-                counts["blocked"] += 1
-            elif status == "approval_required":
-                counts["approvalRequired"] += 1
-            elif status == "missing_adapter":
-                counts["missingAdapter"] += 1
-            else:
-                counts["ready"] += 1
-
-            adapters.append({
-                "requestIndex": index,
-                "requestKind": request.get("kind"),
-                "target": request.get("target"),
-                "blocking": request.get("blocking") is True,
-                "adapterKind": adapter_kind,
-                "status": status,
-                "reason": reason,
-                "suggestionCount": len(request_suggestions),
-            })
-        return {
-            "status": self._advisor_evidence_adapter_summary_status(counts),
-            "counts": counts,
-            "adapters": [
-                {key: value for key, value in item.items() if value not in (None, "", [], {})}
-                for item in adapters[:20]
-            ],
-            "principle": "advisor_selected_permission_gated",
-        }
-
-    @staticmethod
-    def _advisor_evidence_adapter_status(suggestion: dict[str, Any]) -> str:
-        state = str(suggestion.get("executionState") or "").strip()
-        decision = str(suggestion.get("permissionDecision") or "").strip()
-        if state in {"approval_pending", "approval_required"}:
-            return "approval_required"
-        if state in {"approval_approved", "ready_for_executor"}:
-            return "ready"
-        if state in {"denied_by_policy", "approval_rejected", "approval_unavailable"} or decision == "deny":
-            return "blocked"
-        return state or "ready"
-
-    @staticmethod
-    def _advisor_evidence_adapter_reason(*, status: str, suggestion: dict[str, Any]) -> str:
-        if status == "approval_required":
-            return "Executable evidence is available and awaits explicit approval."
-        if status == "blocked":
-            return str(suggestion.get("permissionReason") or "Executable evidence is blocked by policy.")
-        if status == "ready":
-            return "Executable evidence is available through the normal runtime tool pipeline."
-        return "Executable evidence adapter state is recorded for audit."
-
-    @staticmethod
-    def _advisor_evidence_adapter_summary_status(counts: dict[str, int]) -> str:
-        if counts.get("total", 0) <= 0:
-            return "none"
-        if counts.get("blocked", 0) > 0:
-            return "blocked"
-        if counts.get("approvalRequired", 0) > 0:
-            return "approval_required"
-        if counts.get("missingAdapter", 0) > 0:
-            return "partial"
-        if counts.get("ready", 0) > 0:
-            return "ready"
-        return "satisfied"
-
-    @staticmethod
-    def _advisor_evidence_inferred_adapter_kind(request: dict[str, Any]) -> str:
-        if request.get("suggestedCommand"):
-            return "run_command"
-        suggested_tool = request.get("suggestedTool")
-        if isinstance(suggested_tool, dict):
-            name = str(suggested_tool.get("name") or suggested_tool.get("toolName") or "").strip()
-            if name.startswith("mcp__"):
-                return "mcp_tool"
-            if name:
-                return "tool"
-        kind = str(request.get("kind") or "").strip().casefold()
-        target = str(request.get("target") or "").strip().casefold()
-        summary = str(request.get("summary") or "").strip().casefold()
-        text = f"{kind} {target} {summary}"
-        for adapter in _ADVISOR_EVIDENCE_ADAPTER_REGISTRY:
-            adapter_kind = str(adapter.get("adapterKind") or "")
-            hints = tuple(str(hint) for hint in adapter.get("hints", ()))
-            if any(hint in text for hint in hints):
-                return adapter_kind
-        return "semantic_evidence_adapter"
-
-    def _advisor_evidence_executor_records(
-        self,
-        *,
-        requested_evidence: list[dict[str, Any]],
-        execution_suggestions: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        records: list[dict[str, Any]] = []
-        suggestions_by_index: dict[int, list[dict[str, Any]]] = {}
-        for suggestion in execution_suggestions:
-            if not isinstance(suggestion, dict):
-                continue
-            index = suggestion.get("requestIndex")
-            if isinstance(index, int):
-                suggestions_by_index.setdefault(index, []).append(suggestion)
-
-        for index, request in enumerate(requested_evidence):
-            if not isinstance(request, dict):
-                continue
-            suggestions = suggestions_by_index.get(index) or []
-            if not suggestions:
-                status = "satisfied" if request.get("status") == "satisfied" else "requested"
-                reason = "Advisor requested semantic evidence without a runnable suggestion."
-                if request.get("status") == "satisfied":
-                    reason = "Advisor-requested evidence is already satisfied by available runtime evidence."
-                records.append(self._advisor_evidence_executor_record(
-                    request=request,
-                    request_index=index,
-                    suggestion=None,
-                    status=status,
-                    reason=reason,
-                ))
-                continue
-            for suggestion in suggestions:
-                records.append(self._advisor_evidence_executor_record(
-                    request=request,
-                    request_index=index,
-                    suggestion=suggestion,
-                ))
-        return records[:20]
-
-    def _advisor_evidence_executor_record(
-        self,
-        *,
-        request: dict[str, Any],
-        request_index: int,
-        suggestion: dict[str, Any] | None,
-        status: str | None = None,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        suggestion = suggestion if isinstance(suggestion, dict) else {}
-        status = status or self._advisor_evidence_executor_status(request=request, suggestion=suggestion)
-        record: dict[str, Any] = {
-            "id": self._advisor_evidence_executor_id(request=request, request_index=request_index, suggestion=suggestion),
-            "status": status,
-            "source": suggestion.get("source") or request.get("source") or "llm_product_surface_advisor",
-            "requestIndex": request_index,
-            "requestKind": request.get("kind") or suggestion.get("requestKind"),
-            "summary": request.get("summary") or suggestion.get("summary"),
-            "target": request.get("target") or suggestion.get("target"),
-            "blocking": request.get("blocking") is True,
-            "evidenceStatus": request.get("status"),
-            "proposalRecordId": request.get("proposalRecordId") or suggestion.get("proposalRecordId"),
-            "reason": reason or self._advisor_evidence_executor_reason(status=status, suggestion=suggestion),
-        }
-        if suggestion:
-            execution_type = suggestion.get("type") or suggestion.get("toolName")
-            record.update({
-                "executionType": execution_type,
-                "toolName": suggestion.get("toolName"),
-                "executionMode": suggestion.get("executionMode"),
-                "permissionDecision": suggestion.get("permissionDecision"),
-                "permissionReason": suggestion.get("permissionReason"),
-                "requiresApproval": suggestion.get("requiresApproval") is True,
-                "approvalId": suggestion.get("approvalId"),
-                "approvalKind": suggestion.get("approvalKind"),
-                "approvalDecision": suggestion.get("approvalDecision"),
-                "capability": suggestion.get("capability"),
-                "adapterKind": suggestion.get("adapterKind"),
-                "adapterConfidence": suggestion.get("adapterConfidence"),
-            })
-            if suggestion.get("type") == "run_command":
-                record["command"] = suggestion.get("command")
-            elif isinstance(suggestion.get("arguments"), dict):
-                record["arguments"] = suggestion.get("arguments")
-        if isinstance(request.get("suggestedTool"), dict) and not record.get("toolName"):
-            record["toolName"] = request["suggestedTool"].get("name") or request["suggestedTool"].get("toolName")
-        if request.get("suggestedCommand") and not record.get("command"):
-            record["command"] = request.get("suggestedCommand")
-            record.setdefault("toolName", "run_command")
-            record.setdefault("executionType", "run_command")
-        return {key: value for key, value in record.items() if value not in (None, "", [], {})}
-
-    def _advisor_evidence_executor_status(
-        self,
-        *,
-        request: dict[str, Any],
-        suggestion: dict[str, Any],
-    ) -> str:
-        if request.get("status") == "satisfied":
-            return "satisfied"
-        state = str(suggestion.get("executionState") or "").strip()
-        if state == "approval_pending":
-            return "approval_requested"
-        if state == "approval_approved":
-            return "approved"
-        if state == "approval_rejected":
-            return "rejected"
-        if state == "approval_unavailable":
-            return "failed"
-        if state == "denied_by_policy":
-            return "blocked"
-        if state == "missing_tool":
-            return "missing_tool"
-        if state in {"approval_required", "ready_for_executor"}:
-            return state
-        if not suggestion:
-            return "requested"
-        return state or "requested"
-
-    @staticmethod
-    def _advisor_evidence_executor_reason(status: str, suggestion: dict[str, Any]) -> str:
-        if status == "satisfied":
-            return "Evidence is satisfied by a matching successful runtime result."
-        if status == "approval_requested":
-            return "Runtime created an explicit approval before executing advisor-requested evidence."
-        if status == "approved":
-            return "Evidence execution was approved and is ready to resume."
-        if status == "rejected":
-            return "Evidence execution approval was rejected."
-        if status == "blocked":
-            return str(suggestion.get("permissionReason") or "Evidence execution is blocked by policy.")
-        if status == "failed":
-            return str(suggestion.get("executionError") or "Evidence executor setup failed.")
-        if status == "missing_tool":
-            return str(suggestion.get("permissionReason") or "No registered executable tool is available for this evidence adapter.")
-        if status == "approval_required":
-            return "Advisor suggested executable evidence; runtime requires approval before running it."
-        if status == "ready_for_executor":
-            return "Advisor suggested executable evidence and policy permits it; runtime will still gate blocking evidence through approval."
-        return "Advisor requested semantic evidence for runtime tracking."
-
-    @staticmethod
-    def _advisor_evidence_executor_id(
-        *,
-        request: dict[str, Any],
-        request_index: int,
-        suggestion: dict[str, Any],
-    ) -> str:
-        raw = {
-            "requestIndex": request_index,
-            "kind": request.get("kind"),
-            "target": request.get("target"),
-            "summary": request.get("summary"),
-            "command": suggestion.get("command") or request.get("suggestedCommand"),
-            "toolName": suggestion.get("toolName") or (
-                request.get("suggestedTool", {}).get("name")
-                if isinstance(request.get("suggestedTool"), dict)
-                else None
-            ),
-            "arguments": suggestion.get("arguments") or (
-                request.get("suggestedTool", {}).get("arguments")
-                if isinstance(request.get("suggestedTool"), dict)
-                else None
-            ),
-            "proposalRecordId": request.get("proposalRecordId") or suggestion.get("proposalRecordId"),
-        }
-        encoded = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str)
-        return "evexec_" + hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:16]
-
-    def _publish_advisor_evidence_executor_event(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        record: dict[str, Any],
-        transition: str | None = None,
-    ) -> None:
-        payload = {
-            "executor": record,
-            "transition": transition or record.get("status"),
-            "source": record.get("source") or "llm_product_surface_advisor",
-        }
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="agent.evidence.executor.updated",
-            payload={key: value for key, value in payload.items() if value not in (None, "", [], {})},
-            visibility="panel",
-        )
-
-    def _publish_advisor_evidence_executor_event_from_approval(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        approval: dict[str, Any],
-        request: dict[str, Any],
-        status: str,
-        transition: str | None = None,
-        result: dict[str, Any] | None = None,
-        reason: str | None = None,
-    ) -> None:
-        advisor_evidence = request.get("advisorEvidence") if isinstance(request.get("advisorEvidence"), dict) else {}
-        if not advisor_evidence:
-            return
-        executor_id = str(advisor_evidence.get("executorId") or "").strip()
-        if not executor_id:
-            return
-        tool_name = str(request.get("toolName") or request.get("name") or "").strip()
-        if not tool_name and approval.get("kind") == "run_command":
-            tool_name = "run_command"
-        record: dict[str, Any] = {
-            "id": executor_id,
-            "status": status,
-            "source": advisor_evidence.get("source") or "llm_product_surface_advisor",
-            "requestIndex": advisor_evidence.get("requestIndex"),
-            "requestKind": advisor_evidence.get("requestKind"),
-            "summary": advisor_evidence.get("summary"),
-            "target": advisor_evidence.get("target"),
-            "blocking": advisor_evidence.get("blocking") is True,
-            "proposalRecordId": advisor_evidence.get("proposalRecordId"),
-            "approvalId": approval.get("id"),
-            "approvalKind": approval.get("kind"),
-            "approvalDecision": approval.get("decision"),
-            "toolName": tool_name,
-            "reason": reason or self._advisor_evidence_executor_result_reason(status=status, result=result),
-        }
-        if approval.get("kind") == "run_command":
-            record.update({
-                "executionType": "run_command",
-                "command": request.get("command"),
-                "cwd": request.get("cwd"),
-                "shell": request.get("shell"),
-            })
-        else:
-            record.update({
-                "executionType": "tool",
-                "arguments": request.get("arguments") if isinstance(request.get("arguments"), dict) else None,
-                "capability": request.get("capability"),
-            })
-        if isinstance(result, dict):
-            record["result"] = {
-                key: result.get(key)
-                for key in ("status", "exitCode", "durationMs", "commandLogId", "toolCallId", "failureKind", "recoveryHint")
-                if result.get(key) not in (None, "", [], {})
-            }
-            command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
-            if command_log.get("id"):
-                record.setdefault("result", {})["commandLogId"] = command_log.get("id")
-        self._publish_advisor_evidence_executor_event(
-            session_id=session_id,
-            task=task,
-            record={key: value for key, value in record.items() if value not in (None, "", [], {})},
-            transition=transition or status,
-        )
-
-    @staticmethod
-    def _advisor_evidence_executor_result_reason(
-        *,
-        status: str,
-        result: dict[str, Any] | None,
-    ) -> str:
-        result = result if isinstance(result, dict) else {}
-        if status == "running":
-            return "Approved advisor-requested evidence is now executing."
-        if status == "satisfied":
-            return "Advisor-requested evidence executed successfully."
-        if status == "failed":
-            result_status = str(result.get("status") or "").strip()
-            if result_status:
-                return f"Advisor-requested evidence execution failed with status {result_status}."
-            return "Advisor-requested evidence execution failed."
-        if status == "rejected":
-            return "Advisor-requested evidence execution was rejected by the user."
-        return "Advisor-requested evidence executor state changed."
-
-    def _create_advisor_evidence_execution_approvals(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        advice: dict[str, Any],
-        requested_evidence: list[dict[str, Any]],
-        execution_suggestions: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        approvals: list[dict[str, Any]] = []
-        for suggestion in execution_suggestions:
-            if not isinstance(suggestion, dict):
-                continue
-            request = self._advisor_evidence_request_for_suggestion(
-                requested_evidence=requested_evidence,
-                suggestion=suggestion,
-            )
-            if request is None or not self._advisor_evidence_suggestion_needs_approval(suggestion, request):
-                continue
-            try:
-                request_payload, execution_request, approval_kind = self._advisor_evidence_execution_approval_request(
-                    task=task,
-                    context=context,
-                    advice=advice,
-                    request=request,
-                    suggestion=suggestion,
-                )
-            except Exception as exc:  # noqa: BLE001
-                suggestion["executionState"] = "approval_unavailable"
-                suggestion["executionError"] = str(exc)
-                self._publish_advisor_evidence_executor_event(
-                    session_id=session_id,
-                    task=task,
-                    record=self._advisor_evidence_executor_record(
-                        request=request,
-                        request_index=int(suggestion.get("requestIndex") or 0),
-                        suggestion=suggestion,
-                    ),
-                    transition="approval_unavailable",
-                )
-                continue
-
-            approval = None
-            if hasattr(self._store, "find_approval_by_request_fields"):
-                approval = self._store.find_approval_by_request_fields(
-                    task_id=task["id"],
-                    kind=approval_kind,
-                    fields=execution_request,
-                )
-            created = False
-            if approval is None:
-                approval = self._store.create_approval(task["id"], approval_kind, request_payload)
-                created = True
-
-            decision = approval.get("decision")
-            execution_state = "approval_pending"
-            if decision == "approved":
-                execution_state = "approval_approved"
-            elif decision == "rejected":
-                execution_state = "approval_rejected"
-            elif decision not in (None, ""):
-                execution_state = "approval_resolved"
-
-            suggestion.update({
-                "approvalId": approval["id"],
-                "approvalKind": approval_kind,
-                "approvalDecision": decision or "pending",
-                "executionMode": "approval_then_run_command" if suggestion.get("type") == "run_command" else "approval_then_tool",
-                "executionState": execution_state,
-                "requiresApproval": True,
-                "approvalRequest": execution_request,
-            })
-            record = {
-                "approvalId": approval["id"],
-                "kind": approval_kind,
-                "decision": decision,
-                "executionState": execution_state,
-                "requestIndex": suggestion.get("requestIndex"),
-                "requestKind": suggestion.get("requestKind"),
-                "workspaceRoot": execution_request["workspaceRoot"],
-                "created": created,
-            }
-            if suggestion.get("type") == "run_command":
-                record.update({
-                    "command": execution_request["command"],
-                    "cwd": execution_request["cwd"],
-                    "shell": execution_request["shell"],
-                    "timeoutMs": execution_request["timeoutMs"],
-                })
-            else:
-                record.update({
-                    "toolName": execution_request["toolName"],
-                    "arguments": execution_request["arguments"],
-                    "capability": execution_request.get("capability"),
-                })
-            approvals.append({key: value for key, value in record.items() if value not in ("", None)})
-            executor_record = self._advisor_evidence_executor_record(
-                request=request,
-                request_index=int(suggestion.get("requestIndex") or 0),
-                suggestion=suggestion,
-            )
-            self._publish_advisor_evidence_executor_event(
-                session_id=session_id,
-                task=task,
-                record=executor_record,
-                transition=execution_state,
-            )
-            if created:
-                self._publish_advisor_evidence_approval_requested(
-                    session_id=session_id,
-                    task=task,
-                    approval=approval,
-                    advisor_evidence=request_payload.get("advisorEvidence"),
-                )
-        return approvals
-
-    def _advisor_evidence_request_for_suggestion(
-        self,
-        *,
-        requested_evidence: list[dict[str, Any]],
-        suggestion: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        index = suggestion.get("requestIndex")
-        if not isinstance(index, int) or index < 0 or index >= len(requested_evidence):
-            return None
-        request = requested_evidence[index]
-        return request if isinstance(request, dict) else None
-
-    @staticmethod
-    def _advisor_evidence_suggestion_needs_approval(
-        suggestion: dict[str, Any],
-        request: dict[str, Any],
-    ) -> bool:
-        permission_decision = str(suggestion.get("permissionDecision") or "").strip()
-        return (
-            suggestion.get("type") in {"run_command", "tool"}
-            and suggestion.get("blocking") is True
-            and permission_decision in {"allow", "approval_required"}
-            and request.get("status") == "missing"
-        )
-
-    def _advisor_evidence_execution_approval_request(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        advice: dict[str, Any],
-        request: dict[str, Any],
-        suggestion: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any], str]:
-        if suggestion.get("type") == "run_command":
-            payload, execution_request = self._advisor_evidence_run_command_approval_request(
-                task=task,
-                context=context,
-                advice=advice,
-                request=request,
-                suggestion=suggestion,
-            )
-            return payload, execution_request, "run_command"
-        payload, execution_request = self._advisor_evidence_tool_approval_request(
-            task=task,
-            context=context,
-            advice=advice,
-            request=request,
-            suggestion=suggestion,
-        )
-        return payload, execution_request, "advisor_tool"
-
-    def _advisor_evidence_run_command_approval_request(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        advice: dict[str, Any],
-        request: dict[str, Any],
-        suggestion: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        command = str(suggestion.get("command") or "").strip()
-        if not command:
-            raise ValueError("Advisor evidence command is empty")
-        workspace_root = self._advisor_evidence_workspace_root(task=task, context=context, tool_name="run_command")
-        shell_name = normalize_shell(
-            str(request.get("shell")).strip() if isinstance(request.get("shell"), str) else None,
-            self._store,
-        )
-        execution_request = approval_request(
-            task_id=str(task.get("id") or ""),
-            command=_powershell_execution_command(command, shell_name),
-            cwd=self._advisor_evidence_normalized_cwd(workspace_root, request.get("cwd")),
-            shell=shell_name,
-            timeout_ms=self._advisor_evidence_timeout_ms(request),
-            workspace_root=str(workspace_root),
-            background=request.get("background") is True,
-        )
-        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-        advisor_metadata = {
-            "source": suggestion.get("source") or request.get("source") or "llm_product_surface_advisor",
-            "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
-            "executorId": self._advisor_evidence_executor_id(
-                request=request,
-                request_index=int(suggestion.get("requestIndex") or 0),
-                suggestion=suggestion,
-            ),
-            "requestIndex": suggestion.get("requestIndex"),
-            "requestKind": suggestion.get("requestKind"),
-            "summary": suggestion.get("summary"),
-            "target": suggestion.get("target"),
-            "blocking": True,
-            "surfaceType": payload.get("surface_type"),
-            "rationale": request.get("rationale") or advice.get("rationale"),
-        }
-        approval_payload = {
-            **execution_request,
-            "advisorEvidence": {
-                key: value for key, value in advisor_metadata.items() if value not in ("", None)
-            },
-        }
-        return approval_payload, execution_request
-
-    def _advisor_evidence_tool_approval_request(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        advice: dict[str, Any],
-        request: dict[str, Any],
-        suggestion: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        tool_name = str(suggestion.get("toolName") or "").strip()
-        if not tool_name:
-            raise ValueError("Advisor evidence tool name is empty")
-        if tool_name == "run_command":
-            raise ValueError("Advisor evidence run_command must use suggestedCommand approval")
-        raw_arguments = suggestion.get("arguments")
-        arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
-        workspace_root = self._advisor_evidence_workspace_root(task=task, context=context, tool_name=tool_name)
-        tool_context = {
-            **(context if isinstance(context, dict) else {}),
-            "workspace_root": str(workspace_root),
-        }
-        tool_context.setdefault("search_config", {})
-        tool_context.setdefault("search_mode", "content")
-        self._fill_tool_defaults(tool_name, arguments, tool_context)
-        execution_request = {
-            "taskId": str(task.get("id") or ""),
-            "toolName": tool_name,
-            "arguments": arguments,
-            "workspaceRoot": str(workspace_root),
-            "capability": suggestion.get("capability"),
-        }
-        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-        advisor_metadata = {
-            "source": suggestion.get("source") or request.get("source") or "llm_product_surface_advisor",
-            "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
-            "executorId": self._advisor_evidence_executor_id(
-                request=request,
-                request_index=int(suggestion.get("requestIndex") or 0),
-                suggestion=suggestion,
-            ),
-            "requestIndex": suggestion.get("requestIndex"),
-            "requestKind": suggestion.get("requestKind"),
-            "summary": suggestion.get("summary"),
-            "target": suggestion.get("target"),
-            "blocking": True,
-            "surfaceType": payload.get("surface_type"),
-            "rationale": request.get("rationale") or advice.get("rationale"),
-        }
-        approval_payload = {
-            **execution_request,
-            "advisorEvidence": {
-                key: value for key, value in advisor_metadata.items() if value not in ("", None)
-            },
-        }
-        return approval_payload, execution_request
-
-    def _advisor_evidence_workspace_root(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        tool_name: str = "run_command",
-    ) -> Path:
-        raw_root = ""
-        if isinstance(context, dict):
-            raw_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
-        if not raw_root:
-            session_id = str(task.get("sessionId") or "").strip()
-            if session_id:
-                session = self._store.get_session({"sessionId": session_id})["session"]
-                raw_root = str(session.get("workspaceRoot") or "").strip()
-        if not raw_root:
-            raise ValueError("workspaceRoot is required for advisor evidence execution approval")
-
-        root = Path(raw_root).resolve()
-        if hasattr(self, "_apply_task_worktree_to_tool_arguments"):
-            try:
-                bound = self._apply_task_worktree_to_tool_arguments(
-                    task_id=task["id"],
-                    tool_name=tool_name,
-                    arguments={"workspaceRoot": str(root), "cwd": "."},
-                )
-                bound_root = bound.get("workspaceRoot") if isinstance(bound, dict) else None
-                if isinstance(bound_root, str) and bound_root.strip():
-                    root = Path(bound_root).resolve()
-            except Exception:  # noqa: BLE001
-                logger.debug("Failed to bind advisor evidence execution to task worktree", exc_info=True)
-        if not root.exists() or not root.is_dir():
-            raise ValueError(f"Workspace root does not exist: {root}")
-        return root
-
-    def _advisor_evidence_normalized_cwd(self, workspace_root: Path, raw_cwd: Any) -> str:
-        cwd_text = str(raw_cwd or ".").strip() or "."
-        cwd_candidate = Path(cwd_text)
-        cwd_path = cwd_candidate.resolve() if cwd_candidate.is_absolute() else (workspace_root / cwd_candidate).resolve()
-        if not cwd_path.is_dir():
-            raise ValueError(f"Advisor evidence command cwd does not exist: {cwd_text}")
-        try:
-            relative = cwd_path.relative_to(workspace_root.resolve())
-        except ValueError as exc:
-            raise ValueError(f"Advisor evidence command cwd is outside workspace: {cwd_text}") from exc
-        return "." if str(relative) == "." else relative.as_posix()
-
-    def _advisor_evidence_timeout_ms(self, request: dict[str, Any]) -> int:
-        raw_timeout = request.get("timeoutMs") or request.get("timeout_ms")
-        if raw_timeout is None:
-            config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
-            config = config_result.get("config") if isinstance(config_result, dict) else {}
-            policy = config.get("policy") if isinstance(config, dict) else {}
-            raw_timeout = policy.get("commandTimeoutMs") if isinstance(policy, dict) else None
-        try:
-            timeout_ms = int(raw_timeout or 600_000)
-        except (TypeError, ValueError):
-            timeout_ms = 600_000
-        return max(1000, min(timeout_ms, 1_800_000))
-
-    def _publish_advisor_evidence_approval_requested(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        approval: dict[str, Any],
-        advisor_evidence: Any,
-    ) -> None:
-        try:
-            request = json.loads(approval.get("requestJson") or "{}")
-        except json.JSONDecodeError:
-            request = {}
-        kind = str(approval.get("kind") or request.get("kind") or "advisor_tool")
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="approval.requested",
-            payload={
-                "approvalId": approval["id"],
-                "taskId": task["id"],
-                "kind": kind,
-                "request": request,
-                "source": "llm_product_surface_advisor",
-                "advisorEvidence": advisor_evidence,
-            },
-        )
-        self._fire_hooks(
-            "on_approval_required",
-            session_id,
-            task,
-            extra_context={
-                "approvalId": approval["id"],
-                "kind": kind,
-                "source": "llm_product_surface_advisor",
-                "advisorEvidence": advisor_evidence,
-            },
-        )
-
-    def _advisor_evidence_execution_suggestions(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        advice: dict[str, Any],
-        requested_evidence: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        suggestions: list[dict[str, Any]] = []
-        for index, request in enumerate(requested_evidence):
-            if not isinstance(request, dict):
-                continue
-            if request.get("status") == "satisfied":
-                continue
-            had_explicit_suggestion = False
-            command = request.get("suggestedCommand")
-            if isinstance(command, str) and command.strip():
-                had_explicit_suggestion = True
-                permission = self._advisor_evidence_permission_summary(
-                    task=task,
-                    request=request,
-                    command=command.strip(),
-                )
-                decision = str(permission.get("decision") or "approval_required")
-                execution_state = "ready_for_executor"
-                if decision == "approval_required":
-                    execution_state = "approval_required"
-                elif decision == "deny":
-                    execution_state = "denied_by_policy"
-                suggestion: dict[str, Any] = {
-                    "type": "run_command",
-                    "toolName": "run_command",
-                    "command": command.strip(),
-                    "requestIndex": index,
-                    "requestKind": request.get("kind"),
-                    "summary": request.get("summary"),
-                    "target": request.get("target"),
-                    "blocking": request.get("blocking") is True,
-                    "source": "llm_product_surface_advisor",
-                    "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
-                    "executionState": execution_state,
-                    "executionMode": "suggestion_only",
-                    "permissionDecision": decision,
-                    "requiresApproval": decision == "approval_required",
-                }
-                if request.get("domain") not in (None, ""):
-                    suggestion["domain"] = request.get("domain")
-                suggestion["adapterKind"] = "run_command"
-                suggestion["adapterConfidence"] = 1.0
-                if permission.get("reason"):
-                    suggestion["permissionReason"] = permission["reason"]
-                if permission.get("approvalKind"):
-                    suggestion["approvalKind"] = permission["approvalKind"]
-                suggestions.append({key: value for key, value in suggestion.items() if value not in (None, "")})
-
-            suggested_tool = request.get("suggestedTool")
-            if not isinstance(suggested_tool, dict):
-                if not had_explicit_suggestion:
-                    suggestions.extend(self._advisor_evidence_registry_suggestions(
-                        task=task,
-                        context=context,
-                        advice=advice,
-                        request=request,
-                        request_index=index,
-                    ))
-                continue
-            tool_name = str(suggested_tool.get("name") or suggested_tool.get("toolName") or "").strip()
-            if not tool_name or tool_name == "run_command":
-                if not had_explicit_suggestion:
-                    suggestions.extend(self._advisor_evidence_registry_suggestions(
-                        task=task,
-                        context=context,
-                        advice=advice,
-                        request=request,
-                        request_index=index,
-                    ))
-                continue
-            had_explicit_suggestion = True
-            raw_arguments = suggested_tool.get("arguments")
-            arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
-            permission = self._advisor_evidence_tool_permission_summary(
-                task=task,
-                context=context,
-                request=request,
-                tool_name=tool_name,
-                arguments=arguments,
-            )
-            decision = str(permission.get("decision") or "approval_required")
-            execution_state = "ready_for_executor"
-            if decision == "approval_required":
-                execution_state = "approval_required"
-            elif decision == "deny":
-                execution_state = "denied_by_policy"
-            suggestion: dict[str, Any] = {
-                "type": "tool",
-                "toolName": tool_name,
-                "arguments": arguments,
-                "requestIndex": index,
-                "requestKind": request.get("kind"),
-                "summary": request.get("summary"),
-                "target": request.get("target"),
-                "blocking": request.get("blocking") is True,
-                "source": "llm_product_surface_advisor",
-                "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
-                "executionState": execution_state,
-                "executionMode": "suggestion_only",
-                "permissionDecision": decision,
-                "requiresApproval": decision == "approval_required",
-            }
-            if permission.get("capability"):
-                suggestion["capability"] = permission["capability"]
-            if permission.get("adapterKind"):
-                suggestion["adapterKind"] = permission["adapterKind"]
-            if permission.get("adapterConfidence") is not None:
-                suggestion["adapterConfidence"] = permission["adapterConfidence"]
-            if request.get("domain") not in (None, ""):
-                suggestion["domain"] = request.get("domain")
-            if permission.get("reason"):
-                suggestion["permissionReason"] = permission["reason"]
-            if permission.get("approvalKind"):
-                suggestion["approvalKind"] = permission["approvalKind"]
-            suggestions.append({key: value for key, value in suggestion.items() if value not in (None, "")})
-        return suggestions[:20]
-
-    def _advisor_evidence_registry_suggestions(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        advice: dict[str, Any],
-        request: dict[str, Any],
-        request_index: int,
-    ) -> list[dict[str, Any]]:
-        adapter = self._advisor_evidence_registry_match(request)
-        if adapter is None:
-            return []
-        adapter_kind = str(adapter.get("adapterKind") or "").strip()
-        if not adapter_kind:
-            return []
-        suggestions: list[dict[str, Any]] = []
-        for tool_name in adapter.get("toolCandidates", ()) or ():
-            tool_name = str(tool_name or "").strip()
-            if not tool_name:
-                continue
-            arguments = self._advisor_evidence_adapter_arguments(
-                adapter_kind=adapter_kind,
-                tool_name=tool_name,
-                request=request,
-            )
-            if arguments is None:
-                continue
-            permission = self._advisor_evidence_tool_permission_summary(
-                task=task,
-                context=context,
-                request=request,
-                tool_name=tool_name,
-                arguments=arguments,
-            )
-            decision = str(permission.get("decision") or "approval_required")
-            execution_state = "ready_for_executor"
-            if decision == "approval_required":
-                execution_state = "approval_required"
-            elif decision == "deny":
-                execution_state = "denied_by_policy"
-            suggestion: dict[str, Any] = {
-                "type": "tool",
-                "toolName": tool_name,
-                "arguments": arguments,
-                "requestIndex": request_index,
-                "requestKind": request.get("kind"),
-                "summary": request.get("summary"),
-                "target": request.get("target"),
-                "blocking": request.get("blocking") is True,
-                "source": "runtime_evidence_adapter_registry",
-                "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
-                "executionState": execution_state,
-                "executionMode": "adapter_suggestion",
-                "permissionDecision": decision,
-                "requiresApproval": decision == "approval_required",
-                "adapterKind": permission.get("adapterKind") or adapter_kind,
-                "adapterConfidence": permission.get("adapterConfidence", adapter.get("confidence")),
-            }
-            if permission.get("capability"):
-                suggestion["capability"] = permission["capability"]
-            if request.get("domain") not in (None, ""):
-                suggestion["domain"] = request.get("domain")
-            if permission.get("reason"):
-                suggestion["permissionReason"] = permission["reason"]
-            if permission.get("approvalKind"):
-                suggestion["approvalKind"] = permission["approvalKind"]
-            suggestions.append({key: value for key, value in suggestion.items() if value not in (None, "")})
-            if decision != "deny":
-                break
-        if suggestions:
-            return suggestions
-        return [{
-            "type": "adapter",
-            "requestIndex": request_index,
-            "requestKind": request.get("kind"),
-            "summary": request.get("summary"),
-            "target": request.get("target"),
-            "blocking": request.get("blocking") is True,
-            "source": "runtime_evidence_adapter_registry",
-            "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
-            "executionState": "missing_tool",
-            "executionMode": "adapter_registry",
-            "permissionDecision": "deny",
-            "requiresApproval": False,
-            "adapterKind": adapter_kind,
-            "adapterConfidence": adapter.get("confidence"),
-            "permissionReason": "Runtime has a matching evidence adapter kind but no registered executable tool for this workspace.",
-        }]
-
-    def _advisor_evidence_registry_match(self, request: dict[str, Any]) -> dict[str, Any] | None:
-        adapter_kind = self._advisor_evidence_inferred_adapter_kind(request)
-        if adapter_kind in {"run_command", "tool", "mcp_tool", "semantic_evidence_adapter"}:
-            return None
-        for adapter in _ADVISOR_EVIDENCE_ADAPTER_REGISTRY:
-            if str(adapter.get("adapterKind") or "") == adapter_kind:
-                return dict(adapter)
-        return None
-
-    @staticmethod
-    def _advisor_evidence_adapter_arguments(
-        *,
-        adapter_kind: str,
-        tool_name: str,
-        request: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        target = str(request.get("target") or "").strip()
-        summary = str(request.get("summary") or "").strip()
-        if tool_name in {"browser", "web_fetch"}:
-            url = target if target.startswith(("http://", "https://")) else ""
-            if not url:
-                return None
-            if tool_name == "browser":
-                return {"url": url, "action": "read"}
-            return {"url": url, "method": "GET"}
-        if tool_name == "read_file":
-            candidate = target or summary
-            if not candidate:
-                return None
-            if candidate.startswith(("http://", "https://")):
-                return None
-            normalized = candidate.replace("\\", "/").strip().strip("`'\" ")
-            if not normalized or normalized in {".", "/"}:
-                return None
-            return {"path": normalized}
-        return None
-
-    def _advisor_evidence_permission_summary(
-        self,
-        *,
-        task: dict[str, Any],
-        request: dict[str, Any],
-        command: str,
-    ) -> dict[str, Any]:
-        try:
-            config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
-            config = config_result.get("config") if isinstance(config_result, dict) else {}
-            if not isinstance(config, dict):
-                config = {}
-            decision = PermissionEngine(config).evaluate(PermissionRequest(
-                capability="runCommand",
-                tool_name="advisor.evidence.run_command",
-                context={
-                    "taskId": task.get("id"),
-                    "sessionId": task.get("sessionId"),
-                    "evidenceKind": request.get("kind"),
-                    "target": request.get("target"),
-                    "command": command,
-                    "source": "llm_product_surface_advisor",
-                },
-            ))
-            return {
-                "decision": decision.decision,
-                "capability": decision.capability,
-                "reason": decision.reason,
-                "approvalKind": decision.approval_kind,
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to evaluate advisor evidence permission", exc_info=True)
-            return {
-                "decision": "approval_required",
-                "capability": "runCommand",
-                "reason": f"Permission evaluation failed; approval required before execution: {exc}",
-                "approvalKind": "run_command",
-            }
-
-    def _advisor_evidence_tool_permission_summary(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        request: dict[str, Any],
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        adapter_match = self._advisor_evidence_tool_adapter_match(request=request, tool_name=tool_name)
-        if not getattr(self._tool_registry, "has_tool", lambda _name: False)(tool_name):
-            return {
-                "decision": "deny",
-                "capability": TOOL_CAPABILITIES.get(tool_name, "unknown"),
-                "reason": f"Tool {tool_name!r} is not registered in this runtime.",
-                "adapterKind": adapter_match["adapterKind"],
-                "adapterConfidence": adapter_match["confidence"],
-            }
-        policy_summary = self._advisor_evidence_tool_policy_summary(
-            task=task,
-            context=context,
-            tool_name=tool_name,
-        )
-        if policy_summary.get("decision") == "deny":
-            if adapter_match:
-                policy_summary["adapterKind"] = adapter_match["adapterKind"]
-                policy_summary["adapterConfidence"] = adapter_match["confidence"]
-            return policy_summary
-        capability = TOOL_CAPABILITIES.get(tool_name)
-        if not capability:
-            result = {
-                "decision": "approval_required",
-                "capability": "mcpTool" if tool_name.startswith("mcp__") else "customTool",
-                "reason": (
-                    "Registered dynamic tool requires explicit advisor evidence approval."
-                    if tool_name.startswith("mcp__")
-                    else "Registered custom tool requires explicit advisor evidence approval."
-                ),
-                "approvalKind": "advisor_tool",
-            }
-            if adapter_match:
-                result["adapterKind"] = adapter_match["adapterKind"]
-                result["adapterConfidence"] = adapter_match["confidence"]
-            return result
-        try:
-            config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
-            config = config_result.get("config") if isinstance(config_result, dict) else {}
-            if not isinstance(config, dict):
-                config = {}
-            decision = PermissionEngine(config).evaluate(PermissionRequest(
-                capability=capability,
-                tool_name=tool_name,
-                context={
-                    "taskId": task.get("id"),
-                    "sessionId": task.get("sessionId"),
-                    "evidenceKind": request.get("kind"),
-                    "target": request.get("target"),
-                    "toolName": tool_name,
-                    "arguments": arguments,
-                    "source": "llm_product_surface_advisor",
-                },
-            ))
-            approval_kind = decision.approval_kind
-            if decision.decision == "approval_required":
-                approval_kind = "advisor_tool"
-            result = {
-                "decision": decision.decision,
-                "capability": decision.capability,
-                "reason": decision.reason,
-                "approvalKind": approval_kind,
-            }
-            if adapter_match:
-                result["adapterKind"] = adapter_match["adapterKind"]
-                result["adapterConfidence"] = adapter_match["confidence"]
-            return result
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to evaluate advisor evidence tool permission", exc_info=True)
-            return {
-                "decision": "approval_required",
-                "capability": capability,
-                "reason": f"Permission evaluation failed; approval required before tool execution: {exc}",
-                "approvalKind": "advisor_tool",
-            }
-
-    @staticmethod
-    def _advisor_evidence_tool_adapter_match(*, request: dict[str, Any], tool_name: str) -> dict[str, Any]:
-        inferred = TaskLifecycleMixin._advisor_evidence_inferred_adapter_kind(request)
-        if tool_name == "browser":
-            confidence = 0.95 if inferred == "browser_inspection_adapter" else 0.65
-            return {"adapterKind": "browser_inspection_adapter", "confidence": confidence}
-        if tool_name.startswith("mcp__"):
-            return {"adapterKind": "mcp_tool", "confidence": 0.9}
-        if tool_name == "web_fetch":
-            return {"adapterKind": "external_service_probe_adapter", "confidence": 0.75}
-        return {"adapterKind": inferred if inferred != "semantic_evidence_adapter" else "tool", "confidence": 0.6}
-
-    def _advisor_evidence_tool_policy_summary(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        tool_name: str,
-    ) -> dict[str, Any]:
-        policy_context = dict(context) if isinstance(context, dict) else {}
-        if not isinstance(policy_context.get("config"), dict):
-            try:
-                config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
-                config = config_result.get("config") if isinstance(config_result, dict) else {}
-                if isinstance(config, dict):
-                    policy_context["config"] = config
-            except Exception:  # noqa: BLE001
-                logger.debug("Failed to load config for advisor evidence tool policy", exc_info=True)
-        decision = ToolPolicyResolver().resolve(
-            task=task,
-            context=policy_context,
-            tool_results=[],
-            registered_tools=[{"name": tool_name}],
-        )
-        if tool_name in decision.denied_tool_names:
-            return {
-                "decision": "deny",
-                "capability": TOOL_CAPABILITIES.get(tool_name, "mcpTool" if tool_name.startswith("mcp__") else "customTool"),
-                "reason": decision.reasons.get(tool_name) or f"Tool {tool_name!r} is denied by tool policy.",
-            }
-        return {"decision": "allow"}
-
-    def _consult_product_surface_advisor(
-        self,
-        *,
-        task: dict[str, Any],
-        summary: str,
-        context: dict[str, Any],
-        completion_evidence: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        advisor = getattr(self, "_decision_advisor", None)
-        if advisor is None:
-            return None
-        if self._should_skip_product_surface_advisor(task, context, completion_evidence):
-            return None
-        try:
-            input_context: dict[str, Any] = {
-                "goal": task.get("goal", ""),
-                "summary": summary[:2000],
-                "acceptance_criteria": task.get("acceptanceCriteria") or [],
-                "changed_files": [
-                    {
-                        "path": f.get("path", ""),
-                        "summary": f.get("summary") or f.get("description") or "",
-                    }
-                    for f in (task.get("changedFiles") or [])
-                    if isinstance(f, dict)
-                ][:20],
-                "objective_signals": self._product_surface_objective_signals(completion_evidence),
-            }
-            config = context.get("config") if isinstance(context, dict) else None
-            if isinstance(config, dict):
-                input_context["config"] = config
-            adapters = completion_evidence.get("advisorEvidenceAdapters")
-            if isinstance(adapters, dict):
-                input_context["advisor_evidence_adapters"] = adapters
-            result = advisor.advise("product_surface_decision", input_context)
-            return {
-                "accepted": result.accepted,
-                "source": result.source,
-                "rationale": result.rationale,
-                "fallback_reason": result.fallback_reason,
-                "proposal_id": result.proposal_id,
-                "model_id": getattr(result, "model_id", None),
-                "validation_reasons": list(getattr(result, "validation_reasons", []) or []),
-                "confidence": result.confidence,
-                "payload": result.payload,
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Product surface advisor call failed for task %s: %s", task.get("id"), exc)
-            return None
-
-    def _should_skip_product_surface_advisor(
-        self,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        completion_evidence: dict[str, Any],
-    ) -> bool:
-        if context.get("_skip_product_surface_advisor") is True:
-            return True
-        if self._should_skip_completion_advisor(task, context):
-            return True
-        advisor_config = self._advisor_config(context)
-        if advisor_config.get("enableProductSurfaceAdvisor") is False:
-            return True
-        if context.get("_child_worker") is True or task.get("role", "root") != "root":
-            return not bool(advisor_config.get("enableChildProductSurfaceAdvisor"))
-        if not self._is_write_or_verification_task(task=task, context=context):
-            return True
-        return not bool(
-            completion_evidence.get("changedFiles")
-            or completion_evidence.get("commands")
-            or completion_evidence.get("verification")
-            or completion_evidence.get("testsRun")
-            or completion_evidence.get("productAdvisories")
-            or completion_evidence.get("acceptance")
-        )
-
-    def _product_surface_objective_signals(self, completion_evidence: dict[str, Any]) -> dict[str, Any]:
-        acceptance = [
-            {
-                "criterion": item.get("criterion"),
-                "status": item.get("status"),
-                "source": item.get("source"),
-                "apiMethod": item.get("apiMethod"),
-                "apiPath": item.get("apiPath"),
-                "issues": item.get("issues") or [],
-            }
-            for item in (completion_evidence.get("acceptance") or [])[:30]
-            if isinstance(item, dict)
-        ]
-        verification = [
-            {
-                "command": item.get("command") or item.get("name"),
-                "status": item.get("status"),
-                "summary": item.get("summary"),
-            }
-            for item in (completion_evidence.get("verification") or [])[:20]
-            if isinstance(item, dict)
-        ]
-        return {
-            "evidence_level": completion_evidence.get("evidenceLevel"),
-            "counts": completion_evidence.get("counts") or {},
-            "acceptance": acceptance,
-            "objective_product_advisories": completion_evidence.get("productAdvisories") or [],
-            "verification": verification,
-            "tests_run": completion_evidence.get("testsRun") or [],
-            "advisor_evidence_adapters": completion_evidence.get("advisorEvidenceAdapters") or {},
-        }
-
-    def _record_product_surface_advisor_proposal(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        summary: str,
-        product_surface_advice: dict[str, Any],
-    ) -> str | None:
-        try:
-            payload = product_surface_advice.get("payload")
-            proposal_payload = payload if isinstance(payload, dict) else {}
-            source = {
-                "type": product_surface_advice.get("source") or "unknown",
-                "confidence": product_surface_advice.get("confidence"),
-                "rationale": product_surface_advice.get("rationale") or "",
-                "advisorProposalId": product_surface_advice.get("proposal_id"),
-            }
-            if product_surface_advice.get("fallback_reason"):
-                source["fallbackReason"] = product_surface_advice["fallback_reason"]
-            if product_surface_advice.get("validation_reasons"):
-                source["validationReasons"] = product_surface_advice["validation_reasons"]
-            if product_surface_advice.get("model_id"):
-                source["model_id"] = product_surface_advice["model_id"]
-            goal = str(task.get("goal") or "")
-            input_summary = f"goal: {goal}\nsummary: {summary}"[:500]
-            record = self._store.create_proposal({
-                "kind": "product_surface_decision",
-                "sessionId": session_id,
-                "taskId": task["id"],
-                "proposal": proposal_payload,
-                "source": source,
-                "inputSummary": input_summary,
-                "modelId": product_surface_advice.get("model_id"),
-            })
-            proposal_record_id = record["proposal"]["id"]
-            if product_surface_advice.get("accepted") is True:
-                self._store.validate_proposal({
-                    "proposalId": proposal_record_id,
-                    "status": "accepted",
-                    "reasons": [],
-                })
-                outcome = "accepted"
-            else:
-                reasons = [
-                    str(item).strip()
-                    for item in (product_surface_advice.get("validation_reasons") or [])
-                    if str(item).strip()
-                ]
-                fallback = str(product_surface_advice.get("fallback_reason") or "").strip()
-                if not reasons and fallback:
-                    reasons.append(fallback)
-                self._store.validate_proposal({
-                    "proposalId": proposal_record_id,
-                    "status": "rejected",
-                    "reasons": reasons or ["product surface advisor rejected"],
-                })
-                outcome = "rejected"
-            product_surface_advice["proposalRecordId"] = proposal_record_id
-            payload_dict = proposal_payload if isinstance(proposal_payload, dict) else {}
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type="agent.decision.product_surface",
-                payload={
-                    "proposalId": proposal_record_id,
-                    "outcome": outcome,
-                    "surfaceType": payload_dict.get("surface_type"),
-                    "source": product_surface_advice.get("source"),
-                    "confidence": product_surface_advice.get("confidence"),
-                    "rationale": product_surface_advice.get("rationale"),
-                },
-            )
-            return proposal_record_id
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to record product surface advisor proposal", exc_info=True)
-            return None
-
-    def _product_surface_advisory_from_advice(self, advice: dict[str, Any]) -> dict[str, Any] | None:
-        if advice.get("accepted") is not True:
-            return None
-        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-        surface_type = str(payload.get("surface_type") or "").strip()
-        if not surface_type:
-            return None
-        recommended = self._completion_string_list(payload.get("recommended_verification"))
-        evidence_requests = self._normalize_advisor_evidence_requests(payload.get("evidence_requests"))
-        verification_intents = payload.get("verification_intents") if isinstance(payload.get("verification_intents"), list) else []
-        has_blocking_request = any(item.get("blocking") is True for item in evidence_requests)
-        summary = str(advice.get("rationale") or "").strip()
-        if not summary:
-            summary = f"LLM classified the task artifact surface as {surface_type}."
-        return {
-            "kind": "llm_product_surface",
-            "surfaceType": surface_type,
-            "severity": "suggestion" if recommended or verification_intents or evidence_requests else "info",
-            "source": "llm_product_surface_advisor",
-            "summary": summary[:500],
-            "recommendedVerification": recommended,
-            "verificationIntents": verification_intents[:10],
-            "evidenceRequests": evidence_requests[:10],
-            "hasBlockingEvidenceRequest": has_blocking_request,
-            "confidence": advice.get("confidence"),
-            "proposalRecordId": advice.get("proposalRecordId"),
-        }
-
-    def _advisor_requested_evidence_from_advice(
-        self,
-        *,
-        advice: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        tool_results: list[dict[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
-        if advice.get("accepted") is not True:
-            return []
-        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
-        requests = self._normalize_advisor_evidence_requests(payload.get("evidence_requests"))
-        if not requests:
-            return []
-        return [
-            {
-                **request,
-                "status": self._advisor_evidence_request_status(
-                    request=request,
-                    completion_evidence=completion_evidence,
-                    tool_results=tool_results or [],
-                ),
-                "source": "llm_product_surface_advisor",
-                "proposalRecordId": advice.get("proposalRecordId"),
-            }
-            for request in requests
-        ]
-
-    def _normalize_advisor_evidence_requests(self, value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
-        requests: list[dict[str, Any]] = []
-        for item in value:
-            if isinstance(item, str):
-                text = item.strip()
-                if text:
-                    requests.append({
-                        "kind": "evidence",
-                        "summary": text,
-                        "blocking": False,
-                    })
-                continue
-            if not isinstance(item, dict):
-                continue
-            kind = str(item.get("kind") or "evidence").strip() or "evidence"
-            summary = str(
-                item.get("summary")
-                or item.get("description")
-                or item.get("target")
-                or item.get("why")
-                or kind
-            ).strip()
-            request: dict[str, Any] = {
-                "kind": kind,
-                "summary": summary,
-                "blocking": bool(item.get("blocking")) if isinstance(item.get("blocking"), bool) else False,
-            }
-            for key in ("target", "rationale", "suggestedCommand", "domain", "cwd", "shell"):
-                if item.get(key) not in (None, ""):
-                    request[key] = item[key]
-            if request.get("suggestedCommand") in (None, "") and item.get("suggested_command") not in (None, ""):
-                request["suggestedCommand"] = item.get("suggested_command")
-            suggested_tool = self._normalize_advisor_evidence_tool_spec(
-                item.get("suggestedTool") if item.get("suggestedTool") is not None else item.get("suggested_tool")
-            )
-            if suggested_tool:
-                request["suggestedTool"] = suggested_tool
-            for key in ("timeoutMs", "timeout_ms", "background"):
-                if key in item and item.get(key) not in (None, ""):
-                    request[key] = item[key]
-            if isinstance(item.get("satisfied"), bool):
-                request["satisfied"] = item["satisfied"]
-            if isinstance(item.get("status"), str) and item["status"].strip():
-                request["advisorStatus"] = item["status"].strip()
-            expanded = self._expand_advisor_evidence_execution_requests(request=request, source=item)
-            requests.extend(expanded or [request])
-        return requests[:20]
-
-    def _expand_advisor_evidence_execution_requests(
-        self,
-        *,
-        request: dict[str, Any],
-        source: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        commands = self._normalize_advisor_evidence_command_list(
-            source.get("suggestedCommands") if source.get("suggestedCommands") is not None else source.get("suggested_commands")
-        )
-        tools = self._normalize_advisor_evidence_tool_list(
-            source.get("suggestedTools") if source.get("suggestedTools") is not None else source.get("suggested_tools")
-        )
-        if not commands and not tools:
-            return []
-        expanded: list[dict[str, Any]] = []
-        for command in commands:
-            item = {key: value for key, value in request.items() if key != "suggestedTool"}
-            item.update(command)
-            expanded.append(item)
-        for tool in tools:
-            item = {key: value for key, value in request.items() if key != "suggestedCommand"}
-            item["suggestedTool"] = tool
-            expanded.append(item)
-        return expanded
-
-    @staticmethod
-    def _normalize_advisor_evidence_command_list(value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
-        commands: list[dict[str, Any]] = []
-        for item in value:
-            if isinstance(item, str):
-                command = item.strip()
-                if command:
-                    commands.append({"suggestedCommand": command})
-                continue
-            if not isinstance(item, dict):
-                continue
-            command = str(item.get("suggestedCommand") or item.get("suggested_command") or item.get("command") or "").strip()
-            if not command:
-                continue
-            normalized: dict[str, Any] = {"suggestedCommand": command}
-            for key in ("cwd", "shell", "timeoutMs", "timeout_ms", "background", "target", "rationale"):
-                if item.get(key) not in (None, ""):
-                    normalized[key] = item[key]
-            commands.append(normalized)
-        return commands
-
-    def _normalize_advisor_evidence_tool_list(self, value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
-        tools: list[dict[str, Any]] = []
-        for item in value:
-            normalized = self._normalize_advisor_evidence_tool_spec(item)
-            if normalized:
-                tools.append(normalized)
-        return tools
-
-    @staticmethod
-    def _normalize_advisor_evidence_tool_spec(value: Any) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            return {}
-        tool_name = value.get("name") or value.get("toolName")
-        arguments = value.get("arguments")
-        normalized_tool: dict[str, Any] = {}
-        if isinstance(tool_name, str) and tool_name.strip():
-            normalized_tool["name"] = tool_name.strip()
-        if isinstance(arguments, dict):
-            normalized_tool["arguments"] = dict(arguments)
-        return normalized_tool
-
-    def _advisor_evidence_request_status(
-        self,
-        *,
-        request: dict[str, Any],
-        completion_evidence: dict[str, Any],
-        tool_results: list[dict[str, Any]] | None = None,
-    ) -> str:
-        if request.get("satisfied") is True:
-            return "satisfied"
-        if request.get("satisfied") is False:
-            return "missing"
-        advisor_status = str(request.get("advisorStatus") or "").strip().casefold()
-        if advisor_status in {"satisfied", "present", "covered", "verified", "passed"}:
-            return "satisfied"
-        if advisor_status in {"missing", "absent", "unverified", "needed", "required"}:
-            return "missing"
-        if self._advisor_evidence_suggested_command_satisfied(
-            request=request,
-            completion_evidence=completion_evidence,
-        ):
-            return "satisfied"
-        if self._advisor_evidence_suggested_tool_satisfied(
-            request=request,
-            tool_results=tool_results or [],
-        ):
-            return "satisfied"
-        if self._advisor_evidence_adapter_tool_satisfied(
-            request=request,
-            tool_results=tool_results or [],
-        ):
-            return "satisfied"
-        return "missing" if request.get("blocking") is True else "requested"
-
-    def _advisor_evidence_suggested_command_satisfied(
-        self,
-        *,
-        request: dict[str, Any],
-        completion_evidence: dict[str, Any],
-    ) -> bool:
-        command = str(request.get("suggestedCommand") or "").strip()
-        if not command:
-            return False
-        candidates = {self._advisor_evidence_command_key(command)}
-        try:
-            shell_name = normalize_shell(
-                str(request.get("shell")).strip() if isinstance(request.get("shell"), str) else None,
-                self._store,
-            )
-            candidates.add(self._advisor_evidence_command_key(_powershell_execution_command(command, shell_name)))
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to normalize advisor evidence command for satisfaction check", exc_info=True)
-
-        commands = completion_evidence.get("commands")
-        if not isinstance(commands, list):
-            return False
-        for item in commands:
-            if not isinstance(item, dict) or not self._completion_item_passed(item):
-                continue
-            command_text = item.get("command")
-            if self._advisor_evidence_command_key(command_text) in candidates:
-                return True
-        return False
-
-    @staticmethod
-    def _advisor_evidence_command_key(command: Any) -> str:
-        return " ".join(str(command or "").strip().split()).casefold()
-
-    def _advisor_evidence_suggested_tool_satisfied(
-        self,
-        *,
-        request: dict[str, Any],
-        tool_results: list[dict[str, Any]],
-    ) -> bool:
-        suggested_tool = request.get("suggestedTool")
-        if not isinstance(suggested_tool, dict):
-            return False
-        tool_name = str(suggested_tool.get("name") or suggested_tool.get("toolName") or "").strip()
-        if not tool_name:
-            return False
-        expected_arguments = suggested_tool.get("arguments")
-        expected_subset = expected_arguments if isinstance(expected_arguments, dict) else {}
-        for tool_result in tool_results:
-            if not isinstance(tool_result, dict):
-                continue
-            if str(tool_result.get("name") or "").strip() != tool_name:
-                continue
-            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
-            if self._completion_tool_result_failed(result):
-                continue
-            arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
-            if self._advisor_evidence_arguments_match_subset(arguments, expected_subset):
-                return True
-        return False
-
-    def _advisor_evidence_arguments_match_subset(
-        self,
-        actual: dict[str, Any],
-        expected: dict[str, Any],
-    ) -> bool:
-        for key, expected_value in expected.items():
-            if key not in actual:
-                return False
-            if not self._advisor_evidence_argument_values_equal(actual.get(key), expected_value):
-                return False
-        return True
-
-    def _advisor_evidence_argument_values_equal(self, actual: Any, expected: Any) -> bool:
-        if isinstance(actual, dict) and isinstance(expected, dict):
-            return self._advisor_evidence_arguments_match_subset(actual, expected)
-        if isinstance(actual, list) and isinstance(expected, list):
-            return actual == expected
-        if isinstance(actual, str) and isinstance(expected, str):
-            return actual.replace("\\", "/").strip() == expected.replace("\\", "/").strip()
-        return actual == expected
-
     @staticmethod
     def _completion_string_list(value: Any) -> list[str]:
         if not isinstance(value, list):
@@ -4267,175 +1639,6 @@ class TaskLifecycleMixin:
             for item in value
             if str(item).strip()
         ]
-
-    def _consult_completion_advisor(
-        self,
-        task: dict[str, Any],
-        summary: str,
-        context: dict[str, Any] | None = None,
-        *,
-        completion_evidence: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        """Ask DecisionAdvisor whether the task is truly complete.
-
-        Returns a dict with advisor result fields, or None if no advisor is configured.
-        The advisor proposes, but runtime always proceeds with completion — the result
-        is recorded in the decision trace for audit.
-        """
-        advisor = getattr(self, "_decision_advisor", None)
-        if advisor is None:
-            return None
-        if self._should_skip_completion_advisor(task, context or {}):
-            return None
-        try:
-            evidence = completion_evidence or self._build_completion_evidence(
-                task=task,
-                summary=summary,
-                validation=None,
-                tool_results=[],
-                context=context or {},
-            )
-            input_context: dict[str, Any] = {
-                "goal": task.get("goal", ""),
-                "summary": summary[:2000],
-                "acceptance_criteria": task.get("acceptanceCriteria") or [],
-                "completion_evidence": evidence,
-                "completion_audit": evidence.get("audit") or {},
-                "product_advisories": evidence.get("productAdvisories") or [],
-                "advisor_evidence_adapters": evidence.get("advisorEvidenceAdapters") or {},
-                "changed_files": [
-                    f.get("path", "") for f in (task.get("changedFiles") or [])
-                    if isinstance(f, dict)
-                ][:20],
-            }
-            config = (context or {}).get("config") if isinstance(context, dict) else None
-            if isinstance(config, dict):
-                input_context["config"] = config
-            result = advisor.advise("completion_decision", input_context)
-            return {
-                "accepted": result.accepted,
-                "source": result.source,
-                "rationale": result.rationale,
-                "fallback_reason": result.fallback_reason,
-                "proposal_id": result.proposal_id,
-                "model_id": getattr(result, "model_id", None),
-                "validation_reasons": list(getattr(result, "validation_reasons", []) or []),
-                "confidence": result.confidence,
-                "payload": result.payload,
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Completion advisor call failed for task %s: %s", task.get("id"), exc)
-            return None
-
-    def _record_completion_advisor_proposal(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        summary: str,
-        completion_advice: dict[str, Any],
-        completion_evidence: dict[str, Any] | None = None,
-    ) -> str | None:
-        try:
-            payload = completion_advice.get("payload")
-            proposal_payload = payload if isinstance(payload, dict) else {}
-            source = {
-                "type": completion_advice.get("source") or "unknown",
-                "confidence": completion_advice.get("confidence"),
-                "rationale": completion_advice.get("rationale") or "",
-                "advisorProposalId": completion_advice.get("proposal_id"),
-            }
-            if completion_advice.get("fallback_reason"):
-                source["fallbackReason"] = completion_advice["fallback_reason"]
-            if completion_advice.get("validation_reasons"):
-                source["validationReasons"] = completion_advice["validation_reasons"]
-            if completion_advice.get("model_id"):
-                source["model_id"] = completion_advice["model_id"]
-            if isinstance(completion_evidence, dict) and isinstance(completion_evidence.get("audit"), dict):
-                source["completionAudit"] = completion_evidence["audit"]
-            goal = str(task.get("goal") or "")
-            audit = completion_evidence.get("audit") if isinstance(completion_evidence, dict) else {}
-            audit_counts = audit.get("approvalCounts") if isinstance(audit, dict) else {}
-            audit_summary = ""
-            if isinstance(audit_counts, dict) and audit_counts:
-                audit_summary = (
-                    "\napprovals: "
-                    f"total={audit_counts.get('total', 0)} "
-                    f"approved={audit_counts.get('approved', 0)} "
-                    f"rejected={audit_counts.get('rejected', 0)} "
-                    f"pending={audit_counts.get('pending', 0)}"
-                )
-            input_summary = f"goal: {goal}\nsummary: {summary}{audit_summary}"[:500]
-            record = self._store.create_proposal({
-                "kind": "completion_decision",
-                "sessionId": session_id,
-                "taskId": task["id"],
-                "proposal": proposal_payload,
-                "source": source,
-                "inputSummary": input_summary,
-                "modelId": completion_advice.get("model_id"),
-            })
-            proposal_record_id = record["proposal"]["id"]
-            if completion_advice.get("accepted") is True:
-                self._store.validate_proposal({
-                    "proposalId": proposal_record_id,
-                    "status": "accepted",
-                    "reasons": [],
-                })
-            else:
-                reasons = [
-                    str(item).strip()
-                    for item in (completion_advice.get("validation_reasons") or [])
-                    if str(item).strip()
-                ]
-                fallback = str(completion_advice.get("fallback_reason") or "").strip()
-                if not reasons and fallback:
-                    reasons.append(fallback)
-                self._store.validate_proposal({
-                    "proposalId": proposal_record_id,
-                    "status": "rejected",
-                    "reasons": reasons or ["completion advisor rejected"],
-                })
-            completion_advice["proposalRecordId"] = proposal_record_id
-            return proposal_record_id
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to record completion advisor proposal", exc_info=True)
-            return None
-
-    def _should_skip_completion_advisor(self, task: dict[str, Any], context: dict[str, Any]) -> bool:
-        if context.get("_skip_completion_advisor") is True:
-            return True
-        if not self._is_write_or_verification_task(task=task, context=context):
-            return True
-        advisor_config = self._advisor_config(context)
-        if not self._completion_advisor_enabled(advisor_config, context, advisor_configured=True):
-            return True
-        if context.get("_child_worker") is True or task.get("role", "root") != "root":
-            return not bool(advisor_config.get("enableChildCompletionAdvisor"))
-        return False
-
-    @staticmethod
-    def _completion_advisor_enabled(
-        advisor_config: dict[str, Any],
-        context: dict[str, Any],
-        *,
-        advisor_configured: bool = False,
-    ) -> bool:
-        if context.get("_enable_completion_advisor") is True:
-            return True
-        for key in (
-            "enableCompletionAdvisor",
-            "completionAdvisorEnabled",
-            "enableCompletionReviewAdvisor",
-            "enable_completion_advisor",
-            "completion_advisor_enabled",
-        ):
-            value = advisor_config.get(key)
-            if isinstance(value, bool):
-                return value
-            if value is not None:
-                return str(value).strip().casefold() not in {"0", "false", "no", "off", "never"}
-        return False
 
     def _build_completion_evidence(
         self,
@@ -4501,6 +1704,10 @@ class TaskLifecycleMixin:
         )
         command_verification = self._completion_tests_run_from_commands(commands, context=context or {})
         tests_run = self._merge_completion_tests_run(tests_run, command_verification)
+        passed_command_verification = [
+            item for item in command_verification
+            if item.get("status") in {"passed", "success", "completed"}
+        ]
         failed_tool_results = self._unresolved_failed_tool_results(
             tool_evidence,
             changed_files=changed_files,
@@ -4582,14 +1789,6 @@ class TaskLifecycleMixin:
             status = "unverified"
             evidence_level = "summary_only"
 
-        product_advisories = self._completion_product_advisories(
-            task=task,
-            context=context or {},
-            verification=verification,
-            tests_run=tests_run,
-            commands=commands,
-        )
-
         acceptance = self._completion_acceptance_evidence(
             criteria=criteria,
             evidence_level=evidence_level,
@@ -4623,7 +1822,6 @@ class TaskLifecycleMixin:
             "toolResults": tool_evidence,
             "childTasks": child_evidence["childTasks"],
             "unresolvedToolFailures": failed_tool_results,
-            "productAdvisories": product_advisories,
             "validation": {
                 "checks": validation_checks,
                 "summary": (validation or {}).get("summary"),
@@ -4634,7 +1832,7 @@ class TaskLifecycleMixin:
                 "changedFiles": len(changed_files),
                 "commands": len(commands),
                 "verification": len(verification),
-                "passedVerification": len(passed_verification),
+                "passedVerification": len(passed_verification) + len(passed_command_verification),
                 "failedVerification": len(unresolved_failed_verification) + len(failed_validation_checks) + len(unresolved_failed_tests_run),
                 "requiredVerificationFamilies": len(verification_requirements.get("required") or []),
                 "missingVerificationFamilies": len(verification_requirements.get("missing") or []),
@@ -5428,99 +2626,6 @@ class TaskLifecycleMixin:
                 "source": "structural_test_file_count",
             })
         return records
-
-    def _completion_product_advisories(
-        self,
-        *,
-        task: dict[str, Any],
-        context: dict[str, Any],
-        verification: list[dict[str, Any]],
-        tests_run: list[dict[str, Any]],
-        commands: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
-        if not workspace_root:
-            return []
-        root = Path(workspace_root)
-        if not root.exists() or not root.is_dir():
-            return []
-        advisories: list[dict[str, Any]] = []
-        references = self._completion_frontend_api_references(root=root, task=task)
-        if references:
-            backend_routes = self._completion_backend_api_routes(root=root, task=task)
-            api_observations = self._completion_api_contract_observations(
-                references=references,
-                backend_routes=backend_routes,
-            )
-            signals = self._completion_product_advisory_signals(
-                verification=verification,
-                tests_run=tests_run,
-                commands=commands,
-            )
-            matched = [item for item in api_observations if item.get("backendRoute")]
-            advisories.append({
-                "kind": "api_reference_observation",
-                "severity": "info" if signals else "suggestion",
-                "source": "objective_surface_scan",
-                "summary": (
-                    "Changed files include API calls and runtime verification evidence was found."
-                    if signals
-                    else "Changed files include API calls; ask the product-surface advisor what evidence matters for this task."
-                ),
-                "recommendedVerification": [],
-                "apiReferences": api_observations[:10],
-                "localBackendRouteMatches": len(matched),
-                "signals": signals[:10],
-            })
-        docs_observations = self._completion_docs_quality_records(root=root, task=task)
-        if docs_observations:
-            issue_count = sum(len(item.get("issues") or []) for item in docs_observations)
-            advisories.append({
-                "kind": "docs_quality_observation",
-                "severity": "suggestion" if issue_count else "info",
-                "source": "objective_surface_scan",
-                "summary": (
-                    f"{len(docs_observations)} changed docs or README file(s) include {issue_count} structure issue(s); "
-                    "ask the product-surface advisor what evidence matters for this task."
-                    if issue_count
-                    else f"{len(docs_observations)} changed docs or README file(s) look structurally healthy."
-                ),
-                "recommendedVerification": [],
-                "documents": docs_observations[:10],
-                "issueCount": issue_count,
-                "signals": [
-                    {
-                        "path": item.get("path"),
-                        "kind": item.get("kind"),
-                        "issueCount": len(item.get("issues") or []),
-                        "headingCount": item.get("headingCount"),
-                        "codeFenceCount": item.get("codeFenceCount"),
-                        "relativeLinkCount": item.get("relativeLinkCount"),
-                    }
-                    for item in docs_observations[:10]
-                ],
-            })
-        surface_observations = self._completion_changed_surface_records(root=root, task=task)
-        if surface_observations:
-            role_counts: dict[str, int] = {}
-            for item in surface_observations:
-                for role in item.get("roles") or []:
-                    role_text = str(role or "").strip()
-                    if role_text:
-                        role_counts[role_text] = role_counts.get(role_text, 0) + 1
-            advisories.append({
-                "kind": "changed_surface_observation",
-                "severity": "info",
-                "source": "objective_surface_scan",
-                "summary": (
-                    f"{len(surface_observations)} changed artifact surface(s) were classified from paths and file structure; "
-                    "ask the product-surface advisor what evidence matters for this task."
-                ),
-                "recommendedVerification": [],
-                "surfaces": surface_observations[:20],
-                "roleCounts": dict(sorted(role_counts.items())),
-            })
-        return advisories
 
     def _completion_changed_surface_records(
         self,
@@ -6646,6 +3751,11 @@ class TaskLifecycleMixin:
         profile = context.get("_child_profile")
         if isinstance(profile, dict):
             return profile
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            profile = routing.get("profile")
+            if isinstance(profile, dict):
+                return profile
         routing = task.get("routing")
         if not isinstance(routing, dict):
             return None
@@ -7070,7 +4180,7 @@ class TaskLifecycleMixin:
                 "summary": result.get("summary") or result.get("error"),
                 "failed": self._completion_tool_result_failed(result),
             }
-            for key in ("id", "approvalId", "advisorEvidence"):
+            for key in ("id", "approvalId"):
                 if tool_result.get(key) not in (None, "", [], {}):
                     item[key] = tool_result[key]
             if name == "run_command":
@@ -7164,60 +4274,6 @@ class TaskLifecycleMixin:
             if item is failed_item or item.get("name") != "run_command" or item.get("failed") is True:
                 continue
             if self._structural_command_resolution_key(item.get("command")) == failed_key:
-                return True
-        return False
-
-    def _advisor_evidence_adapter_tool_satisfied(
-        self,
-        *,
-        request: dict[str, Any],
-        tool_results: list[dict[str, Any]],
-    ) -> bool:
-        adapter = self._advisor_evidence_registry_match(request)
-        if adapter is None:
-            return False
-        adapter_kind = str(adapter.get("adapterKind") or "").strip()
-        if not adapter_kind:
-            return False
-        candidate_tools = {
-            str(tool_name or "").strip()
-            for tool_name in adapter.get("toolCandidates", ()) or ()
-            if str(tool_name or "").strip()
-        }
-        if not candidate_tools:
-            return False
-        request_kind = str(request.get("kind") or "").strip()
-        request_target = str(request.get("target") or "").strip()
-        for tool_result in tool_results:
-            if not isinstance(tool_result, dict):
-                continue
-            tool_name = str(tool_result.get("name") or "").strip()
-            if tool_name not in candidate_tools:
-                continue
-            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
-            if self._completion_tool_result_failed(result):
-                continue
-            advisor_evidence = tool_result.get("advisorEvidence")
-            if isinstance(advisor_evidence, dict):
-                metadata_adapter_kind = str(advisor_evidence.get("adapterKind") or "").strip()
-                if metadata_adapter_kind and metadata_adapter_kind != adapter_kind:
-                    continue
-                metadata_kind = str(advisor_evidence.get("requestKind") or "").strip()
-                if metadata_kind and request_kind and metadata_kind != request_kind:
-                    continue
-                metadata_target = str(advisor_evidence.get("target") or "").strip()
-                if metadata_target and request_target and metadata_target != request_target:
-                    continue
-                return True
-            expected_arguments = self._advisor_evidence_adapter_arguments(
-                adapter_kind=adapter_kind,
-                tool_name=tool_name,
-                request=request,
-            )
-            if expected_arguments is None:
-                continue
-            arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
-            if self._advisor_evidence_arguments_match_subset(arguments, expected_arguments):
                 return True
         return False
 
@@ -7471,83 +4527,6 @@ class TaskLifecycleMixin:
                 task["id"], ", ".join(missing),
             )
 
-    def _reflect_on_result(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        goal: str,
-        summary: str,
-        context: dict[str, Any],
-    ) -> ReflectionResult | None:
-        """Conditionally trigger reflection: routing decision + global config enabled."""
-        if self._reflector is None:
-            return None
-        routing = context.get("routing", {})
-        if not routing.get("enable_reflection"):
-            return None
-
-        self._store.update_task_status(task["id"], "verifying")
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="task.reflection.started",
-            payload={"goal": goal},
-        )
-
-        refl_span = self._tracer.start_span(
-            "reflection",
-            trace_id=getattr(self, "_active_trace_id", None),
-            attributes={"taskId": task["id"]},
-        )
-
-        tool_output = json.dumps(
-            context.get("tool_results", []), ensure_ascii=False,
-        )[:2000]
-
-        # Construct retry_fn so the reflection loop can re-generate improved output
-        def _retry_fn(feedback: str) -> str:
-            retry_prompt = (
-                f"你之前的回答存在以下问题:\n{feedback}\n\n"
-                f"原始目标: {goal}\n"
-                f"请基于以上反馈，重新生成一个改进版的回答。"
-            )
-            try:
-                retry_response = self._provider.generate(
-                    retry_prompt,
-                    {
-                        **(context.get("_provider_context") if isinstance(context.get("_provider_context"), dict) else {}),
-                        "messages": [{"role": "user", "content": retry_prompt}],
-                    },
-                )
-                return retry_response.get("message") or retry_response.get("final_answer") or summary
-            except Exception:  # noqa: BLE001
-                return summary
-
-        result = self._reflector.reflect(
-            goal=goal,
-            output=summary,
-            context=tool_output,
-            retry_fn=_retry_fn,
-            provider_context=context.get("_provider_context") if isinstance(context.get("_provider_context"), dict) else None,
-        )
-
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="task.reflection.completed",
-            payload={
-                "accepted": result.accepted,
-                "finalScore": result.final_score,
-                "iterations": len(result.iterations),
-            },
-        )
-        self._tracer.end_span(
-            refl_span.span_id, status="ok",
-            attributes={"accepted": result.accepted, "iterations": len(result.iterations)},
-        )
-        return result
-
     def _fail_task(
         self,
         session_id: str,
@@ -7565,6 +4544,14 @@ class TaskLifecycleMixin:
         self._validate_task_transition(task["status"], "failed", task["id"], silent=True)
         if task["status"] in {"completed", "failed", "cancelled"}:
             return {**task, "errorCode": error_code, "resultSummary": summary}
+        self._terminal_pending_react_tool_result(
+            session_id=session_id,
+            task=task,
+            status="failed",
+            summary=summary,
+            reason=summary,
+            error_code=error_code,
+        )
         failed_task = self._store.update_task(
             task_id=task["id"],
             status="failed",

@@ -397,8 +397,8 @@ def main() -> int:
             failures.append("agent command log did not include pytest")
         if "py_compile" not in command_text and "compileall" not in command_text:
             failures.append("agent command log did not include py_compile or compileall")
-        if proposals_by_kind.get("routing_strategy", 0) < 1:
-            failures.append("no routing_strategy proposal record was created")
+        if proposals_by_kind.get("routing_strategy", 0) > 0:
+            failures.append("routing_strategy proposal should not be created in model-first flow")
         if proposals_by_kind.get("completion_decision", 0) < 1:
             failures.append("no completion_decision proposal record was created")
         if evidence.get("evidenceLevel") != "verified":

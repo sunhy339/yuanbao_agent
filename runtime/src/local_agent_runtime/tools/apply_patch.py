@@ -67,6 +67,29 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
             patch_text=patch_text if patch_request["patchMode"] == "patchText" else None,
             files=files if patch_request["patchMode"] == "files" else None,
         )
+        for key in (
+            "toolUseId",
+            "parentToolUseId",
+            "toolGroupId",
+            "toolIndex",
+            "toolTotal",
+            "toolOperationId",
+            "toolOperationLabel",
+            "toolCategory",
+            "toolPhaseId",
+            "toolPhaseLabel",
+            "toolSemanticParentId",
+            "toolSemanticParentLabel",
+            "target",
+            "inputSummary",
+            "displayTitle",
+            "displaySummary",
+            "displayTarget",
+            "displayKind",
+        ):
+            value = params.get(key)
+            if value not in (None, "", [], {}):
+                request_payload[key] = value
         summary = build_patch_summary(patch_request["changedPaths"])
 
         try:

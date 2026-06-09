@@ -264,6 +264,119 @@ describe("chat trace replay", () => {
     expect(visible[0]?.streaming).toBe(false);
   });
 
+  it("keeps assistant text blocks separated across tool boundaries", () => {
+    const traces = [
+      trace("evt_text_start_0", "content_start", {
+        blockType: "text",
+        messageId: "msg_1",
+        contentBlockId: "msg_1:text:0",
+        blockIndex: 0,
+        _chatCompat: true,
+      }, 1, "chat"),
+      trace("evt_text_delta_0", "message.delta", {
+        messageId: "msg_1",
+        contentBlockId: "msg_1:text:0",
+        blockIndex: 0,
+        delta: "我先看一下项目结构。",
+        _chatCompat: true,
+      }, 2, "chat"),
+      ...flatToolFrames("tool_read", "read_file", 3, "README.md", "read README.md"),
+      trace("evt_text_start_1", "content_start", {
+        blockType: "text",
+        messageId: "msg_1",
+        contentBlockId: "msg_1:text:1",
+        blockIndex: 1,
+        _chatCompat: true,
+      }, 6, "chat"),
+      trace("evt_text_delta_1", "message.delta", {
+        messageId: "msg_1",
+        contentBlockId: "msg_1:text:1",
+        blockIndex: 1,
+        delta: "读取后我会继续写文件。",
+        _chatCompat: true,
+      }, 7, "chat"),
+      trace("evt_complete", "message_complete", {
+        messageId: "msg_1",
+        content: "我先看一下项目结构。读取后我会继续写文件。",
+      }, 8, "chat"),
+    ];
+
+    const first = replayTraceEventsToChatMessages([], traces);
+    const replayed = replayTraceEventsToChatMessages(first, traces);
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+
+    expect(visible.map((message) => message.id)).toEqual([
+      "assistant_text:msg_1:text:0",
+      "tool_activity:tool_read",
+      "assistant_text:msg_1:text:1",
+    ]);
+    expect(visible[0]?.content).toBe("我先看一下项目结构。");
+    expect(visible[1]?.metadata).toMatchObject({
+      kind: "tool_activity",
+      toolUseId: "tool_read",
+      target: "README.md",
+      resultSummary: "read README.md",
+    });
+    expect(visible[2]?.content).toBe("读取后我会继续写文件。");
+    expect(visible.filter((message) => message.id === "msg_1")).toHaveLength(0);
+    expect(visible[0]?.metadata).toMatchObject({
+      baseMessageId: "msg_1",
+      contentBlockId: "msg_1:text:0",
+      blockIndex: 0,
+    });
+    expect(visible[2]?.metadata).toMatchObject({
+      baseMessageId: "msg_1",
+      contentBlockId: "msg_1:text:1",
+      blockIndex: 1,
+    });
+  });
+
+  it("uses local envelope block ids while keeping flat server-message text minimal", () => {
+    const traces = [
+      {
+        ...trace("evt_flat_delta_0", "message.delta", {
+          messageId: "msg_flat",
+          contentBlockId: "msg_flat:text:0",
+          blockIndex: 0,
+          delta: "First block.",
+          _chatCompat: true,
+        }, 1, "chat"),
+        yuanbao: {
+          type: "content_delta",
+          text: "First block.",
+        },
+      },
+      ...flatToolFrames("tool_flat", "read_file", 2, "README.md", "read README.md"),
+      {
+        ...trace("evt_flat_delta_1", "message.delta", {
+          messageId: "msg_flat",
+          contentBlockId: "msg_flat:text:1",
+          blockIndex: 1,
+          delta: "Second block.",
+          _chatCompat: true,
+        }, 5, "chat"),
+        yuanbao: {
+          type: "content_delta",
+          text: "Second block.",
+        },
+      },
+      trace("evt_flat_complete", "message_complete", {
+        messageId: "msg_flat",
+        content: "First block.Second block.",
+      }, 6, "chat"),
+    ] satisfies TraceEventRecord[];
+
+    const visible = getVisibleChatMessages(replayTraceEventsToChatMessages([], traces), "sess_1");
+
+    expect(visible.map((message) => message.id)).toEqual([
+      "assistant_text:msg_flat:text:0",
+      "tool_activity:tool_flat",
+      "assistant_text:msg_flat:text:1",
+    ]);
+    expect(visible[0]?.content).toBe("First block.");
+    expect(visible[2]?.content).toBe("Second block.");
+  });
+
   it("keeps replay idempotent under repeated thinking/tool cycles", () => {
     const traces: TraceEventRecord[] = [];
     let sequence = 1;
@@ -459,7 +572,7 @@ describe("chat trace replay", () => {
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
   });
 
-  it("does not replay completion review approvals as chat permission cards", () => {
+  it("does not replay internal approvals as chat permission cards", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       trace("evt_review_permission", "permission_request", {
         requestId: "approval_review",
@@ -472,9 +585,80 @@ describe("chat trace replay", () => {
         decision: "approved",
         request: { summary: "internal review" },
       }, 2, "chat"),
+      trace("evt_advisor_permission", "permission_request", {
+        requestId: "approval_advisor",
+        toolName: "advisor_tool",
+        input: { advisorRequestedEvidence: [{ summary: "internal" }] },
+      }, 3, "chat"),
+      trace("evt_advisor_resolved", "approval.resolved", {
+        approvalId: "approval_advisor",
+        kind: "advisor_tool",
+        decision: "approved",
+        request: { advisorRequestedEvidence: [{ summary: "internal" }] },
+      }, 4, "chat"),
     ]);
 
     expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
+  });
+
+  it("recognizes internal approvals even when the kind is nested or aliased", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_nested_review_permission", "permission_request", {
+        requestId: "approval_review",
+        kind: "completion_review",
+        input: { summary: "internal review" },
+      }, 1, "chat"),
+      trace("evt_nested_advisor_resolved", "approval.resolved", {
+        approvalId: "approval_advisor",
+        approvalKind: "advisor_tool",
+        request: { kind: "advisor_tool", advisorRequestedEvidence: [{ summary: "internal" }] },
+      }, 2, "chat"),
+    ]);
+
+    expect(getVisibleChatMessages(replayed, "sess_1")).toEqual([]);
+  });
+
+  it("skips raw task/provider/tool progress json while preserving final text once", () => {
+    const rawProgress = JSON.stringify({
+      taskId: "task_1",
+      provider: "yuanbao",
+      tool_progress: { toolCallId: "call_search", status: "running" },
+    });
+    const replayed = replayTraceEventsToChatMessages([], [
+      trace("evt_raw_message_delta", "message.delta", {
+        messageId: "msg_final",
+        delta: rawProgress,
+      }, 1, "chat"),
+      trace("evt_tool_start", "content_start", {
+        blockType: "tool_use",
+        toolUseId: "call_search",
+        toolName: "search_files",
+        displayTitle: "Search project",
+        displaySummary: "Looking for trace rendering",
+      }, 2, "chat"),
+      trace("evt_raw_tool_output", "content_delta", {
+        toolUseId: "call_search",
+        toolName: "search_files",
+        toolOutput: rawProgress,
+        outputStream: "activity",
+      }, 3, "chat"),
+      trace("evt_visible_delta", "message.delta", {
+        messageId: "msg_final",
+        delta: "Final answer.",
+      }, 4, "chat"),
+      trace("evt_complete", "message_complete", {
+        messageId: "msg_final",
+        content: "Final answer.",
+      }, 5, "chat"),
+    ]);
+
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+    const text = visible.map((message) => `${message.content}\n${String(message.metadata?.resultText ?? "")}`).join("\n");
+    expect(text).toContain("Final answer.");
+    expect(text.match(/Final answer\./g)).toHaveLength(1);
+    expect(text).not.toContain("tool_progress");
+    expect(text).not.toContain("\"provider\"");
+    expect(text).not.toContain("task_1");
   });
 
   it("replays resolved plan approvals with structured sections instead of raw json", () => {
@@ -512,13 +696,13 @@ describe("chat trace replay", () => {
     expect(visible[0]?.metadata?.previewSections).toEqual(previewSections);
   });
 
-  it("replays haha-style team_update as an agent group without raw json content", () => {
+  it("replays flat team_update as an agent group without raw json content", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       {
         ...trace("evt_team", "collab.task.created", {
           noisy: { raw: "do not render this object" },
         }, 1, "chat"),
-        hahaCc: {
+        yuanbao: {
           type: "team_update",
           teamName: "swarm",
           members: [
@@ -561,13 +745,13 @@ describe("chat trace replay", () => {
     expect(visible[0]?.content).not.toContain("raw");
   });
 
-  it("replays haha-style task_update as a compact task summary", () => {
+  it("replays flat task_update as a compact task summary", () => {
     const replayed = replayTraceEventsToChatMessages([], [
       {
         ...trace("evt_task_update", "task.updated", {
           payload: { raw: "do not render" },
         }, 1, "chat"),
-        hahaCc: {
+        yuanbao: {
           type: "task_update",
           taskId: "task_42",
           status: "running",

@@ -32,6 +32,7 @@ import {
   formatToolNameLabel,
   parseRuntimeJsonRecord,
   readRuntimeString,
+  readRuntimeStringList,
   normalizeRuntimeComparableString,
   compactRepeatedReadFileCalls,
   getRepeatedReadFileKey,
@@ -176,10 +177,29 @@ function classifyToolVisibility(toolCall: SessionWorkspaceToolCall): RuntimeTime
 }
 
 const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
+const INTERNAL_APPROVAL_TOOL_NAMES = new Set(["completion_review", "advisor_tool"]);
+
+function applyToolDisplayFields(
+  presentation: ToolRuntimePresentation,
+  toolCall: SessionWorkspaceToolCall,
+): ToolRuntimePresentation {
+  const displayTitle = compactText(toolCall.displayTitle ?? "", 160);
+  const displaySummary = summarizeRuntimeOutput(toolCall.displaySummary ?? "");
+  const displayTarget = compactText(toolCall.displayTarget ?? "", 160);
+  return {
+    ...presentation,
+    title: displayTitle || presentation.title,
+    summary: compactMeta([displaySummary, presentation.summary]).join(" 路 "),
+    meta: displayTarget && !presentation.meta.includes(displayTarget)
+      ? compactMeta([displayTarget, ...presentation.meta])
+      : presentation.meta,
+    code: presentation.code || displayTarget || undefined,
+  };
+}
 
 function shouldHideToolFromRuntimePanel(toolCall: SessionWorkspaceToolCall) {
   const toolName = toolCall.toolName.toLowerCase();
-  if (CONTROL_FLOW_TOOL_NAMES.has(toolName)) {
+  if (CONTROL_FLOW_TOOL_NAMES.has(toolName) || INTERNAL_APPROVAL_TOOL_NAMES.has(toolName)) {
     return true;
   }
   const rawResult = parseRuntimeJsonRecord(toolCall.rawOutput);
@@ -196,6 +216,17 @@ function toolRawOutputDetail(toolCall: SessionWorkspaceToolCall) {
     return null;
   }
   return `Output\n${compactText(toolCall.rawOutput, 1200)}`;
+}
+
+function toolStreamDetail(toolCall: SessionWorkspaceToolCall) {
+  const status = toolCall.status?.toLowerCase();
+  if (toolCall.toolName !== "run_command" && !["failed", "error", "blocked", "cancelled", "rejected"].includes(status ?? "")) {
+    return [];
+  }
+  return compactMeta([
+    toolCall.stdout ? `标准输出\n${compactText(toolCall.stdout, 1200)}` : null,
+    toolCall.stderr ? `标准错误\n${compactText(toolCall.stderr, 1200)}` : null,
+  ]);
 }
 
 function classifyBackgroundJobVisibility(job: { command: string; status: string; summary?: string }) {
@@ -263,12 +294,14 @@ function markSupersededRuntimeItems(items: RuntimeTimelineItem[]) {
 
 // ── Tool runtime presentation ──────────────────────────────────────
 
-export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolRuntimePresentation {
+function buildToolRuntimePresentationBase(toolCall: SessionWorkspaceToolCall): ToolRuntimePresentation {
   const inputRecord = parseRuntimeJsonRecord(toolCall.rawInput);
   const command = readRuntimeString(inputRecord, ["command", "cmd"]);
   const path = toolCall.target ?? readRuntimeString(inputRecord, ["path", "file", "cwd", "root"]);
   const url = readRuntimeString(inputRecord, ["url"]);
   const query = readRuntimeString(inputRecord, ["query"]);
+  const changedPaths = readRuntimeStringList(inputRecord, ["changedPaths", "paths", "files", "targets"]);
+  const code = safeToolCode(toolCall, { command, path, url, query, changedPaths });
   const duration = formatDuration(toolCall.durationMs);
   const tokenCount = toolCall.tokenCount !== undefined ? `${toolCall.tokenCount} 令牌` : null;
   const statusMeta = compactMeta([duration, tokenCount]);
@@ -282,7 +315,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: command ?? toolCall.argsPreview ?? "命令",
       summary: compactMeta([summarizeCommandAction(command), resultSummary]).join(" · "),
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), command ? "shell" : null, ...statusMeta]),
-      code: command && toolCall.argsPreview && toolCall.argsPreview !== command ? toolCall.argsPreview : undefined,
+      code,
     };
   }
 
@@ -292,7 +325,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: "应用文件改动",
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), toolCall.input, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -303,7 +336,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, path),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), path ? `路径：${path}` : toolCall.input, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -313,7 +346,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, path),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), path ? `路径：${path}` : toolCall.input, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -323,7 +356,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, path),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), path ? `路径：${path}` : toolCall.input, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -333,7 +366,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, query ? `"${query}"` : undefined),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), path ? `根目录：${path}` : null, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -343,7 +376,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, query ? `"${query}"` : undefined),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), path ? `根目录：${path}` : null, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -354,7 +387,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, url),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), url ?? toolCall.input, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -364,7 +397,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, url),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), url ?? toolCall.input, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -376,7 +409,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: formatToolActionTitle(toolCall.toolName, path),
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), action ? `动作：${action}` : null, path ? `路径：${path}` : null, ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -387,7 +420,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: "查看 Git 状态",
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -397,7 +430,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
       title: "查看代码差异",
       summary: resultSummary,
       meta: compactMeta([formatToolNameLabel(toolCall.toolName), ...statusMeta]),
-      code: toolCall.argsPreview,
+      code,
     };
   }
 
@@ -406,8 +439,47 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
     title: formatToolNameLabel(toolCall.toolName) || "工具调用",
     summary: resultSummary,
     meta: compactMeta([toolCall.toolName, toolCall.input, ...statusMeta]),
-    code: toolCall.argsPreview,
+    code,
   };
+}
+
+export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolRuntimePresentation {
+  return applyToolDisplayFields(buildToolRuntimePresentationBase(toolCall), toolCall);
+}
+
+function safeToolCode(
+  toolCall: SessionWorkspaceToolCall,
+  parsed: {
+    command?: string;
+    path?: string;
+    url?: string;
+    query?: string;
+    changedPaths?: string[];
+  },
+) {
+  const name = toolCall.toolName.toLowerCase();
+  if (name === "run_command") {
+    return parsed.command ?? toolCall.argsPreview;
+  }
+  if (name === "apply_patch" || name === "write_file") {
+    if (parsed.changedPaths?.length) {
+      return compactList(parsed.changedPaths);
+    }
+    return parsed.path;
+  }
+  if (["read_file", "list_dir", "list_directory", "git_status", "git_diff", "notebook"].includes(name)) {
+    return parsed.path;
+  }
+  if (["search_files", "code_search"].includes(name)) {
+    return parsed.query ?? parsed.path;
+  }
+  if (["web_fetch", "browser"].includes(name)) {
+    return parsed.url;
+  }
+  if (!toolCall.argsPreview || isRawJsonLike(toolCall.argsPreview)) {
+    return parsed.command ?? parsed.path ?? parsed.query ?? parsed.url;
+  }
+  return toolCall.argsPreview;
 }
 
 // ── Aggregate status ───────────────────────────────────────────────
@@ -527,6 +599,11 @@ export function buildContextPreviewRuntimeItems(_contextPreview?: SessionWorkspa
 
 export const hiddenTraceTypes = new Set([
   "assistant.token",
+  "message.delta",
+  "content_delta",
+  "content_start",
+  "thinking",
+  "status",
   "provider.request",
   "provider.response",
   "task.started",
@@ -746,6 +823,9 @@ export function buildRuntimeItems({
   });
 
   approvals.forEach((approval) => {
+    if (approval.kind === "advisor_tool") {
+      return;
+    }
     if (approval.kind === "completion_review") {
       if (approval.completionEvidence) {
         items.push({
@@ -766,7 +846,7 @@ export function buildRuntimeItems({
           riskLevel: approval.risk,
           completionEvidence: approval.completionEvidence,
           time: approval.requestedAt,
-          visibility: "chat",
+          visibility: "panel",
           toolName: approval.kind,
         });
       }
@@ -780,7 +860,7 @@ export function buildRuntimeItems({
     const approvalDiffLines = approval.diff ? parseUnifiedDiff(approval.diff) : undefined;
     const isPlanApproval = approval.kind === "plan";
     const approvalCode = compactMeta([
-      isPlanApproval ? null : approval.command || approval.parametersPreview,
+      isPlanApproval ? null : approval.command || (!approval.diff ? approval.parametersPreview : null),
       approvalPathSummary ? `files: ${approvalPathSummary}` : null,
     ]).join("\n");
     const structuredPlanPreview = isPlanApproval && Boolean(approval.previewRows?.length || approval.previewSections?.length);
@@ -812,7 +892,7 @@ export function buildRuntimeItems({
       ]),
       riskLevel: approval.risk,
       code: approvalCode || undefined,
-      rawDetail: approval.diff || (structuredPlanPreview ? undefined : approval.fullInput),
+      rawDetail: approval.diff || undefined,
       diffLines: approvalDiffLines,
       completionEvidence: approval.completionEvidence,
       previewRows: approval.previewRows,
@@ -851,8 +931,7 @@ export function buildRuntimeItems({
       code: presentation.code,
       rawDetail: compactMeta([
         toolRawOutputDetail(toolCall),
-        toolCall.stdout ? `标准输出\n${compactText(toolCall.stdout, 1200)}` : null,
-        toolCall.stderr ? `标准错误\n${compactText(toolCall.stderr, 1200)}` : null,
+        ...toolStreamDetail(toolCall),
       ]).join("\n\n"),
       previewRows: toolCall.resultPreview,
       time: toolCall.time,

@@ -27,10 +27,8 @@ from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# A. ToolPolicy enum and SkillPreset defaults
-# ═══════════════════════════════════════════════════════════════════════════
-
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?# A. ToolPolicy enum and SkillPreset defaults
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?
 
 class TestToolPolicyEnum:
     def test_values(self) -> None:
@@ -81,10 +79,8 @@ class TestSkillPresetDefaultPolicy:
         assert skill.tool_policy == ToolPolicy.INHERIT_ALL
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# B. SkillRegistry stores/retrieves tool_policy
-# ═══════════════════════════════════════════════════════════════════════════
-
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?# B. SkillRegistry stores/retrieves tool_policy
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?
 
 class TestSkillRegistryPolicyPersistence:
     def setup_method(self) -> None:
@@ -198,10 +194,8 @@ def test_legacy_skill_presets_table_migrates_tool_policy(tmp_path: Path) -> None
         store.close()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# C. ContextBuilder filtering by policy
-# ═══════════════════════════════════════════════════════════════════════════
-
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?# C. ContextBuilder filtering by policy
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?
 # Build a set of fake tool schemas including MCP-like tools
 _FAKE_BUILTIN_TOOLS = [
     {"name": "read_file", "description": "Read a file"},
@@ -426,10 +420,8 @@ class TestContextBuilderNoSkill:
         assert ctx["snapshot_metadata"]["filtered_tool_names"] is None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# D. E2E: skill.tools.filtered event
-# ═══════════════════════════════════════════════════════════════════════════
-
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?# D. E2E: skill.tools.filtered event
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ?
 
 class ScriptedProvider:
     """Deterministic provider that returns pre-scripted responses."""
@@ -490,8 +482,6 @@ class TestSkillToolsFilteredEvent:
     """E2E test: skill.tools.filtered event is published when skill filters tools."""
 
     def test_filtered_event_on_skill_routing(self, tmp_path: Any) -> None:
-        from unittest.mock import patch
-        from local_agent_runtime.router.types import RoutingDecision, Scenario, ExecutionStrategy
 
         provider = ScriptedProvider([{"final": "Done."}])
         runtime = _make_runtime(tmp_path, provider)
@@ -509,21 +499,14 @@ class TestSkillToolsFilteredEvent:
             "tool_policy": "strict_whitelist",
         })
 
-        routing = RoutingDecision(
-            scenario=Scenario.CODE_REVIEW,
-            strategy=ExecutionStrategy.REACT_STANDARD,
-            confidence=0.95,
-            skill_id="review",
-            max_steps=3,
+        task = _call_result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "review code", "skillId": "review"},
+            ),
+            "task",
         )
-
-        with patch.object(
-            runtime.server._orchestrator._meta_router, "route", return_value=routing,
-        ):
-            task = _call_result(
-                _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "review code"}),
-                "task",
-            )
 
         assert task["status"] == "completed"
 
@@ -536,28 +519,15 @@ class TestSkillToolsFilteredEvent:
         assert "write_file" in payload.get("filteredOut", [])
 
     def test_no_filtered_event_without_skill(self, tmp_path: Any) -> None:
-        from unittest.mock import patch
-        from local_agent_runtime.router.types import RoutingDecision, Scenario, ExecutionStrategy
 
         provider = ScriptedProvider([{"final": "Done."}])
         runtime = _make_runtime(tmp_path, provider)
         session = _open_session(runtime, tmp_path)
 
-        routing = RoutingDecision(
-            scenario=Scenario.SIMPLE_QUERY,
-            strategy=ExecutionStrategy.REACT_STANDARD,
-            confidence=0.95,
-            skill_id=None,  # No skill
-            max_steps=3,
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "edit code"}),
+            "task",
         )
-
-        with patch.object(
-            runtime.server._orchestrator._meta_router, "route", return_value=routing,
-        ):
-            task = _call_result(
-                _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "edit code"}),
-                "task",
-            )
 
         assert task["status"] == "completed"
 
@@ -566,28 +536,19 @@ class TestSkillToolsFilteredEvent:
         assert len(filtered_events) == 0
 
     def test_missing_skill_publishes_fallback_event(self, tmp_path: Any) -> None:
-        from unittest.mock import patch
-        from local_agent_runtime.router.types import RoutingDecision, Scenario, ExecutionStrategy
 
         provider = ScriptedProvider([{"final": "Done."}])
         runtime = _make_runtime(tmp_path, provider)
         session = _open_session(runtime, tmp_path)
 
-        routing = RoutingDecision(
-            scenario=Scenario.SIMPLE_QUERY,
-            strategy=ExecutionStrategy.REACT_STANDARD,
-            confidence=0.95,
-            skill_id="missing_skill",
-            max_steps=3,
+        task = _call_result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "edit with missing skill", "skillId": "missing_skill"},
+            ),
+            "task",
         )
-
-        with patch.object(
-            runtime.server._orchestrator._meta_router, "route", return_value=routing,
-        ):
-            task = _call_result(
-                _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "edit with missing skill"}),
-                "task",
-            )
 
         assert task["status"] == "completed"
         fallback_events = [e for e in runtime.events if e.get("type") == "skill.fallback"]
@@ -601,8 +562,6 @@ class TestSkillToolsFilteredEvent:
         assert usage == []
 
     def test_no_filtered_event_with_inherit_all(self, tmp_path: Any) -> None:
-        from unittest.mock import patch
-        from local_agent_runtime.router.types import RoutingDecision, Scenario, ExecutionStrategy
 
         provider = ScriptedProvider([{"final": "Done."}])
         runtime = _make_runtime(tmp_path, provider)
@@ -620,21 +579,14 @@ class TestSkillToolsFilteredEvent:
             "tool_policy": "inherit_all",
         })
 
-        routing = RoutingDecision(
-            scenario=Scenario.SIMPLE_QUERY,
-            strategy=ExecutionStrategy.REACT_STANDARD,
-            confidence=0.95,
-            skill_id="full_access",
-            max_steps=3,
+        task = _call_result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "do anything", "skillId": "full_access"},
+            ),
+            "task",
         )
-
-        with patch.object(
-            runtime.server._orchestrator._meta_router, "route", return_value=routing,
-        ):
-            task = _call_result(
-                _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "do anything"}),
-                "task",
-            )
 
         assert task["status"] == "completed"
 

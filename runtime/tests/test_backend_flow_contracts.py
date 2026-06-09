@@ -9,13 +9,10 @@ from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.execution.tool_pipeline import _frontend_visible_tool_result
 from local_agent_runtime.main import build_server
 from local_agent_runtime.memory import MemoryManager, MemoryRetriever, MemoryStore
-from local_agent_runtime.orchestration.types import OrchestrationResult
+from local_agent_runtime.orchestrator.publishing import PublishingMixin
 from local_agent_runtime.orchestrator.service import Orchestrator
-from local_agent_runtime.planner.types import PlanResult, Subtask
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.policy.permission_engine import PermissionEngine
-from local_agent_runtime.router.meta_router import MetaRouter
-from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
@@ -78,7 +75,6 @@ def _make_runtime(tmp_path: Path, provider: Any, tools: dict[str, Any] | None = 
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
-        meta_router=MetaRouter(provider=None),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -100,7 +96,6 @@ def _make_memory_runtime(tmp_path: Path, provider: Any, tools: dict[str, Any] | 
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
-        meta_router=MetaRouter(provider=None),
         memory_manager=memory_manager,
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
@@ -131,7 +126,6 @@ def _make_builtin_runtime(tmp_path: Path, provider: Any) -> SimpleNamespace:
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
-        meta_router=MetaRouter(provider=None),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -169,37 +163,39 @@ def _set_approval_mode(runtime: SimpleNamespace, mode: str) -> None:
     runtime.store.update_config({"config": config})
 
 
-def _force_route(runtime: SimpleNamespace, *, scenario: Scenario, strategy: ExecutionStrategy) -> None:
-    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
-        scenario=scenario,
-        strategy=strategy,
-        confidence=0.95,
-        max_steps=20,
-        enable_reflection=False,
-        enable_planning=strategy in {
-            ExecutionStrategy.PLAN_THEN_EXECUTE,
-            ExecutionStrategy.PLAN_SUPERVISE,
-            ExecutionStrategy.PLAN_SWARM,
-        },
-        reasoning="forced backend flow contract",
-        metadata={"legacyPlanExecution": True},
-    )
+def _force_route(runtime: SimpleNamespace, *, scenario: str, strategy: str) -> None:
+    original = runtime.orchestrator._model_first_routing_context
+
+    def forced(**kwargs: Any) -> dict[str, Any]:
+        routing = original(**kwargs)
+        routing.update(
+            {
+                "scenario": scenario,
+                "strategy": strategy,
+                "confidence": 0.95,
+                "max_steps": 20,
+                "enable_planning": False,
+                "orchestrationMode": "model_tools",
+                "reasoning": "forced backend flow contract",
+            }
+        )
+        return routing
+
+    runtime.orchestrator._model_first_routing_context = forced
 
 
-def test_default_server_does_not_enable_backend_advisor_main_path(tmp_path: Path) -> None:
+def test_default_server_does_not_enable_fixed_backend_orchestration(tmp_path: Path) -> None:
     server = build_server(database_path=str(tmp_path / "server.sqlite3"))
     try:
         orchestrator = server._orchestrator  # noqa: SLF001
-        assert getattr(orchestrator, "_decision_advisor", None) is None
-        router = getattr(orchestrator, "_meta_router")
-        assert getattr(router, "_decision_advisor", None) is None
-        assert getattr(router, "_provider", None) is None
+        for attribute in ("_meta_router", "_decomposer", "_swarm", "_supervisor"):
+            assert not hasattr(orchestrator, attribute)
     finally:
         server.graceful_shutdown()
 
 
 def test_simple_chat_stays_model_first_without_tool_or_plan_flow(tmp_path: Path) -> None:
-    provider = ScriptedProvider([{"final": "你好！"}])
+    provider = ScriptedProvider([{"final": "hello"}])
     runtime = _make_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
 
@@ -242,9 +238,7 @@ def test_model_tool_swarm_summary_only_does_not_request_completion_review(tmp_pa
         goal="Use multiple agents for read-only analysis",
         plan=[],
         routing={
-            "scenario": "swarm_task",
-            "strategy": "plan_swarm",
-            "orchestrationMode": "model_tools",
+            "mode": "model_first",
         },
     )
 
@@ -254,9 +248,7 @@ def test_model_tool_swarm_summary_only_does_not_request_completion_review(tmp_pa
         summary="Read-only agent synthesis completed.",
         context={
             "routing": {
-                "scenario": "swarm_task",
-                "strategy": "plan_swarm",
-                "orchestrationMode": "model_tools",
+                "mode": "model_first",
             }
         },
         skip_reflection=True,
@@ -365,7 +357,7 @@ def test_file_change_visible_tool_result_hides_internal_patch_record() -> None:
     assert '"patch"' not in encoded
 
 
-def test_trace_only_routing_event_does_not_emit_flat_chat_message(tmp_path: Path) -> None:
+def test_model_first_message_does_not_emit_legacy_routing_flat_chat_message(tmp_path: Path) -> None:
     provider = ScriptedProvider([{"final": "done"}])
     runtime = _make_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
@@ -374,16 +366,13 @@ def test_trace_only_routing_event_does_not_emit_flat_chat_message(tmp_path: Path
 
     task = response["result"]["task"]
     routing_events = [event for event in runtime.events if event["type"] == "task.routing.decided"]
-    assert routing_events
-    assert all(event["visibility"] == "trace" for event in routing_events)
-    assert all("yuanbao" not in event and "hahaCc" not in event for event in routing_events)
+    assert routing_events == []
     persisted = runtime.store.list_trace_events({"taskId": task["id"], "limit": 100})["traceEvents"]
     persisted_routing = [event for event in persisted if event["type"] == "task.routing.decided"]
-    assert persisted_routing
-    assert all("yuanbao" not in event and "hahaCc" not in event for event in persisted_routing)
+    assert persisted_routing == []
     replay = runtime.server._handlers["events.yuanbaoAfter"]({"sessionId": session["id"], "afterSeq": 0})["messages"]
     assert not any(
-        message.get("type") == "task_update" and message.get("status") == "react_standard"
+        message.get("type") == "task_update" or str(message.get("status") or "").startswith("react_")
         for message in replay
     )
 
@@ -687,19 +676,12 @@ def test_write_file_approval_is_waiting_node_without_raw_request_json(tmp_path: 
     assert "tool.blocked" in types
     assert "tool.completed" not in types
 
-    tool_result = next(
-        event["payload"]
+    waiting_tool_results = [
+        event
         for event in runtime.events
         if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_write"
-    )
-    content = tool_result["content"]
-    assert content["status"] == "approval_required"
-    assert content["summary"] == "approval required before writing todo.html"
-    assert "requestJson" not in json.dumps(content, ensure_ascii=False)
-    assert "workspaceRoot" not in json.dumps(content, ensure_ascii=False)
-    assert "approval" not in content
-    assert content["approvalStatus"] == "waiting"
-    assert content["approvalKind"] == "write_file"
+    ]
+    assert waiting_tool_results == []
 
     flat_permission = next(
         event["yuanbao"]
@@ -709,6 +691,8 @@ def test_write_file_approval_is_waiting_node_without_raw_request_json(tmp_path: 
     )
     permission_input_json = json.dumps(flat_permission["input"], ensure_ascii=False)
     assert flat_permission["input"]["path"] == "todo.html"
+    assert "content" not in flat_permission["input"]
+    assert "<h1>Todo</h1>" not in permission_input_json
     assert "requestJson" not in permission_input_json
     assert "workspaceRoot" not in permission_input_json
     assert "taskId" not in permission_input_json
@@ -723,9 +707,71 @@ def test_write_file_approval_is_waiting_node_without_raw_request_json(tmp_path: 
     blocked_json = json.dumps(blocked, ensure_ascii=False)
     assert "requestJson" not in blocked_json
     assert "workspaceRoot" not in blocked_json
+    assert "<h1>Todo</h1>" not in blocked_json
+
+    approval = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "write_file"
+    )
+    runtime.orchestrator.submit_approval({"approvalId": approval["approvalId"], "decision": "rejected"})
+
+    terminal_tool_results = [
+        event
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_write"
+    ]
+    assert len(terminal_tool_results) == 1
+    terminal = terminal_tool_results[0]["payload"]
+    assert terminal["isError"] is True
+    assert terminal["content"]["status"] == "rejected"
+    assert terminal["content"]["summary"] == "Approval was rejected by the user."
+    terminal_json = json.dumps(terminal, ensure_ascii=False)
+    assert "requestJson" not in terminal_json
+    assert "workspaceRoot" not in terminal_json
+    assert "<h1>Todo</h1>" not in terminal_json
 
 
-def test_completion_review_approval_is_internal_and_idempotent(tmp_path: Path) -> None:
+def test_cancel_waiting_approval_closes_pending_tool_result(tmp_path: Path) -> None:
+    provider = ScriptedProvider([
+        {
+            "message": "I will create the file.",
+            "tool_calls": [
+                {
+                    "id": "call_write",
+                    "name": "write_file",
+                    "arguments": {
+                        "path": "todo.html",
+                        "content": "<h1>Todo</h1>",
+                        "overwrite": True,
+                    },
+                }
+            ],
+        }
+    ])
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "create todo"})
+    task = response["result"]["task"]
+    assert task["status"] == "waiting_approval"
+
+    runtime.orchestrator.cancel_task({"taskId": task["id"]})
+
+    terminal_tool_results = [
+        event
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_write"
+    ]
+    assert len(terminal_tool_results) == 1
+    terminal = terminal_tool_results[0]["payload"]
+    assert terminal["isError"] is True
+    assert terminal["content"]["status"] == "cancelled"
+    assert terminal["content"]["summary"] == "Task was cancelled before the pending tool completed."
+    assert runtime.store.get_task({"taskId": task["id"]})["task"]["status"] == "cancelled"
+
+
+def test_completion_review_approval_is_internal_ignored_and_idempotent(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
     task = runtime.store.create_task(
@@ -754,7 +800,8 @@ def test_completion_review_approval_is_internal_and_idempotent(tmp_path: Path) -
     resolved_count_after_first = len([event for event in runtime.events if event["type"] == "approval.resolved"])
     second = runtime.orchestrator.submit_approval({"approvalId": approval["id"], "decision": "approved"})
 
-    assert first["task"]["status"] == "completed"
+    assert first["ignored"] is True
+    assert first["task"]["status"] == "waiting_approval"
     assert second["ignored"] is True
     assert len([event for event in runtime.events if event["type"] == "approval.resolved"]) == resolved_count_after_first
     assert all(
@@ -766,6 +813,7 @@ def test_completion_review_approval_is_internal_and_idempotent(tmp_path: Path) -
     assert review_events
     assert review_events[-1]["payload"]["kind"] == "completion_review"
     assert review_events[-1]["payload"]["internal"] is True
+    assert review_events[-1]["payload"]["ignored"] is True
     assert review_events[-1]["payload"]["_bridge"]["suppressRealtimeFlat"] is True
     assert review_events[-1]["payload"]["_bridge"]["suppressChatReplay"] is True
 
@@ -814,16 +862,6 @@ def test_transient_provider_failure_has_single_user_failure_surface(tmp_path: Pa
     provider = ScriptedProvider(error=ProviderAdapterError("Concurrency limit exceeded for account, please retry later"))
     runtime = _make_memory_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
-    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
-        scenario=Scenario.SIMPLE_QUERY,
-        strategy=ExecutionStrategy.REACT_FAST,
-        confidence=0.95,
-        max_steps=3,
-        enable_reflection=False,
-        enable_planning=False,
-        reasoning="simple provider failure test",
-    )
-
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "你好"})
 
     assert response["result"]["task"]["status"] == "failed"
@@ -848,21 +886,11 @@ def test_provider_auth_failure_does_not_write_visible_memory_events(tmp_path: Pa
     provider = ScriptedProvider(error=ProviderAdapterError("Provider request failed with HTTP 401: unknown provider error"))
     runtime = _make_memory_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
-    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
-        scenario=Scenario.SIMPLE_QUERY,
-        strategy=ExecutionStrategy.REACT_FAST,
-        confidence=0.95,
-        max_steps=3,
-        enable_reflection=False,
-        enable_planning=False,
-        reasoning="simple provider auth failure test",
-    )
-
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "你好"})
 
     assert response["result"]["task"]["status"] == "failed"
     task = response["result"]["task"]
-    assert task["errorCode"] == "FAST_LOOP_FAILED"
+    assert task["errorCode"] in {"REACT_LOOP_FAILED", "LOOP_EXECUTION_FAILED"}
     assert task["structuredResult"]["failureRecovery"]["category"] == "auth"
     types = _event_types(runtime)
     assert types.count("message.failed") == 1
@@ -961,15 +989,6 @@ def test_provider_stream_cancel_stops_late_message_persistence(tmp_path: Path) -
     config["provider"]["streamingEnabled"] = True
     config["provider"]["apiFormat"] = "openai-chat"
     runtime.store.update_config({"config": config})
-    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
-        scenario=Scenario.SIMPLE_QUERY,
-        strategy=ExecutionStrategy.REACT_FAST,
-        confidence=0.95,
-        max_steps=3,
-        enable_reflection=False,
-        enable_planning=False,
-        reasoning="stream cancel regression",
-    )
     session = _open_session(runtime, tmp_path)
 
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "stream then stop"})
@@ -996,52 +1015,31 @@ def test_provider_stream_cancel_stops_late_message_persistence(tmp_path: Path) -
     ]
 
 
-def test_strict_swarm_plan_approval_uses_structured_preview_and_flat_sections(tmp_path: Path) -> None:
-    subtasks = [
-        {
-            "id": "sub-0",
-            "title": "Inspect routing decisions",
-            "description": "Review how chat requests choose normal, plan, and swarm execution.",
-            "dependencies": [],
-            "agentType": "planner",
-        },
-        {
-            "id": "sub-1",
-            "title": "Repair replay ordering",
-            "description": "Adjust live and replay event ordering for plan and team panels.",
-            "dependencies": ["sub-0"],
-            "agentType": "worker",
-        },
-    ]
-    provider = ScriptedProvider([{"message": json.dumps(subtasks)}])
+def test_strict_swarm_route_hint_does_not_create_plan_approval(tmp_path: Path) -> None:
+    provider = ScriptedProvider([{"final": "I can coordinate agents when the model chooses an agent tool."}])
     runtime = _make_runtime(tmp_path, provider)
     _set_approval_mode(runtime, "strict")
-    _force_route(runtime, scenario=Scenario.SWARM_TASK, strategy=ExecutionStrategy.PLAN_SWARM)
+    _force_route(runtime, scenario="swarm_task", strategy="model_tools")
     session = _open_session(runtime, tmp_path)
 
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "Use multiple agents to optimize output flow"})
 
-    assert response["result"]["task"]["status"] == "waiting_approval"
+    assert response["result"]["task"]["status"] == "completed"
+    assert len(provider.calls) == 1
+    provider_routing = provider.calls[0]["context"]["routing"]
+    assert provider_routing["strategy"] == "model_tools"
     approval_events = [
         event for event in runtime.events
         if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
     ]
-    assert len(approval_events) == 1
-    request = approval_events[0]["payload"]["request"]
-    assert request["orchestrationMode"] == "swarm"
-    assert request["subtaskCount"] == 2
-    assert request["previewRows"]
-    assert request["previewSections"][0]["kind"] == "items"
-    assert request["previewSections"][0]["items"][0]["title"] == "Inspect routing decisions"
-    assert request["subtasks"][1]["dependencies"] == ["sub-0"]
-
-    flat_permissions = [event for event in runtime.events if event["type"] == "permission_request"]
-    assert flat_permissions
-    flat = flat_permissions[-1]
-    assert flat["payload"]["toolName"] == "plan"
-    assert flat["payload"]["previewSections"][0]["items"][1]["title"] == "Repair replay ordering"
-    assert flat["yuanbao"]["type"] == "permission_request"
-    assert flat["yuanbao"]["previewSections"][0]["items"][0]["title"] == "Inspect routing decisions"
+    assert not approval_events
+    assert "task.planning.started" not in _event_types(runtime)
+    assert "task.planning.decomposed" not in _event_types(runtime)
+    assert not [
+        event
+        for event in runtime.events
+        if event["type"] == "permission_request" and event["payload"].get("toolName") == "plan"
+    ]
 
 
 def test_plan_approval_resolution_keeps_structured_preview_sections(tmp_path: Path) -> None:
@@ -1123,154 +1121,64 @@ def test_cancelled_task_completion_review_submit_emits_ignored_resolution(tmp_pa
     assert persisted_resolved["payload"]["ignored"] is True
 
 
-def test_swarm_decomposition_failure_falls_back_to_original_request_not_fixed_template(tmp_path: Path) -> None:
+def test_swarm_route_hint_provider_failure_does_not_fall_back_to_fixed_template(tmp_path: Path) -> None:
     provider = ScriptedProvider(error=RuntimeError("planner unavailable"))
     runtime = _make_runtime(tmp_path, provider)
     _set_approval_mode(runtime, "strict")
-    _force_route(runtime, scenario=Scenario.SWARM_TASK, strategy=ExecutionStrategy.PLAN_SWARM)
+    _force_route(runtime, scenario="swarm_task", strategy="model_tools")
     session = _open_session(runtime, tmp_path)
     goal = "Use multiple agents to optimize the backend output flow"
 
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": goal})
 
-    assert response["result"]["task"]["status"] == "waiting_approval"
+    assert response["result"]["task"]["status"] == "failed"
     decomposed = [event for event in runtime.events if event["type"] == "task.planning.decomposed"]
-    assert decomposed
-    assert decomposed[-1]["payload"]["decompositionFallback"] is True
-    assert decomposed[-1]["payload"]["decompositionFallbackReason"] == "provider_decomposition_failed"
+    assert not decomposed
 
-    approval = [
+    approvals = [
         event for event in runtime.events
         if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
-    ][-1]
-    request = approval["payload"]["request"]
-    assert request["decompositionFallback"] is True
-    assert request["subtaskCount"] == 1
-    titles = [item["title"] for item in request["subtasks"]]
-    assert titles == [goal[:80]]
-    generic_titles = {"Analyze codebase", "Implement changes", "Verify results", "Summarize outcome and next steps"}
-    assert not (set(titles) & generic_titles)
+    ]
+    assert not approvals
+    assert not [
+        event
+        for event in runtime.events
+        if event["type"] == "permission_request" and event["payload"].get("toolName") == "plan"
+    ]
 
 
-def test_non_strict_swarm_executes_with_ordered_panel_events_not_raw_plan_json(tmp_path: Path) -> None:
-    plan = PlanResult(
-        subtasks=[
-            Subtask(
-                id="sub-0",
-                title="Inspect current flow",
-                description="Inspect how backend events are emitted.",
-                agent_type="planner",
-            ),
-            Subtask(
-                id="sub-1",
-                title="Patch event ordering",
-                description="Patch the event ordering contract.",
-                dependencies=["sub-0"],
-                agent_type="worker",
-            ),
-        ],
-        dag={"sub-0": [], "sub-1": ["sub-0"]},
-        execution_order=["sub-0", "sub-1"],
-    )
-    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
-    _force_route(runtime, scenario=Scenario.SWARM_TASK, strategy=ExecutionStrategy.PLAN_SWARM)
+def test_swarm_route_hint_does_not_call_legacy_decomposer_or_swarm_executor(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "The model handled the request without fixed orchestration."}]))
+    _force_route(runtime, scenario="swarm_task", strategy="model_tools")
     session = _open_session(runtime, tmp_path)
-    runtime.orchestrator._decomposer.decompose = lambda **_kwargs: plan
 
-    def _execute_swarm(*_args: Any, **kwargs: Any) -> OrchestrationResult:
-        callback = kwargs["on_subtask_callback"]
-        callback("sub-0", "started", {"subtaskId": "sub-0", "subtaskTitle": "Inspect current flow"})
-        callback(
-            "sub-0",
-            "completed",
-            {
-                "subtaskId": "sub-0",
-                "subtaskTitle": "Inspect current flow",
-                "status": "completed",
-                "summary": "Routing inspected.",
-                "workerName": "Planner",
-                "childTaskId": "ctask_plan",
-            },
-        )
-        callback("sub-1", "started", {"subtaskId": "sub-1", "subtaskTitle": "Patch event ordering"})
-        callback(
-            "sub-1",
-            "completed",
-            {
-                "subtaskId": "sub-1",
-                "subtaskTitle": "Patch event ordering",
-                "status": "completed",
-                "summary": "Events patched.",
-                "workerName": "Worker",
-                "childTaskId": "ctask_worker",
-            },
-        )
-        return OrchestrationResult(
-            success=True,
-            summary="Swarm execution finished with structured event panels.",
-            subtask_results=[
-                {"id": "sub-0", "title": "Inspect current flow", "status": "completed"},
-                {"id": "sub-1", "title": "Patch event ordering", "status": "completed"},
-            ],
-            handoff_count=1,
-            completed=["sub-0", "sub-1"],
-            results={"sub-0": "Routing inspected.", "sub-1": "Events patched."},
-        )
-
-    runtime.orchestrator._swarm.execute = _execute_swarm
+    assert not hasattr(runtime.orchestrator, "_decomposer")
+    assert not hasattr(runtime.orchestrator, "_swarm")
 
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "Use multiple agents to optimize output flow"})
 
     assert response["result"]["task"]["status"] == "completed"
-    assert not [event for event in runtime.events if event["type"] == "approval.requested"]
     types = _event_types(runtime)
-    assert types.index("task.planning.started") < types.index("task.planning.decomposed")
-    assert types.index("task.planning.decomposed") < types.index("task.planning.subtask.started")
-    assert types.index("task.planning.subtask.completed") < types.index("task.planning.completed")
-    assert types.index("task.planning.completed") < types.index("message.completed")
     assert "message_complete" in types
-
-    subtask_events = [event for event in runtime.events if event["type"].startswith("task.planning.subtask.")]
-    assert [event["payload"]["subtaskId"] for event in subtask_events] == ["sub-0", "sub-0", "sub-1", "sub-1"]
-    assert subtask_events[1]["payload"]["childTaskId"] == "ctask_plan"
-    progress_events = [event for event in runtime.events if event["type"] == "task.subtask.progress"]
-    assert [event["payload"]["event"] for event in progress_events] == ["started", "completed", "started", "completed"]
-    assert all(event["visibility"] == "panel" for event in progress_events)
+    assert "task.planning.started" not in types
+    assert "task.planning.decomposed" not in types
+    assert not [event for event in runtime.events if event["type"].startswith("task.planning.subtask.")]
+    assert not [event for event in runtime.events if event["type"] == "task.subtask.progress"]
+    assert not [event for event in runtime.events if event["type"] == "approval.requested"]
 
     assistant_messages = [
         message for message in runtime.store.list_messages({"sessionId": session["id"], "limit": 20})["messages"]
         if message["role"] == "assistant"
     ]
-    assert assistant_messages[-1]["content"] == "Swarm execution finished with structured event panels."
+    assert assistant_messages[-1]["content"] == "The model handled the request without fixed orchestration."
     raw_plan_fragments = ['"executionOrder"', '"subtasks"', '"dag"']
     assert not any(fragment in assistant_messages[-1]["content"] for fragment in raw_plan_fragments)
 
 
-def test_planning_progress_is_visible_but_synthetic_thinking_stays_trace_only(tmp_path: Path) -> None:
-    plan = PlanResult(
-        subtasks=[
-            Subtask(
-                id="sub-0",
-                title="Inspect current flow",
-                description="Inspect how backend events are emitted.",
-                agent_type="planner",
-            ),
-        ],
-        dag={"sub-0": []},
-        execution_order=["sub-0"],
-    )
-    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
-    _force_route(runtime, scenario=Scenario.SWARM_TASK, strategy=ExecutionStrategy.PLAN_SWARM)
+def test_route_hint_does_not_emit_synthetic_planning_progress_or_thinking(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "Done without synthetic planning progress."}]))
+    _force_route(runtime, scenario="swarm_task", strategy="model_tools")
     session = _open_session(runtime, tmp_path)
-    runtime.orchestrator._decomposer.decompose = lambda **_kwargs: plan
-    runtime.orchestrator._swarm.execute = lambda *_args, **_kwargs: OrchestrationResult(
-        success=True,
-        summary="Structured planning complete.",
-        subtask_results=[{"id": "sub-0", "title": "Inspect current flow", "status": "completed"}],
-        handoff_count=0,
-        completed=["sub-0"],
-        results={"sub-0": "done"},
-    )
 
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "Use multiple agents to inspect flow"})
 
@@ -1281,8 +1189,7 @@ def test_planning_progress_is_visible_but_synthetic_thinking_stays_trace_only(tm
         if event["type"] == "task.planning.progress"
         and event["payload"].get("mode") == "swarm"
     ]
-    assert planning_progress
-    assert {event["visibility"] for event in planning_progress} == {"panel"}
+    assert not planning_progress
     assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
 
 
@@ -1380,6 +1287,46 @@ def test_tool_activity_delta_omits_internal_json_logs(tmp_path: Path) -> None:
     assert not any("requestJson" in delta or "workspaceRoot" in delta for delta in deltas)
 
 
+def test_write_and_patch_public_inputs_hide_large_payloads() -> None:
+    write_input = PublishingMixin._public_tool_input(
+        "write_file",
+        {
+            "workspaceRoot": "D:/py/test_pro",
+            "taskId": "task_1",
+            "path": "index.html",
+            "content": "<!doctype html>" + ("x" * 5000),
+            "overwrite": True,
+        },
+    )
+    patch_input = PublishingMixin._public_permission_request_input(
+        "apply_patch",
+        {
+            "workspaceRoot": "D:/py/test_pro",
+            "patchText": "--- a/app.py\n+++ b/app.py\n" + ("+" * 5000),
+            "diffText": "secret diff",
+            "changedPaths": ["app.py"],
+            "filesChanged": 1,
+        },
+    )
+
+    write_json = json.dumps(write_input, ensure_ascii=False)
+    patch_json = json.dumps(patch_input, ensure_ascii=False)
+
+    assert write_input["path"] == "index.html"
+    assert write_input["contentChars"] > 5000
+    assert "content" not in write_input
+    assert "workspaceRoot" not in write_json
+    assert "task_1" not in write_json
+    assert "<!doctype html>" not in write_json
+    assert patch_input["changedPaths"] == ["app.py"]
+    assert patch_input["filesChanged"] == 1
+    assert patch_input["patchChars"] > 5000
+    assert "patch" not in patch_input
+    assert "workspaceRoot" not in patch_json
+    assert "secret diff" not in patch_json
+    assert "--- a/app.py" not in patch_json
+
+
 def test_run_command_permission_preview_does_not_fallback_to_workspace_root(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)
@@ -1409,6 +1356,76 @@ def test_run_command_permission_preview_does_not_fallback_to_workspace_root(tmp_
     encoded = json.dumps(flat["payload"], ensure_ascii=False)
     assert "workspaceRoot" not in encoded
     assert "D:/py/test_pro" not in encoded
+
+
+def test_tool_presentation_fields_flow_through_flat_tool_and_permission_events(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(session_id=session["id"], task_type="chat", goal="tool presentation", plan=[])
+    task["role"] = "root"
+
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "tool.started",
+        {
+            "toolCallId": "call_write",
+            "toolName": "write_file",
+            "arguments": {"path": "index.html", "content": "<html></html>"},
+            "target": "index.html",
+            "inputSummary": "index.html",
+            "displayTitle": "写入 index.html",
+            "displaySummary": "准备写入 13 bytes",
+            "displayTarget": "index.html",
+            "displayKind": "write",
+        },
+    )
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "approval.requested",
+        {
+            "approvalId": "appr_write",
+            "kind": "write_file",
+            "toolUseId": "call_write",
+            "toolName": "write_file",
+            "target": "index.html",
+            "inputSummary": "index.html",
+            "displayTitle": "写入 index.html",
+            "displaySummary": "需要确认文件写入",
+            "displayTarget": "index.html",
+            "displayKind": "write",
+            "request": {
+                "toolUseId": "call_write",
+                "toolName": "write_file",
+                "target": "index.html",
+                "inputSummary": "index.html",
+                "displayTitle": "写入 index.html",
+                "displaySummary": "需要确认文件写入",
+                "displayTarget": "index.html",
+                "displayKind": "write",
+                "path": "index.html",
+                "content": "<html></html>",
+            },
+        },
+    )
+
+    flat_start = next(
+        event for event in runtime.events
+        if event["type"] == "content_start" and event["payload"].get("toolUseId") == "call_write"
+    )
+    flat_use = next(
+        event for event in runtime.events
+        if event["type"] == "tool_use_complete" and event["payload"].get("toolUseId") == "call_write"
+    )
+    flat_permission = next(event for event in runtime.events if event["type"] == "permission_request")
+
+    for event in (flat_start, flat_use, flat_permission):
+        assert event["payload"]["displayTitle"] == "写入 index.html"
+        assert event["payload"]["displayTarget"] == "index.html"
+        assert event["payload"]["displayKind"] == "write"
+    assert flat_permission["payload"]["toolUseId"] == "call_write"
+    assert "content" not in json.dumps(flat_permission["payload"]["input"], ensure_ascii=False)
 
 
 def test_computer_use_permission_request_strips_internal_request_fields(tmp_path: Path) -> None:

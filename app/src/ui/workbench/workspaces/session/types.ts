@@ -334,6 +334,11 @@ export interface SessionWorkspaceToolCall {
   toolName: string;
   status: string;
   target?: string;
+  displayTitle?: string;
+  displaySummary?: string;
+  displayTarget?: string;
+  displayKind?: string;
+  inputSummary?: string;
   taskId?: string;
   time?: number;
   resultSummary?: string;

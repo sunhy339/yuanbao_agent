@@ -1,4 +1,4 @@
-"""Provider Turn Mixin — extracted from ReactRunnerMixin.
+﻿"""Provider Turn Mixin 鈥?extracted from ReactRunnerMixin.
 
 Handles provider request/response, streaming, trace helpers,
 response parsing, and turn result extraction.
@@ -11,7 +11,6 @@ from typing import Any
 
 from ..context.token_budget import estimate_tokens
 from ..execution.tool_pipeline import _tool_category, _tool_phase_metadata, _tool_semantic_parent_metadata
-from ..planner.preflight_split import build_provider_preflight_split_plan_payload
 from ..provider.failure_recovery import classify_provider_failure
 from ..react.types import ProviderTurnResult, TurnDecision
 
@@ -54,14 +53,8 @@ class ProviderTurnMixin:
             token_estimate=token_estimate,
             compaction_threshold=compaction_threshold,
         )
-        advice = self._provider_preflight_advice(
-            goal=goal,
-            provider_context=provider_context,
-            facts=facts,
-        )
         runtime_action = self._provider_preflight_runtime_action(
             facts=facts,
-            advice=advice,
         )
         result_context = dict(provider_context)
         result_messages = provider_context.get("messages")
@@ -74,7 +67,7 @@ class ProviderTurnMixin:
             result_context["_provider_preflight_runtime_action"] = runtime_action
             result_context["_provider_preflight"] = {
                 "runtimeAction": runtime_action,
-                "reason": self._provider_preflight_reason(facts=facts, advice=advice),
+                "reason": self._provider_preflight_reason(facts=facts),
                 "originalMessageCount": original_message_count,
                 "messageCount": len(compacted_messages),
                 "originalTokenEstimate": original_tokens,
@@ -87,48 +80,12 @@ class ProviderTurnMixin:
             result_context["_provider_preflight_runtime_action"] = runtime_action
             result_context["_provider_preflight"] = {
                 "runtimeAction": runtime_action,
-                "reason": self._provider_preflight_reason(facts=facts, advice=advice),
+                "reason": self._provider_preflight_reason(facts=facts),
                 "originalMessageCount": original_message_count,
                 "messageCount": original_message_count,
                 "originalTokenEstimate": original_tokens,
                 "tokenEstimate": token_estimate,
             }
-        switch_result = None
-        if runtime_action == "switch_provider":
-            switch_result = self._provider_preflight_switch_provider_context(
-                provider_context=result_context,
-                facts=facts,
-                advice=advice,
-            )
-            if switch_result is not None:
-                result_context = switch_result["provider_context"]
-                result_context["_provider_preflight_provider_switch"] = switch_result["switch"]
-                applied = True
-                if isinstance(result_context.get("_provider_preflight"), dict):
-                    result_context["_provider_preflight"]["providerSwitch"] = switch_result["switch"]
-        split_plan = self._provider_preflight_split_plan_payload(advice=advice)
-        if runtime_action == "execute_split":
-            runtime_action = "proceed"
-            split_plan = None
-            result_context["_provider_preflight_runtime_action"] = runtime_action
-            result_context.pop("_provider_preflight_split_plan", None)
-            if isinstance(result_context.get("_provider_preflight"), dict):
-                result_context["_provider_preflight"]["runtimeAction"] = runtime_action
-                result_context["_provider_preflight"]["splitSuppressed"] = True
-                result_context["_provider_preflight"]["reason"] = (
-                    "Provider preflight split advice is advisory only; "
-                    "model tool calls drive delegation."
-                )
-        if runtime_action == "execute_split" and split_plan is not None:
-            result_context["_provider_preflight_split_plan"] = split_plan
-            applied = True
-            if isinstance(result_context.get("_provider_preflight"), dict):
-                result_context["_provider_preflight"]["splitPlan"] = {
-                    "subtaskCount": len(split_plan.get("subtasks") or []),
-                    "executionOrder": split_plan.get("execution_order"),
-                    "reason": split_plan.get("reason"),
-                }
-
         facts_after = dict(facts)
         facts_after.update({
             "messageCountAfter": len(result_messages) if isinstance(result_messages, list) else None,
@@ -136,12 +93,9 @@ class ProviderTurnMixin:
         })
         decision = {
             "facts": facts_after,
-            "advice": advice,
             "runtimeAction": runtime_action,
             "runtimeApplied": applied,
             "providerPreflight": result_context.get("_provider_preflight"),
-            "splitPlan": split_plan if runtime_action == "execute_split" else None,
-            "providerSwitch": switch_result["switch"] if isinstance(switch_result, dict) else None,
         }
         return {
             "provider_context": result_context,
@@ -159,7 +113,6 @@ class ProviderTurnMixin:
     ) -> dict[str, Any]:
         messages = provider_context.get("messages")
         tools = provider_context.get("openai_tools") or provider_context.get("tools") or []
-        routing = provider_context.get("routing") if isinstance(provider_context.get("routing"), dict) else {}
         budget_stats = provider_context.get("budgetStats") if isinstance(provider_context, dict) else None
         max_context_tokens = None
         if isinstance(budget_stats, dict):
@@ -192,8 +145,6 @@ class ProviderTurnMixin:
             risk_level = "medium"
         else:
             risk_level = "low"
-        available_profiles = self._provider_preflight_available_profiles(provider_context)
-        profile_ranking = self._provider_preflight_profile_ranking(available_profiles)
         return {
             **self._provider_trace_payload(provider_context),
             "messageCount": len(messages) if isinstance(messages, list) else None,
@@ -210,10 +161,6 @@ class ProviderTurnMixin:
             "step": provider_context.get("step"),
             "maxSteps": provider_context.get("max_steps"),
             "childWorker": provider_context.get("_child_worker") is True,
-            "alreadyProviderPreflightSplit": bool(routing.get("providerPreflightSplit")),
-            "availableProviderProfiles": available_profiles,
-            "providerProfileRanking": profile_ranking,
-            "topProviderProfile": profile_ranking[0] if profile_ranking else None,
             **prior_failure,
         }
 
@@ -260,80 +207,8 @@ class ProviderTurnMixin:
                 continue
         return 0.92
 
-    def _provider_preflight_advice(
-        self,
-        *,
-        goal: str,
-        provider_context: dict[str, Any],
-        facts: dict[str, Any],
-    ) -> Any | None:
-        advisor = getattr(self, "_decision_advisor", None)
-        if advisor is None:
-            return None
-        if not self._should_consult_provider_preflight_advisor(provider_context=provider_context, facts=facts):
-            return None
-        input_context: dict[str, Any] = {
-            "goal": goal[:2000],
-            "preflight_facts": facts,
-            "runtime_limits": {
-                "autoActions": ["proceed", "compact_context"],
-                "executableActions": ["switch_provider"],
-                "advisoryOnlyActions": ["ask_user", "abort", "propose_split"],
-                "splitExecution": "split advice is advisory; the model must call agent/task tools to delegate",
-                "switchProviderExecution": "validated provider profile switches apply only to this provider turn context",
-                "runtimeWillNotCallProviderAfterTransportFailureForAdvice": True,
-            },
-            "available_actions": [
-                "proceed",
-                "compact_context",
-                "ask_user",
-                "switch_provider",
-                "abort",
-            ],
-        }
-        config = provider_context.get("config")
-        if isinstance(config, dict):
-            input_context["config"] = config
-        try:
-            return advisor.advise("provider_preflight", input_context)
-        except Exception:  # noqa: BLE001
-            logger.debug("Provider preflight advisor failed", exc_info=True)
-            return None
-
-    def _should_consult_provider_preflight_advisor(
-        self,
-        *,
-        provider_context: dict[str, Any],
-        facts: dict[str, Any],
-    ) -> bool:
-        config = provider_context.get("config") if isinstance(provider_context, dict) else None
-        advisor_config = {}
-        if isinstance(config, dict):
-            advisor = config.get("advisor")
-            if isinstance(advisor, dict):
-                advisor_config = advisor
-            autonomy = config.get("autonomy")
-            if not advisor_config and isinstance(autonomy, dict) and isinstance(autonomy.get("advisor"), dict):
-                advisor_config = autonomy["advisor"]
-        if advisor_config.get("providerPreflight") is False:
-            return False
-        if advisor_config.get("alwaysProviderPreflight") is True:
-            return True
-        return bool(
-            facts.get("nearContextLimit")
-            or facts.get("overContextLimit")
-            or facts.get("hasPriorProviderFailure")
-        )
-
     @staticmethod
-    def _provider_preflight_reason(*, facts: dict[str, Any], advice: Any | None) -> str:
-        if advice is not None and bool(getattr(advice, "accepted", False)):
-            payload = getattr(advice, "payload", {}) or {}
-            if isinstance(payload, dict) and isinstance(payload.get("reason"), str):
-                return payload["reason"][:500]
-            rationale = getattr(advice, "rationale", None)
-            if isinstance(rationale, str) and rationale.strip():
-                return rationale[:500]
+    def _provider_preflight_reason(*, facts: dict[str, Any]) -> str:
         if facts.get("overContextLimit"):
             return "Runtime detected provider context at or above the configured context limit."
         if facts.get("nearContextLimit"):
@@ -342,201 +217,10 @@ class ProviderTurnMixin:
             return "Runtime detected a prior provider failure in recent tool results."
         return "Provider request is within preflight runtime bounds."
 
-    def _provider_preflight_runtime_action(self, *, facts: dict[str, Any], advice: Any | None) -> str:
-        proposed = ""
-        if advice is not None and bool(getattr(advice, "accepted", False)):
-            payload = getattr(advice, "payload", {}) or {}
-            if isinstance(payload, dict):
-                proposed = str(payload.get("action") or "").strip()
-        if proposed == "compact_context":
-            return "compact_context"
-        split_allowed = (
-            not facts.get("childWorker")
-            and not facts.get("alreadyProviderPreflightSplit")
-            and self._provider_preflight_split_is_necessary(facts=facts)
-        )
-        if proposed == "propose_split" and split_allowed and self._provider_preflight_split_plan_payload(advice=advice) is not None:
-            return "execute_split"
-        if proposed == "switch_provider" and self._provider_preflight_switch_target(facts=facts, advice=advice) is not None:
-            return "switch_provider"
+    def _provider_preflight_runtime_action(self, *, facts: dict[str, Any]) -> str:
         if facts.get("overContextLimit"):
             return "compact_context"
         return "proceed"
-
-    def _provider_preflight_split_plan_payload(self, *, advice: Any | None) -> dict[str, Any] | None:
-        return build_provider_preflight_split_plan_payload(advice=advice)
-
-    @staticmethod
-    def _provider_preflight_split_is_necessary(*, facts: dict[str, Any]) -> bool:
-        return bool(
-            facts.get("nearContextLimit")
-            or facts.get("overContextLimit")
-            or facts.get("hasPriorProviderFailure")
-        )
-
-    def _provider_preflight_switch_target(self, *, facts: dict[str, Any], advice: Any | None) -> str | None:
-        if facts.get("childWorker") or facts.get("alreadyProviderPreflightSplit"):
-            return None
-        if advice is None or not bool(getattr(advice, "accepted", False)):
-            return None
-        payload = getattr(advice, "payload", {}) or {}
-        if not isinstance(payload, dict) or payload.get("action") != "switch_provider":
-            return None
-        target = payload.get("fallbackProviderId")
-        if not isinstance(target, str) or not target.strip():
-            return None
-        target = target.strip()
-        ranked_profiles = facts.get("providerProfileRanking")
-        if not isinstance(ranked_profiles, list) or not ranked_profiles:
-            ranked_profiles = facts.get("availableProviderProfiles") or []
-        for profile in ranked_profiles:
-            if not isinstance(profile, dict) or profile.get("id") != target:
-                continue
-            if profile.get("switchEligible") is False:
-                return None
-            if profile.get("isActive") is True or profile.get("enabled") is False:
-                return None
-            last_status = str(profile.get("lastStatus") or "").strip().lower()
-            if last_status in {"failed", "missing_env", "unsupported"}:
-                return None
-            return target
-        return None
-
-    def _provider_preflight_switch_provider_context(
-        self,
-        *,
-        provider_context: dict[str, Any],
-        facts: dict[str, Any],
-        advice: Any | None,
-    ) -> dict[str, Any] | None:
-        target = self._provider_preflight_switch_target(facts=facts, advice=advice)
-        if target is None:
-            return None
-        config = provider_context.get("config")
-        if not isinstance(config, dict):
-            return None
-        provider_config = config.get("provider")
-        if not isinstance(provider_config, dict):
-            return None
-        profiles = provider_config.get("profiles")
-        if not isinstance(profiles, list):
-            return None
-        selected = next((profile for profile in profiles if isinstance(profile, dict) and profile.get("id") == target), None)
-        if not isinstance(selected, dict):
-            return None
-
-        updated_config = dict(config)
-        updated_provider = dict(provider_config)
-        updated_provider["activeProfileId"] = target
-        for key, value in selected.items():
-            if key not in {"id", "name", "profiles", "activeProfileId"}:
-                updated_provider[key] = value
-        updated_config["provider"] = updated_provider
-        updated_context = dict(provider_context)
-        updated_context["config"] = updated_config
-        current = str(provider_config.get("activeProfileId") or "").strip() or None
-        switch = {
-            "fromProfileId": current,
-            "toProfileId": target,
-            "profileName": selected.get("name"),
-            "model": selected.get("model") or selected.get("defaultModel"),
-            "mode": selected.get("mode") or updated_provider.get("mode"),
-            "reason": self._provider_preflight_reason(facts=facts, advice=advice),
-            "scope": "provider_turn",
-        }
-        ranking = facts.get("providerProfileRanking")
-        if isinstance(ranking, list):
-            ranked = next((item for item in ranking if isinstance(item, dict) and item.get("id") == target), None)
-            if isinstance(ranked, dict):
-                switch["health"] = {
-                    key: ranked.get(key)
-                    for key in ("healthState", "lastStatus", "lastCheckedAt", "lastErrorSummary", "score", "rank", "rankReason")
-                    if ranked.get(key) not in (None, "", [])
-                }
-        return {"provider_context": updated_context, "switch": switch}
-
-    def _provider_preflight_available_profiles(self, provider_context: dict[str, Any]) -> list[dict[str, Any]]:
-        config = provider_context.get("config") if isinstance(provider_context, dict) else None
-        provider_config = config.get("provider") if isinstance(config, dict) else None
-        if not isinstance(provider_config, dict):
-            return []
-        active_profile_id = provider_config.get("activeProfileId")
-        profiles = provider_config.get("profiles")
-        if not isinstance(profiles, list):
-            return []
-        result: list[dict[str, Any]] = []
-        for profile in profiles:
-            if not isinstance(profile, dict):
-                continue
-            profile_id = profile.get("id")
-            if not isinstance(profile_id, str) or not profile_id.strip():
-                continue
-            result.append({
-                "id": profile_id.strip(),
-                "name": profile.get("name"),
-                "mode": profile.get("mode") or provider_config.get("mode"),
-                "model": profile.get("model") or profile.get("defaultModel"),
-                "apiFormat": profile.get("apiFormat") or provider_config.get("apiFormat"),
-                "lastStatus": profile.get("lastStatus"),
-                "lastCheckedAt": profile.get("lastCheckedAt"),
-                "lastErrorSummary": profile.get("lastErrorSummary"),
-                "enabled": profile.get("enabled", True),
-                "isActive": profile_id == active_profile_id,
-            })
-        return result
-
-    def _provider_preflight_profile_ranking(self, profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        ranked: list[dict[str, Any]] = []
-        for profile in profiles:
-            if not isinstance(profile, dict):
-                continue
-            health = self._provider_profile_health(profile)
-            item = {
-                **profile,
-                **health,
-            }
-            ranked.append(item)
-        ranked.sort(key=lambda item: (int(item.get("score") or 0), 0 if item.get("isActive") else 1), reverse=True)
-        for index, item in enumerate(ranked, start=1):
-            item["rank"] = index
-        return ranked
-
-    @staticmethod
-    def _provider_profile_health(profile: dict[str, Any]) -> dict[str, Any]:
-        enabled = profile.get("enabled", True) is not False
-        is_active = profile.get("isActive") is True
-        last_status = str(profile.get("lastStatus") or "").strip().lower()
-        if not enabled:
-            health_state = "disabled"
-            score = 0
-            reason = "profile disabled"
-        elif last_status in {"ok", "success", "succeeded", "healthy"}:
-            health_state = "healthy"
-            score = 90
-            reason = "last provider check succeeded"
-        elif not last_status:
-            health_state = "unknown"
-            score = 65
-            reason = "no provider health check recorded"
-        elif last_status in {"missing_env", "unsupported", "auth", "failed", "error"}:
-            health_state = "unhealthy"
-            score = 10
-            reason = f"last provider check status: {last_status}"
-        else:
-            health_state = "degraded"
-            score = 45
-            reason = f"last provider check status: {last_status}"
-        if is_active:
-            score = max(0, score - 15)
-        switch_eligible = enabled and not is_active and health_state in {"healthy", "unknown", "degraded"}
-        if not switch_eligible and is_active:
-            reason = f"{reason}; currently active"
-        return {
-            "healthState": health_state,
-            "score": score,
-            "rankReason": reason,
-            "switchEligible": switch_eligible,
-        }
 
     def _provider_preflight_compact_messages(self, messages: list[Any]) -> list[Any]:
         system_messages: list[dict[str, Any]] = []
@@ -572,15 +256,11 @@ class ProviderTurnMixin:
         if not isinstance(decision, dict):
             return
         facts = decision.get("facts") if isinstance(decision.get("facts"), dict) else {}
-        advice = decision.get("advice")
         runtime_action = str(decision.get("runtimeAction") or "proceed")
         runtime_applied = bool(decision.get("runtimeApplied"))
-        advisor_config = provider_context.get("advisor") if isinstance(provider_context.get("advisor"), dict) else {}
         should_record_trace = (
             runtime_action != "proceed"
             or runtime_applied
-            or advice is not None
-            or bool(advisor_config.get("alwaysProviderPreflight"))
         )
         if not should_record_trace:
             return
@@ -591,24 +271,6 @@ class ProviderTurnMixin:
             "runtimeApplied": runtime_applied,
             "providerPreflight": decision.get("providerPreflight"),
         }
-        provider_switch = decision.get("providerSwitch")
-        if provider_switch is None and isinstance(decision.get("providerPreflight"), dict):
-            provider_switch = decision["providerPreflight"].get("providerSwitch")
-        if isinstance(provider_switch, dict):
-            payload["providerSwitch"] = provider_switch
-        split_plan = self._provider_preflight_split_plan_payload(advice=advice)
-        if payload["runtimeAction"] == "execute_split" and split_plan is not None:
-            payload["splitPlan"] = split_plan
-        if advice is not None:
-            payload["advisor"] = {
-                "source": getattr(advice, "source", None),
-                "accepted": bool(getattr(advice, "accepted", False)),
-                "confidence": getattr(advice, "confidence", None),
-                "rationale": getattr(advice, "rationale", None),
-                "fallbackReason": getattr(advice, "fallback_reason", None),
-                "validationReasons": list(getattr(advice, "validation_reasons", None) or []),
-                "proposal": getattr(advice, "payload", None),
-            }
         self._append_provider_trace(
             task=task,
             event_type="provider.preflight.decision",
@@ -632,18 +294,12 @@ class ProviderTurnMixin:
                     session_id=session_id,
                     task=task,
                     phase="provider_preflight",
-                    reason=str(preflight.get("reason") or self._provider_preflight_reason(facts=facts, advice=advice)),
+                    reason=str(preflight.get("reason") or self._provider_preflight_reason(facts=facts)),
                     original_count=preflight.get("originalMessageCount"),
                     compacted_count=preflight.get("messageCount"),
                     tokens_before=preflight.get("originalTokenEstimate"),
                     tokens_after=preflight.get("tokenEstimate"),
                     strategy="compact_context",
-                )
-            if payload["runtimeAction"] == "switch_provider" and payload["runtimeApplied"] and isinstance(provider_switch, dict):
-                self._publish_provider_switch_notification(
-                    session_id=session_id,
-                    task=task,
-                    provider_switch=provider_switch,
                 )
         recorder = getattr(self, "_record_provider_preflight_proposal", None)
         if callable(recorder):
@@ -652,7 +308,6 @@ class ProviderTurnMixin:
                 task=task,
                 provider_turn_id=provider_turn_id,
                 preflight=decision,
-                advice=advice,
             )
 
     def _request_provider_response(
@@ -1025,7 +680,7 @@ class ProviderTurnMixin:
         if len(text) >= 900:
             return True
         stripped = text.rstrip()
-        return len(stripped) >= 320 and stripped.endswith((".", "!", "?", "。", "！", "？", "\n"))
+        return len(stripped) >= 320 and stripped.endswith((".", "!", "?", "\u3002", "\uff01", "\uff1f", "\n"))
 
     def _should_stream_provider(self, provider_context: dict[str, Any]) -> bool:
         if not hasattr(self._provider, "stream"):
@@ -1214,20 +869,11 @@ class ProviderTurnMixin:
         recovery_retry: bool,
         has_partial_output: bool = False,
     ) -> dict[str, Any]:
-        advisor_gate = self._provider_failure_advisor_gate(
+        runtime_gate = self._provider_failure_runtime_gate(
             recovery=recovery,
             stage=stage,
             recovery_retry=recovery_retry,
             has_partial_output=has_partial_output,
-        )
-        advice = self._provider_failure_recovery_advice(
-            goal=goal,
-            provider_context=provider_context,
-            recovery=recovery,
-            error=error,
-            stage=stage,
-            recovery_retry=recovery_retry,
-            advisor_gate=advisor_gate,
         )
         can_non_stream = bool(
             hasattr(self._provider, "generate")
@@ -1238,7 +884,6 @@ class ProviderTurnMixin:
         )
         strategy = self._provider_recovery_strategy(
             recovery=recovery,
-            advice=advice,
             stage=stage,
             can_non_stream=can_non_stream,
             has_partial_output=has_partial_output,
@@ -1256,90 +901,14 @@ class ProviderTurnMixin:
             "maxRetries": max_retries,
             "stage": stage,
             "hasPartialOutput": has_partial_output,
-            "advisorGate": advisor_gate,
-            "advisorAvailable": advice is not None,
-            "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
+            "runtimeGate": runtime_gate,
         }
-        if advice is not None:
-            payload["advisorSource"] = getattr(advice, "source", None)
-            if getattr(advice, "fallback_reason", None):
-                payload["advisorFallbackReason"] = getattr(advice, "fallback_reason")
         return {
             "strategy": strategy,
             "failureRecovery": payload,
-            "advice": advice,
         }
 
-    def _provider_failure_recovery_advice(
-        self,
-        *,
-        goal: str,
-        provider_context: dict[str, Any],
-        recovery: Any,
-        error: BaseException | str,
-        stage: str,
-        recovery_retry: bool,
-        advisor_gate: dict[str, Any] | None = None,
-    ) -> Any | None:
-        gate = advisor_gate or self._provider_failure_advisor_gate(
-            recovery=recovery,
-            stage=stage,
-            recovery_retry=recovery_retry,
-            has_partial_output=False,
-        )
-        if not bool(gate.get("allowAdvisor")):
-            return None
-        advisor = getattr(self, "_decision_advisor", None)
-        if advisor is None:
-            return None
-        if not bool(getattr(recovery, "recoverable", False)):
-            return None
-        category = str(getattr(recovery, "category", "") or "")
-        if category in {"auth", "refusal"}:
-            return None
-        messages = provider_context.get("messages")
-        tools = provider_context.get("openai_tools") or provider_context.get("tools") or []
-        input_context = {
-            "goal": goal,
-            "provider_failure": recovery.to_dict(),
-            "error_summary": str(error)[:500],
-            "stage": stage,
-            "attempt": 2 if recovery_retry else 1,
-            "runtime_limits": {
-                "maxRetriesRemaining": 0 if recovery_retry else 1,
-                "canFallbackToNonStream": bool(
-                    hasattr(self._provider, "generate")
-                    and self._can_fallback_to_non_stream(
-                        recovery,
-                        has_partial_output=bool(gate.get("hasPartialOutput")),
-                    )
-                ),
-                "authAndRefusalAreNonRetryable": True,
-                "advisorRequiresPartialOutputOrSemanticRepair": True,
-            },
-            "available_actions": self._provider_recovery_available_actions(
-                recovery=recovery,
-                stage=stage,
-                has_partial_output=bool(gate.get("hasPartialOutput")),
-            ),
-            "provider_request": self._provider_trace_payload(provider_context),
-            "context_shape": {
-                "messageCount": len(messages) if isinstance(messages, list) else None,
-                "toolCount": len(tools) if isinstance(tools, list) else None,
-                "step": provider_context.get("step"),
-            },
-            "advisor_gate": gate,
-        }
-        config = provider_context.get("config")
-        if isinstance(config, dict):
-            input_context["config"] = config
-        try:
-            return advisor.advise("failure_recovery", input_context)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failure recovery advisor failed", exc_info=True)
-            return None
-
-    def _provider_failure_advisor_gate(
+    def _provider_failure_runtime_gate(
         self,
         *,
         recovery: Any,
@@ -1350,24 +919,24 @@ class ProviderTurnMixin:
         category = str(getattr(recovery, "category", "") or "")
         if recovery_retry:
             return {
-                "allowAdvisor": False,
+                "allowRecovery": False,
                 "reason": "recovery_retry_already_used",
                 "hasPartialOutput": has_partial_output,
             }
         if category in {"auth", "refusal"} or not bool(getattr(recovery, "recoverable", False)):
             return {
-                "allowAdvisor": False,
+                "allowRecovery": False,
                 "reason": "hard_provider_failure",
                 "hasPartialOutput": has_partial_output,
             }
         if has_partial_output:
             return {
-                "allowAdvisor": True,
+                "allowRecovery": True,
                 "reason": "partial_output_available",
                 "hasPartialOutput": True,
             }
         return {
-            "allowAdvisor": False,
+            "allowRecovery": False,
             "reason": "no_partial_output",
             "hasPartialOutput": False,
         }
@@ -1404,7 +973,6 @@ class ProviderTurnMixin:
         self,
         *,
         recovery: Any,
-        advice: Any | None,
         stage: str,
         can_non_stream: bool,
         has_partial_output: bool = False,
@@ -1416,34 +984,6 @@ class ProviderTurnMixin:
             return "ask_user_or_change_request"
         if not bool(getattr(recovery, "recoverable", False)):
             return "surface_error"
-
-        proposed = ""
-        if advice is not None and bool(getattr(advice, "accepted", False)):
-            payload = getattr(advice, "payload", {}) or {}
-            if isinstance(payload, dict):
-                proposed = str(payload.get("strategy") or "").strip()
-        if proposed:
-            if proposed in {"ask_user", "ask_user_or_change_request", "abort", "surface_error"}:
-                return proposed
-            if proposed in {"fix_provider_request", "fix_provider_api_format", "inspect_provider_response"}:
-                return proposed
-            if (
-                proposed in {"retry", "retry_with_backoff"}
-                and bool(getattr(recovery, "retryable", False))
-                and has_partial_output
-            ):
-                return proposed
-            if proposed == "compact_or_split_context" and category in {"context_too_large", "invalid_response"}:
-                return proposed
-            if proposed == "compact_or_split_context" and has_partial_output and category in {
-                "timeout",
-                "rate_limit",
-                "network",
-                "server_error",
-            }:
-                return proposed
-            if proposed == "fallback" and stage == "stream" and can_non_stream:
-                return proposed
 
         if stage == "stream" and can_non_stream:
             return "fallback"
@@ -1477,15 +1017,6 @@ class ProviderTurnMixin:
         provider_context["_provider_failure_recovery_recorded"] = True
         if isinstance(recovery_decision.get("failureRecovery"), dict):
             provider_context["_provider_failure_recovery_payload"] = recovery_decision["failureRecovery"]
-        advice = recovery_decision.get("advice")
-        if advice is not None:
-            payload["advisor"] = {
-                "source": getattr(advice, "source", None),
-                "accepted": bool(getattr(advice, "accepted", False)),
-                "confidence": getattr(advice, "confidence", None),
-                "rationale": getattr(advice, "rationale", None),
-                "fallbackReason": getattr(advice, "fallback_reason", None),
-            }
         self._append_provider_trace(
             task=task,
             event_type="provider.failure.recovery_decision",
@@ -1507,7 +1038,6 @@ class ProviderTurnMixin:
                 provider_turn_id=provider_context.get("_provider_turn_id"),
                 failure_recovery=recovery_decision.get("failureRecovery"),
                 error=str(error),
-                advice=advice,
             )
 
     def _publish_provider_api_retry(
@@ -1527,7 +1057,7 @@ class ProviderTurnMixin:
             return
         recovery = recovery_payload if isinstance(recovery_payload, dict) else {}
         payload: dict[str, Any] = {
-            "title": "API 重试",
+            "title": "API 閲嶈瘯",
             "summary": self._provider_api_retry_summary(
                 stage=stage,
                 strategy=strategy,
@@ -1547,7 +1077,7 @@ class ProviderTurnMixin:
             "hasPartialOutput": recovery.get("hasPartialOutput"),
             "fallbackFromStream": fallback_from_stream,
         }
-        for key in ("httpStatus", "advisorAccepted", "advisorAvailable", "advisorSource"):
+        for key in ("httpStatus",):
             if recovery.get(key) is not None:
                 payload[key] = recovery.get(key)
         self._publish(
@@ -1569,18 +1099,18 @@ class ProviderTurnMixin:
     ) -> str:
         category = str(recovery.get("category") or "")
         if strategy == "fallback" or fallback_from_stream:
-            action = "流式响应中断，正在切换为非流式请求恢复"
+            action = "Streaming response was interrupted; retrying with a non-streaming request"
         elif strategy == "compact_or_split_context":
-            action = "请求上下文过大，正在压缩上下文后重试"
+            action = "Request context is too large; compacting context before retry"
         elif strategy == "retry_with_backoff":
-            action = "模型接口暂时不可用，正在退避后重试"
+            action = "Provider is temporarily unavailable; retrying with backoff"
         else:
-            action = "模型接口暂时不可用，正在重试"
+            action = "Provider is temporarily unavailable; retrying"
         if stage == "stream" and category == "timeout" and strategy != "fallback":
-            action = "流式响应超时，正在重新请求模型"
-        attempt_text = f"第 {attempt}/{max_attempts} 次尝试"
+            action = "Streaming response timed out; retrying the provider request"
+        attempt_text = f"attempt {attempt}/{max_attempts}"
         reason = str(recovery.get("reason") or "").strip()
-        return f"{action}（{attempt_text}）{f'：{reason}' if reason else ''}"
+        return f"{action} ({attempt_text}){f': {reason}' if reason else ''}"
 
     def _publish_provider_recovery_compact_summary(
         self,
@@ -1626,20 +1156,20 @@ class ProviderTurnMixin:
         count_text = ""
         if isinstance(original_count, int) and isinstance(compacted_count, int):
             if compacted_count <= original_count:
-                count_text = f"{original_count} -> {compacted_count} 条消息"
+                count_text = f"{original_count} -> {compacted_count} messages"
             else:
-                count_text = f"原始 {original_count} 条，压缩后上下文 {compacted_count} 条消息"
+                count_text = f"original {original_count} messages, compacted context {compacted_count} messages"
         token_text = ""
         if isinstance(tokens_before, int) and isinstance(tokens_after, int):
             token_text = f"{tokens_before} -> {tokens_after} tokens"
-        details = "；".join(part for part in (count_text, token_text) if part)
-        summary = "已压缩上下文"
+        details = "; ".join(part for part in (count_text, token_text) if part)
+        summary = "Context compacted"
         if details:
-            summary = f"{summary}（{details}）"
+            summary = f"{summary} ({details})"
         if reason:
-            summary = f"{summary}：{reason}"
+            summary = f"{summary}: {reason}"
         payload: dict[str, Any] = {
-            "title": "上下文已压缩",
+            "title": "Context compacted",
             "summary": summary,
             "status": "completed",
             "phase": phase,
@@ -1672,48 +1202,6 @@ class ProviderTurnMixin:
             session_id=session_id,
             task=task,
             event_type="compact_summary",
-            payload=payload,
-        )
-
-    def _publish_provider_switch_notification(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        provider_switch: dict[str, Any],
-    ) -> None:
-        if not hasattr(self, "_publish"):
-            return
-        to_profile = str(provider_switch.get("profileName") or provider_switch.get("toProfileId") or "fallback provider")
-        model = str(provider_switch.get("model") or "").strip()
-        reason = str(provider_switch.get("reason") or "").strip()
-        summary = f"本轮已切换到 {to_profile}"
-        if model:
-            summary = f"{summary}（{model}）"
-        if reason:
-            summary = f"{summary}：{reason}"
-        health = provider_switch.get("health") if isinstance(provider_switch.get("health"), dict) else {}
-        payload: dict[str, Any] = {
-            "title": "模型配置已切换",
-            "summary": summary,
-            "status": "completed",
-            "phase": "provider_preflight",
-            "fromProfileId": provider_switch.get("fromProfileId"),
-            "toProfileId": provider_switch.get("toProfileId"),
-            "profileName": provider_switch.get("profileName"),
-            "model": provider_switch.get("model"),
-            "mode": provider_switch.get("mode"),
-            "scope": provider_switch.get("scope"),
-            "reason": reason,
-        }
-        if health:
-            payload["healthState"] = health.get("healthState")
-            payload["lastStatus"] = health.get("lastStatus")
-            payload["rankReason"] = health.get("rankReason")
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="system_notification",
             payload=payload,
         )
 
@@ -1760,9 +1248,6 @@ class ProviderTurnMixin:
             "originalMessageCount": len(messages) if isinstance(messages, list) else None,
             "retryMessageCount": len(retry_context.get("messages") or []) if isinstance(retry_context.get("messages"), list) else None,
             "strategy": strategy,
-            "advisorAccepted": bool(
-                getattr((recovery_decision or {}).get("advice"), "accepted", False)
-            ) if isinstance(recovery_decision, dict) else False,
         }
         return retry_context
 
@@ -2099,47 +1584,3 @@ class ProviderTurnMixin:
                 return text
         return None
 
-    def _has_deterministic_fallback(self) -> bool:
-        if not hasattr(self._provider, "choose_tool_sequence") or not hasattr(self._provider, "summarize_findings"):
-            return False
-        return self._provider_config_deterministic_fallback_enabled()
-
-    def _provider_config_deterministic_fallback_enabled(self) -> bool:
-        config = {}
-        store = getattr(self, "_store", None)
-        if store is not None:
-            try:
-                config = store.get_config({}).get("config", {}) or {}
-            except Exception:
-                config = {}
-        provider_config = config.get("provider") if isinstance(config, dict) else {}
-        if not isinstance(provider_config, dict):
-            provider_config = {}
-        deterministic_fallback = provider_config.get("deterministicFallback")
-        if isinstance(deterministic_fallback, bool):
-            return deterministic_fallback
-        if isinstance(deterministic_fallback, str):
-            return deterministic_fallback.strip().lower() in {"true", "1", "yes", "on"}
-        return False
-
-    def _should_use_deterministic_fallback(
-        self,
-        *,
-        goal: str,
-        context: dict[str, Any] | None = None,
-    ) -> bool:
-        if not hasattr(self._provider, "choose_tool_sequence") or not hasattr(self._provider, "summarize_findings"):
-            return False
-        if self._provider_config_deterministic_fallback_enabled():
-            return True
-        route_goal = getattr(self._provider, "_route_goal", None)
-        if not callable(route_goal):
-            return False
-        try:
-            route = route_goal(goal)
-        except Exception:  # noqa: BLE001
-            return False
-        if not isinstance(route, dict):
-            return False
-        kind = str(route.get("kind") or "").strip()
-        return kind in {"run_command", "apply_patch", "git_status", "git_diff"}

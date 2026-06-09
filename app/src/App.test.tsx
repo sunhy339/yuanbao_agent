@@ -100,7 +100,6 @@ function setupRuntimeMocks() {
     runtimeTransport: "tauri-stdio",
     eventChannel: "agent://event",
     yuanbaoEventChannel: "yuanbao://message",
-    hahaCcEventChannel: "haha-cc://message",
     runtimeRunning: true,
     repoRoot: "D:/py/yuanbao_agent",
     pythonModule: "local_agent_runtime.main",

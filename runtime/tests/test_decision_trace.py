@@ -226,7 +226,7 @@ class TestDecisionListRpc:
         """decision.list supports kind filter."""
         server, store = _make_harness(tmp_path)
 
-        _insert_trace(store, task_id="task_x", session_id="sess1", event_type="agent.decision.routing_strategy", payload={"strategy": "react"})
+        _insert_trace(store, task_id="task_x", session_id="sess1", event_type="agent.decision.context_policy", payload={"sections": ["recent"]})
         _insert_trace(store, task_id="task_x", session_id="sess1", event_type="agent.decision.completion", payload={"decision": "completed"})
 
         result = _call(server, "decision.list", {"taskId": "task_x", "kind": "completion"})
@@ -271,11 +271,11 @@ class TestProposalListRpc:
 
         # Insert a proposal record via store
         store.create_proposal({
-            "kind": "routing_strategy",
+            "kind": "completion_decision",
             "sessionId": "sess1",
             "taskId": "task_1",
-            "inputSummary": "goal: fix bug",
-            "proposal": {"strategy": "react"},
+            "inputSummary": "goal: finish task",
+            "proposal": {"is_complete": True},
         })
         # Accept the proposal so it has status=accepted
         prop = store.list_proposals({"taskId": "task_1"})["proposals"][0]
@@ -284,7 +284,7 @@ class TestProposalListRpc:
         result = _call(server, "proposal.list", {"taskId": "task_1"})
         assert len(result["proposals"]) >= 1
         p = result["proposals"][0]
-        assert p["kind"] == "routing_strategy"
+        assert p["kind"] == "completion_decision"
         assert p["taskId"] == "task_1"
 
     def test_filters_by_kind(self, tmp_path: Any) -> None:
@@ -299,11 +299,11 @@ class TestProposalListRpc:
             "proposal": {"mode": "direct_answer"},
         })
         store.create_proposal({
-            "kind": "routing_strategy",
+            "kind": "completion_decision",
             "sessionId": "sess1",
             "taskId": "task_2",
             "inputSummary": "goal: hello",
-            "proposal": {"strategy": "react"},
+            "proposal": {"is_complete": False},
         })
 
         result = _call(server, "proposal.list", {"taskId": "task_2", "kind": "intent_mode"})

@@ -260,7 +260,7 @@ class TestEventBusVisibility:
         payload = bus.as_payload(event)
         assert payload["visibility"] == "chat"
 
-    def test_payload_includes_haha_cc_compat_message_when_available(self):
+    def test_payload_includes_single_flat_message_when_available(self):
         from local_agent_runtime.event_bus import EventBus
         bus = EventBus()
         event = type("E", (), {
@@ -270,7 +270,7 @@ class TestEventBusVisibility:
         })()
         payload = bus.as_payload(event)
         assert payload["yuanbao"] == {"type": "content_delta", "text": "hello"}
-        assert payload["hahaCc"] == payload["yuanbao"]
+        assert "hahaCc" not in payload
 
     def test_payload_derives_flat_message_delta_as_content_delta(self):
         from local_agent_runtime.event_bus import EventBus
@@ -284,7 +284,7 @@ class TestEventBusVisibility:
         payload = bus.as_payload(event)
         assert payload["type"] == "message.delta"
         assert payload["yuanbao"] == {"type": "content_delta", "text": "hello"}
-        assert payload["hahaCc"] == payload["yuanbao"]
+        assert "hahaCc" not in payload
 
     def test_payload_keeps_legacy_assistant_progress_internal(self):
         from local_agent_runtime.event_bus import EventBus
@@ -330,7 +330,7 @@ class TestEventBusVisibility:
         assert "yuanbao" not in payload
         assert "hahaCc" not in payload
 
-    def test_payload_includes_haha_cc_error_for_failed_message(self):
+    def test_payload_includes_single_flat_error_for_failed_message(self):
         from local_agent_runtime.event_bus import EventBus
         bus = EventBus()
         event = type("E", (), {
@@ -344,9 +344,9 @@ class TestEventBusVisibility:
             "message": "Provider failed",
             "code": "MODEL_PROVIDER_ERROR",
         }
-        assert payload["hahaCc"] == payload["yuanbao"]
+        assert "hahaCc" not in payload
 
-    def test_rpc_writer_emits_haha_cc_message_line_when_available(self):
+    def test_rpc_writer_emits_single_flat_message_line_when_available(self):
         server = JsonRpcServer.__new__(JsonRpcServer)
         writer = io.StringIO()
         server._writer = writer  # noqa: SLF001
@@ -362,7 +362,6 @@ class TestEventBusVisibility:
                 "payload": {"text": "hello"},
                 "visibility": "chat",
                 "yuanbao": {"type": "content_delta", "text": "hello"},
-                "hahaCc": {"type": "content_delta", "text": "hello"},
             }
         )
 
@@ -379,15 +378,10 @@ class TestEventBusVisibility:
                     "payload": {"text": "hello"},
                     "visibility": "chat",
                     "yuanbao": {"type": "content_delta", "text": "hello"},
-                    "hahaCc": {"type": "content_delta", "text": "hello"},
                 },
             },
             {
                 "kind": "yuanbao_message",
-                "payload": {"type": "content_delta", "text": "hello"},
-            },
-            {
-                "kind": "haha_cc_message",
                 "payload": {"type": "content_delta", "text": "hello"},
             },
         ]

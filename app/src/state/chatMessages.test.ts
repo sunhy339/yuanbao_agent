@@ -315,7 +315,7 @@ describe("chatMessages", () => {
       "",
       "Then inspect the result.",
     ]);
-    expect(taskMessages[1].metadata?.inputText).toContain('"query": "README"');
+    expect(taskMessages[1].metadata?.inputText).toBe("查询 README");
   });
 
   it("clears transient status thinking but keeps provider thinking as a completed transcript segment", () => {
@@ -415,6 +415,74 @@ describe("chatMessages", () => {
         diffText: "diff --git a/src/rules.ts b/src/rules.ts\n",
       },
     });
+  });
+
+  it("summarizes file-write permission requests instead of exposing content json", () => {
+    const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
+      requestId: "approval_write",
+      toolName: "write_file",
+      input: {
+        path: "index.html",
+        contentChars: 21920,
+        overwrite: true,
+      },
+      description: "写入文件需要确认",
+      preview: [{ label: "文件", value: "index.html" }],
+      filesChanged: 1,
+      changedPaths: ["index.html"],
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 4,
+    });
+
+    const permission = getVisibleChatMessages(withPermission, "sess_1").find(
+      (message) => message.id === "permission_request:approval_write",
+    );
+    expect(permission?.content).toContain("写入文件需要确认");
+    expect(permission?.content).toContain("index.html");
+    expect(permission?.content).toContain("21920 字符");
+    expect(permission?.content).not.toContain("\"path\"");
+    expect(permission?.content).not.toContain("\"content\"");
+  });
+
+  it("summarizes tool input and result objects instead of rendering pretty json", () => {
+    const withTool = completeAssistantToolUseMessage(messages, {
+      toolUseId: "call_write",
+      toolName: "write_file",
+      input: {
+        path: "index.html",
+        contentChars: 21920,
+        overwrite: true,
+      },
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 4,
+    });
+    const withResult = appendAssistantToolResultMessage(withTool, {
+      toolUseId: "call_write",
+      toolName: "write_file",
+      content: {
+        status: "completed",
+        summary: "wrote index.html (21920 bytes)",
+        changedPaths: ["index.html"],
+        filesChanged: 1,
+      },
+      isError: false,
+      resultPreview: [{ label: "文件", value: "index.html" }],
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 5,
+    });
+
+    const tool = getVisibleChatMessages(withResult, "sess_1").find(
+      (message) => message.metadata?.toolUseId === "call_write",
+    );
+    expect(tool?.content).toContain("index.html");
+    expect(tool?.content).not.toContain("\"path\"");
+    expect(tool?.metadata?.inputText).toContain("21920 字符");
+    expect(tool?.metadata?.inputText).not.toContain("\"contentChars\"");
+    expect(tool?.metadata?.resultText).toContain("wrote index.html");
+    expect(tool?.metadata?.resultText).not.toContain("\"changedPaths\"");
   });
 
   it("summarizes plan permission requests instead of exposing raw json", () => {
@@ -1517,8 +1585,8 @@ describe("chatMessages", () => {
       metadata: {
         kind: "tool_activity",
         toolUseId: "tc_1",
-        inputText: '{\n  "command": "npm test"\n}',
-        resultText: '{\n  "status": "completed",\n  "exitCode": 0\n}',
+        inputText: "npm test",
+        resultText: "completed · 退出码 0",
         isError: false,
       },
     });
@@ -1730,7 +1798,7 @@ describe("chatMessages", () => {
     expect(withResult[0].metadata?.durationMs).toBe(37);
     expect(withResult[0]).toMatchObject({
       id: "tool_activity:tc_2",
-      content: '{\n  "path": "src/app.ts"\n}',
+      content: "src/app.ts",
       metadata: {
         target: "src/app.ts",
         inputSummary: "read src/app.ts",
@@ -1827,7 +1895,7 @@ describe("chatMessages", () => {
         toolPhaseLabel: "读取上下文",
         toolSemanticParentId: "phase:context_read",
         toolSemanticParentLabel: "读取上下文",
-        inputText: '{\n  "path": "src/index.ts"\n}',
+        inputText: "src/index.ts",
       },
     });
   });
@@ -1854,7 +1922,7 @@ describe("chatMessages", () => {
         target: "src/app.ts",
         inputSummary: "read src/app.ts",
         input: { path: "src/app.ts" },
-        inputText: '{\n  "path": "src/app.ts"\n}',
+        inputText: "src/app.ts",
       },
     });
   });
@@ -1984,8 +2052,8 @@ describe("chatMessages", () => {
         kind: "tool_activity",
         target: "npm test",
         inputSummary: "npm test",
-        inputText: '{\n  "command": "npm test"\n}',
-        resultText: '{\n  "status": "completed"\n}',
+        inputText: "npm test",
+        resultText: "completed",
       },
     });
   });

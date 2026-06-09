@@ -268,7 +268,9 @@ def _build_workspace_memory_templates(workspace_root: Path, workspace_name: str)
 
 class SessionStoreMixin:
     def upsert_workspace(self, path: str) -> dict[str, Any]:
-        root = str(Path(path).expanduser().resolve())
+        root_path = Path(path).expanduser().resolve()
+        root_path.mkdir(parents=True, exist_ok=True)
+        root = str(root_path)
         workspace_id = self.new_id("ws")
         now = self.now()
         self._conn.execute(
@@ -277,7 +279,7 @@ class SessionStoreMixin:
             VALUES (?, ?, ?, NULL, NULL, ?, ?)
             ON CONFLICT(root_path) DO UPDATE SET updated_at = excluded.updated_at
             """,
-            (workspace_id, Path(root).name or root, root, now, now),
+            (workspace_id, root_path.name or root, root, now, now),
         )
         self._conn.commit()
         row = self._conn.execute(

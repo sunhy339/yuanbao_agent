@@ -19,7 +19,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 const EVENT_CHANNEL: &str = "agent://event";
 const YUANBAO_EVENT_CHANNEL: &str = "yuanbao://message";
-const HAHA_CC_EVENT_CHANNEL: &str = "haha-cc://message";
 const TERMINAL_EVENT_CHANNEL: &str = "terminal://event";
 const RPC_TIMEOUT: Duration = Duration::from_secs(240);
 
@@ -29,7 +28,6 @@ struct HostStatus {
     runtime_transport: &'static str,
     event_channel: &'static str,
     yuanbao_event_channel: &'static str,
-    haha_cc_event_channel: &'static str,
     runtime_running: bool,
     repo_root: String,
     python_module: &'static str,
@@ -413,23 +411,23 @@ struct TraceListPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HahaCcEventsAfterPayload {
+struct FlatEventsAfterPayload {
     session_id: String,
     after_seq: Option<u64>,
     limit: Option<u64>,
 }
 
-type EventsAfterPayload = HahaCcEventsAfterPayload;
+type EventsAfterPayload = FlatEventsAfterPayload;
 
-type YuanbaoEventsAfterPayload = HahaCcEventsAfterPayload;
+type YuanbaoEventsAfterPayload = FlatEventsAfterPayload;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HahaCcTeamSnapshotPayload {
+struct FlatTeamSnapshotPayload {
     session_id: String,
 }
 
-type YuanbaoTeamSnapshotPayload = HahaCcTeamSnapshotPayload;
+type YuanbaoTeamSnapshotPayload = FlatTeamSnapshotPayload;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -1535,13 +1533,6 @@ fn spawn_stdout_pump(
                 continue;
             }
 
-            if payload.get("kind").and_then(Value::as_str) == Some("haha_cc_message") {
-                if let Some(haha_cc_payload) = payload.get("payload").cloned() {
-                    let _ = app_handle.emit(HAHA_CC_EVENT_CHANNEL, haha_cc_payload);
-                }
-                continue;
-            }
-
             let Some(request_id) = payload.get("id").and_then(Value::as_str) else {
                 continue;
             };
@@ -1815,7 +1806,6 @@ fn host_status(state: State<'_, RuntimeManager>) -> Result<HostStatus, String> {
         runtime_transport: "json-rpc-stdio",
         event_channel: EVENT_CHANNEL,
         yuanbao_event_channel: YUANBAO_EVENT_CHANNEL,
-        haha_cc_event_channel: HAHA_CC_EVENT_CHANNEL,
         runtime_running: state.runtime_running(),
         repo_root: root,
         python_module: "local_agent_runtime.main",
@@ -2965,25 +2955,6 @@ async fn yuanbao_events_after(
 }
 
 #[tauri::command]
-async fn haha_cc_events_after(
-    app_handle: AppHandle,
-    state: State<'_, RuntimeManager>,
-    payload: HahaCcEventsAfterPayload,
-) -> Result<Value, String> {
-    state
-        .call_async(
-            app_handle,
-            "events.hahaCcAfter".to_string(),
-            json!({
-                "sessionId": payload.session_id,
-                "afterSeq": payload.after_seq.unwrap_or(0),
-                "limit": payload.limit,
-            }),
-        )
-        .await
-}
-
-#[tauri::command]
 async fn yuanbao_team_snapshot(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -2993,23 +2964,6 @@ async fn yuanbao_team_snapshot(
         .call_async(
             app_handle,
             "events.yuanbaoTeamSnapshot".to_string(),
-            json!({
-                "sessionId": payload.session_id,
-            }),
-        )
-        .await
-}
-
-#[tauri::command]
-async fn haha_cc_team_snapshot(
-    app_handle: AppHandle,
-    state: State<'_, RuntimeManager>,
-    payload: HahaCcTeamSnapshotPayload,
-) -> Result<Value, String> {
-    state
-        .call_async(
-            app_handle,
-            "events.hahaCcTeamSnapshot".to_string(),
             json!({
                 "sessionId": payload.session_id,
             }),
@@ -3541,9 +3495,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             trace_list,
             events_after,
             yuanbao_events_after,
-            haha_cc_events_after,
             yuanbao_team_snapshot,
-            haha_cc_team_snapshot,
             log_export,
             errors_list,
             metrics_list,

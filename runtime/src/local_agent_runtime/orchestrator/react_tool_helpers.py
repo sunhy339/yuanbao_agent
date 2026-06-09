@@ -508,7 +508,25 @@ class ReactToolHelpersMixin:
 
     @staticmethod
     def _sync_tool_metadata(source: dict[str, Any], target: dict[str, Any]) -> None:
-        for key in ("parentToolUseId", "toolOperationId", "toolOperationLabel"):
+        for key in (
+            "parentToolUseId",
+            "toolGroupId",
+            "toolIndex",
+            "toolTotal",
+            "toolOperationId",
+            "toolOperationLabel",
+            "toolCategory",
+            "toolPhaseId",
+            "toolPhaseLabel",
+            "toolSemanticParentId",
+            "toolSemanticParentLabel",
+            "target",
+            "inputSummary",
+            "displayTitle",
+            "displaySummary",
+            "displayTarget",
+            "displayKind",
+        ):
             if source.get(key) is not None:
                 target[key] = source[key]
 
@@ -1267,14 +1285,29 @@ class ReactToolHelpersMixin:
         tool_result = deepcopy(cached_tool_result)
         tool_result["id"] = tool_spec.get("id") or self._store.new_id("tc")
         tool_result["arguments"] = deepcopy(tool_spec.get("arguments", {}))
-        for key in ("parentToolUseId", "toolGroupId", "toolIndex", "toolTotal", "toolOperationId", "toolOperationLabel"):
+        for key in (
+            "parentToolUseId",
+            "toolGroupId",
+            "toolIndex",
+            "toolTotal",
+            "toolOperationId",
+            "toolOperationLabel",
+            "toolCategory",
+            "toolPhaseId",
+            "toolPhaseLabel",
+            "toolSemanticParentId",
+            "toolSemanticParentLabel",
+            "target",
+            "inputSummary",
+            "displayTitle",
+            "displaySummary",
+            "displayTarget",
+            "displayKind",
+        ):
             if tool_spec.get(key) is not None:
                 tool_result[key] = tool_spec[key]
             else:
                 tool_result.pop(key, None)
-        for key in ("toolCategory", "toolPhaseId", "toolPhaseLabel"):
-            if tool_spec.get(key) is not None:
-                tool_result[key] = tool_spec[key]
         tool_result.update(self._tool_semantic_metadata_for_spec(tool_result))
         result = tool_result.get("result")
         if isinstance(result, dict):

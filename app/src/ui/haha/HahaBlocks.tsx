@@ -55,13 +55,40 @@ function toolInput(message: SessionWorkspaceMessage) {
 }
 
 function toolSummary(message: SessionWorkspaceMessage) {
+  const resultSummary = readMessageText(message.metadata?.resultSummary);
+  const inputSummary = readMessageText(message.metadata?.inputSummary);
+  const metadataTarget = readMessageText(message.metadata?.target);
+  if (resultSummary) return compactText(resultSummary, 110);
+  if (inputSummary && inputSummary !== metadataTarget) return compactText(inputSummary, 110);
+  if (metadataTarget) return compactText(metadataTarget, 110);
   const input = toolInput(message);
   const target = readMessageText(input.path ?? input.file ?? input.file_path ?? input.cwd ?? input.command ?? input.query);
   const result = readMessageText(message.metadata?.resultText);
-  if (target && result) return `${target} · ${compactText(result, 90)}`;
   if (target) return target;
   if (result) return compactText(result, 110);
   return compactText(message.content, 120);
+}
+
+function isRawJsonLike(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || !/^[{\[]/.test(trimmed)) return false;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function toolDetailText(message: SessionWorkspaceMessage, failed: boolean) {
+  const inputText = typeof message.metadata?.inputText === "string" ? message.metadata.inputText.trim() : "";
+  const resultText = typeof message.metadata?.resultText === "string" ? message.metadata.resultText.trim() : "";
+  const content = message.content.trim();
+  return compactMeta([
+    inputText && (!isRawJsonLike(inputText) || failed) ? `Input\n${inputText}` : null,
+    resultText && (!isRawJsonLike(resultText) || failed) ? `Result\n${resultText}` : null,
+    content && content !== inputText && content !== resultText && (!isRawJsonLike(content) || failed) ? content : null,
+  ]).join("\n\n");
 }
 
 export const HahaThinkingBlock = memo(function HahaThinkingBlock({ message }: { message: SessionWorkspaceMessage }) {
@@ -88,9 +115,7 @@ export const HahaToolMessageBlock = memo(function HahaToolMessageBlock({ message
   const [expanded, setExpanded] = useState(false);
   const kind = metadataKind(message);
   const failed = message.status === "failed" || message.metadata?.isError === true;
-  const inputText = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
-  const resultText = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
-  const details = compactMeta([inputText ? `输入\n${inputText}` : null, resultText ? `结果\n${resultText}` : null, message.content]).join("\n\n");
+  const details = toolDetailText(message, failed);
   const label = formatToolNameLabel(message.toolName) || (kind === "tool_result" ? "工具结果" : "工具调用");
 
   return (
@@ -111,7 +136,24 @@ function runtimeSummary(item: RuntimeTimelineItem) {
   if (item.kind === "command") {
     return compactText(item.summary || buildCommandOutput(item) || item.code || "", 130);
   }
-  return compactText(item.summary || item.rawDetail || item.code || "", 130);
+  return compactText(item.summary || "", 130);
+}
+
+function isDiagnosticRuntimeStatus(status?: string | null) {
+  return ["failed", "error", "blocked", "cancelled", "rejected"].includes(status?.toLowerCase() ?? "");
+}
+
+function runtimeOutput(item: RuntimeTimelineItem) {
+  if (item.kind === "command") {
+    return buildCommandOutput(item);
+  }
+  if (item.rawDetail?.includes("diff --git")) {
+    return item.rawDetail;
+  }
+  if (!isDiagnosticRuntimeStatus(item.status)) {
+    return "";
+  }
+  return item.rawDetail || item.code || "";
 }
 
 export const HahaRuntimeBlock = memo(function HahaRuntimeBlock({
@@ -137,7 +179,7 @@ export const HahaRuntimeBlock = memo(function HahaRuntimeBlock({
   const isApproval = item.kind === "approval";
   const status = item.status?.toLowerCase();
   const [expanded, setExpanded] = useState(isPatch || (isApproval && ["pending", "queued", "waiting", "waiting_approval"].includes(status ?? "")));
-  const output = item.kind === "command" ? buildCommandOutput(item) : item.rawDetail || item.code || "";
+  const output = runtimeOutput(item);
   const files = useMemo(() => parsePatchFileSummaries(item.code), [item.code]);
   const Icon = isPatch ? FileDiff : item.kind === "command" ? TerminalSquare : isApproval ? CircleAlert : CheckCircle2;
   const canApprove = isApproval && item.sourceId && ["pending", "queued", "waiting", "waiting_approval"].includes(status ?? "");

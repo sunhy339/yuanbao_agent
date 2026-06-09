@@ -86,6 +86,63 @@ describe("CleanConversation", () => {
     expect(screen.queryByText("planner-1")).not.toBeInTheDocument();
   });
 
+  it("does not use internal task ids as agent or plan titles", () => {
+    render(
+      <div>
+        <CleanAgentTaskGroupBlock
+          message={{
+            id: "agents-internal",
+            role: "assistant",
+            status: "running",
+            content: "",
+            metadata: {
+              kind: "agent_task_group",
+              title: "ctask_abc123",
+              agentTasks: [
+                {
+                  id: "ctask_abc123",
+                  title: "ctask_abc123",
+                  currentTask: "Review frontend trace",
+                  agentType: "reviewer",
+                  status: "running",
+                },
+              ],
+            },
+          }}
+        />
+        <CleanPlanUpdateBlock
+          message={{
+            id: "plan-internal",
+            role: "assistant",
+            status: "running",
+            content: "",
+            metadata: {
+              kind: "plan_update",
+              title: "task_plan123",
+              summary: "Split work across agents",
+              plan: [
+                {
+                  id: "task_child123",
+                  title: "task_child123",
+                  currentTask: "Update renderer",
+                  role: "frontend",
+                  status: "pending",
+                },
+              ],
+            },
+          }}
+        />
+      </div>,
+    );
+
+    expect(screen.getByText("Review frontend trace")).toBeInTheDocument();
+    expect(screen.getByText("Update renderer")).toBeInTheDocument();
+    expect(screen.getAllByText("Split work across agents").length).toBeGreaterThan(0);
+    expect(screen.queryByText("ctask_abc123")).not.toBeInTheDocument();
+    expect(screen.queryByText("task_plan123")).not.toBeInTheDocument();
+    expect(screen.queryByText("task_child123")).not.toBeInTheDocument();
+  });
+
   it("renders plan updates as structured subtask panels instead of raw json", () => {
     render(
       <CleanPlanUpdateBlock
@@ -467,7 +524,7 @@ describe("CleanConversation", () => {
     );
 
     expect(screen.queryByRole("button", { name: /snake_game\/game\.py/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /查看原始详情/ }));
+    expect(screen.queryByRole("button", { name: /查看原始详情|查看详情/ })).not.toBeInTheDocument();
     expect(onLoadPatch).not.toHaveBeenCalled();
   });
 
@@ -1011,9 +1068,9 @@ describe("CleanConversation", () => {
     expect(screen.queryByText(/"exitCode"/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /运行 python -m pytest tests -q/ }));
-    expect(screen.getByText("工具详情")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "复制" }));
-    expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", expect.stringContaining('"exitCode":0'));
+    expect(screen.queryByText("工具详情")).not.toBeInTheDocument();
+    expect(screen.queryByText(/"exitCode"/)).not.toBeInTheDocument();
+    expect(onCopyRuntimeText).not.toHaveBeenCalled();
   });
 
   it("summarizes inline tool item arrays with useful names", () => {
@@ -1063,6 +1120,39 @@ describe("CleanConversation", () => {
 
     expect(screen.getByText("found 2 match(es) for needle: src/app.ts")).toBeInTheDocument();
     expect(screen.queryByText(/正在搜索文件/)).not.toBeInTheDocument();
+  });
+
+  it("prefers display fields and previews over successful raw tool json", async () => {
+    const user = userEvent.setup();
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-display",
+          role: "assistant",
+          content: JSON.stringify({ taskId: "task_1", provider: "yuanbao" }),
+          toolName: "read_file",
+          status: "completed",
+          metadata: {
+            kind: "tool_activity",
+            inputText: JSON.stringify({ path: "src/app.ts", content: "raw file content" }),
+            resultText: JSON.stringify({ status: "completed", content: "raw result content" }),
+            displayTitle: "Read app shell",
+            displayTarget: "src/app.ts",
+            displaySummary: "Read app shell summary",
+            resultPreview: [{ label: "File", value: "src/app.ts" }],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Read app shell")).toBeInTheDocument();
+    expect(screen.getByText("Read app shell summary")).toBeInTheDocument();
+    expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Read app shell/ }));
+    expect(screen.getByText("File")).toBeInTheDocument();
+    expect(screen.queryByText(/raw file content/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/raw result content/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"provider"/)).not.toBeInTheDocument();
   });
 
   it("renders blocked inline tool rows as warning status instead of failure", () => {
@@ -1153,6 +1243,34 @@ describe("CleanConversation", () => {
     expect(screen.queryByText("patch approval request")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "始终允许" })).toBeDisabled();
     expect(screen.queryByText(/apply_patch 需要确认/)).not.toBeInTheDocument();
+  });
+
+  it("does not expose structured permission request JSON as visible details", () => {
+    render(
+      <CleanPermissionMessageBlock
+        message={{
+          id: "permission-json",
+          role: "assistant",
+          content: JSON.stringify({
+            content: "<!doctype html><html>secret page</html>",
+            overwrite: true,
+            path: "index.html",
+          }),
+          toolName: "write_file",
+          metadata: {
+            requestId: "approval-json",
+            parametersPreview: JSON.stringify({ path: "index.html" }),
+            changedPaths: ["index.html"],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("写入 index.html 需要确认")).toBeInTheDocument();
+    expect(screen.getByText("index.html")).toBeInTheDocument();
+    expect(screen.queryByText(/secret page/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/overwrite/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"content"/)).not.toBeInTheDocument();
   });
 
   it("shows structured permission preview rows and changed files", () => {
@@ -1332,8 +1450,8 @@ describe("CleanConversation", () => {
     expect(screen.getAllByText("读取上下文").length).toBeGreaterThanOrEqual(2);
 
     await user.click(screen.getByRole("button", { name: /读取 snake_game\/game\.py/ }));
-    await user.click(screen.getByRole("button", { name: "复制" }));
-    expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", "class Game: pass");
+    expect(screen.queryByText("class Game: pass")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "复制" })).not.toBeInTheDocument();
   });
 
   it("indents parented worklog tools as a compact tree", async () => {
@@ -1835,8 +1953,8 @@ describe("CleanConversation", () => {
 
     await user.click(screen.getByRole("button", { name: /写入 snake_game\/rules\.py/ }));
     expect(screen.getByText("修改 +2 -1")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "复制" }));
-    expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", "updated content");
+    expect(screen.queryByText("updated content")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "复制" })).not.toBeInTheDocument();
   });
 
   it("shows structured tool result previews in expanded worklog rows", async () => {

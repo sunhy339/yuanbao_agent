@@ -67,12 +67,12 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
     }
 
     text = _message_text(context)
-    assert "User-facing text:" in text
-    assert "before first tool" in text
-    assert "after tool batches" in text
+    assert "User-facing text should follow the assistant's actual work" in text
+    assert "actual work" in text
+    assert "avoid boilerplate progress narration" in text
     assert "Backend status is not thinking" in text
-    assert "write files only through apply_patch or write_file" in text
-    assert "use write_file for new/full files" in text
+    assert "file writes are available only through apply_patch or write_file" in text
+    assert "write_file supports create/full replacement" in text
     assert "run commands only through run_command" in text
     assert "stay within the workspace root" in text
     assert "do not bypass the provided tools" in text
@@ -81,6 +81,45 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
     assert context["budgetStats"]["estimatedTokens"] <= context["budgetStats"]["maxContextTokens"]
     assert "top-level entries:" not in text
     assert "Workspace root is accessible and non-empty." in text
+
+
+def test_context_builder_prompt_does_not_force_probe_first_flow(store: SQLiteStore, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    context = _make_builder_context(store, workspace_root, goal="Build a small HTML demo")
+    text = _message_text(context)
+    tool_descriptions = "\n".join(str(tool.get("description") or "") for tool in context["tools"])
+
+    assert "Use this first to inspect structure" not in tool_descriptions
+    assert "Use after list_dir or search_files" not in tool_descriptions
+    assert "quick top-level inventory" not in tool_descriptions
+    assert "agent loops" not in tool_descriptions
+    assert "Use local tools for inspection" not in text
+    assert "inspect concrete files via tools" not in text
+    assert "summarize changed files, command outcomes and verification" not in text
+
+
+def test_refresh_context_keeps_workspace_snapshot_out_of_provider_messages(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
+    context = _make_builder_context(store, workspace_root, goal="Build a small HTML demo")
+    original_messages = list(context["messages"])
+
+    refreshed = ContextBuilder(store).refresh_context(
+        context,
+        tool_name="write_file",
+        tool_result={"status": "completed", "path": "index.html"},
+    )
+
+    assert refreshed["messages"] == original_messages
+    assert refreshed.get("_refreshed_workspace_listing")
+    assert "[Context refresh after tool execution]" not in _message_text(refreshed)
 
 
 def test_context_builder_minimal_context_skips_workspace_pack_and_tools(store: SQLiteStore, tmp_path: Path) -> None:
@@ -1038,10 +1077,12 @@ def test_context_builder_handles_empty_and_missing_workspace_root(store: SQLiteS
 
     workspace_root = tmp_path / "missing"
 
+    assert not workspace_root.exists()
     context = _make_builder_context(store, workspace_root, goal="What is here?")
 
     text = _message_text(context)
-    assert "Workspace root is not accessible" in text
+    assert workspace_root.exists()
+    assert "Workspace root is accessible but empty." in text
     assert context["workspace_root"] == str(workspace_root)
     assert context["messages"]
     assert context["budgetStats"]["estimatedTokens"] <= context["budgetStats"]["maxContextTokens"]

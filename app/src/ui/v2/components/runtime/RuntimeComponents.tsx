@@ -135,7 +135,7 @@ export function ContextBudgetBar({
   );
 }
 
-export interface RoutingDecisionSnapshot {
+export interface ProviderSelectionSnapshot {
   providerMode: string;
   model?: string;
   useBackground: boolean;
@@ -145,19 +145,19 @@ export interface RoutingDecisionSnapshot {
   createdAt: string | number;
 }
 
-export interface RoutingDecisionCardProps {
-  decision: RoutingDecisionSnapshot;
+export interface ProviderSelectionCardProps {
+  decision: ProviderSelectionSnapshot;
   onInspect?: () => void;
 }
 
-export function RoutingDecisionCard({ decision, onInspect }: RoutingDecisionCardProps) {
+export function ProviderSelectionCard({ decision, onInspect }: ProviderSelectionCardProps) {
   const confidence = typeof decision.confidence === "number" ? Math.round(decision.confidence * 100) : undefined;
 
   return (
     <article className="yb-routing-card">
       <header>
         <div>
-          <p className="yb-runtime-kicker">路由</p>
+          <p className="yb-runtime-kicker">模型</p>
           <h3>{decision.model ?? decision.providerMode}</h3>
         </div>
         <StatusBadge label={decision.useBackground ? "后台" : "前台"} tone={decision.useBackground ? "primary" : "neutral"} compact />

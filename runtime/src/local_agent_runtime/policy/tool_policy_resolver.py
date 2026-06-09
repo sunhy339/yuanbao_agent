@@ -201,7 +201,6 @@ class ToolPolicyDecision:
 class ToolPolicyResolver:
     """Resolve the tools visible to the model for one provider turn."""
 
-    TASK_TOOL_STRATEGIES = frozenset({"plan_execute", "plan_supervise", "plan_swarm"})
     RUNTIME_ROLES = frozenset({"root", "worker", "planner", "reviewer", "summarizer"})
 
     def resolve(
@@ -410,33 +409,9 @@ class ToolPolicyResolver:
             if self._child_worker_verified_by_command(tool_results):
                 return "synthesis"
             return "execution"
-        if not tool_results:
-            routing = context.get("routing")
-            strategy = routing.get("strategy") if isinstance(routing, dict) else None
-            if (
-                isinstance(routing, dict)
-                and strategy in self.TASK_TOOL_STRATEGIES
-                and self._legacy_planning_phase_enabled(routing)
-            ):
-                return "planning"
         if self._last_tool_failed(tool_results):
             return "recovery"
         return "investigation"
-
-    @staticmethod
-    def _legacy_planning_phase_enabled(routing: dict[str, Any]) -> bool:
-        for key in (
-            "legacyPlanner",
-            "legacy_planner",
-            "legacyPlanExecution",
-            "legacy_plan_execution",
-            "useLegacyPlanner",
-            "use_legacy_planner",
-            "providerPreflightSplit",
-        ):
-            if routing.get(key) is True:
-                return True
-        return False
 
     def _child_worker_execution_enabled(self, context: dict[str, Any]) -> bool:
         if context.get("_child_worker") is not True:
@@ -509,16 +484,7 @@ class ToolPolicyResolver:
                 names.update(ASK_USER_QUESTION_TOOLS)
             if self._explicit_plan_mode_tools_enabled(context):
                 names.update({"enter_plan_mode", "exit_plan_mode"})
-            routing = context.get("routing")
-            strategy = routing.get("strategy") if isinstance(routing, dict) else None
-            if (
-                runtime_role in {"root", "planner"}
-                and strategy in self.TASK_TOOL_STRATEGIES
-                and (
-                    phase == "planning"
-                    or (isinstance(routing, dict) and routing.get("orchestrationMode") == "model_tools")
-                )
-            ):
+            if runtime_role in {"root", "planner"}:
                 names.update(SUBAGENT_TOOLS)
             if phase == "plan_mode":
                 names.add("exit_plan_mode")
@@ -530,16 +496,7 @@ class ToolPolicyResolver:
             return {"*"}, reasons
 
         names = set(READ_ONLY_TOOLS)
-        routing = context.get("routing")
-        strategy = routing.get("strategy") if isinstance(routing, dict) else None
-        if (
-            runtime_role in {"root", "planner"}
-            and strategy in self.TASK_TOOL_STRATEGIES
-            and (
-                phase == "planning"
-                or (isinstance(routing, dict) and routing.get("orchestrationMode") == "model_tools")
-            )
-        ):
+        if runtime_role in {"root", "planner"}:
             names.update(SUBAGENT_TOOLS)
 
         if phase in {"execution", "recovery"} and runtime_role in {"root", "worker"}:
@@ -825,17 +782,10 @@ class ToolPolicyResolver:
                         "allowToolsAfterTaskResults": value,
                         "source": f"routing.{key}",
                     }
-            strategy = str(routing.get("strategy") or "").strip()
-            if strategy in self.TASK_TOOL_STRATEGIES:
-                return {
-                    "allowToolsAfterTaskResults": True,
-                    "allowMoreSubtasksAfterTaskResults": False,
-                    "source": "strategy_default_post_task_continuation",
-                }
         return {
             "allowToolsAfterTaskResults": True,
             "allowMoreSubtasksAfterTaskResults": False,
-            "source": "default_post_task_continuation",
+            "source": "runtime_post_task_continuation",
         }
 
     def _allow_more_subtasks_after_task_results(self, context: dict[str, Any]) -> bool:

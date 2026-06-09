@@ -263,26 +263,28 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   // Session workspace data
   const sessionApprovals = useMemo(
     () =>
-      approvalCards.map((approval) => ({
-        id: approval.approvalId,
-        title: approval.patchSummary ?? approval.command,
-        kind: approval.kind,
-        patchId: approval.patchId,
-        status: approval.status,
-        summary: approval.requestSummary,
-        filesChanged: approval.filesChanged,
-        changedPaths: approval.changedPaths,
-        diff: approval.diffText,
-        requestedAt: approval.requestedAt,
-        risk: riskToLevel(approval.risk),
-        parametersPreview: approval.requestSummary,
-        fullInput: approval.requestJson,
-        previewRows: approval.previewRows,
-        previewSections: approval.previewSections,
-        command: approval.command,
-        cwd: approval.cwd,
-        completionEvidence: approval.completionEvidence,
-      })),
+      approvalCards
+        .filter((approval) => approval.kind !== "advisor_tool")
+        .map((approval) => ({
+          id: approval.approvalId,
+          title: approval.patchSummary ?? approval.command,
+          kind: approval.kind,
+          patchId: approval.patchId,
+          status: approval.status,
+          summary: approval.requestSummary,
+          filesChanged: approval.filesChanged,
+          changedPaths: approval.changedPaths,
+          diff: approval.diffText,
+          requestedAt: approval.requestedAt,
+          risk: riskToLevel(approval.risk),
+          parametersPreview: approval.requestSummary,
+          fullInput: approval.requestJson,
+          previewRows: approval.previewRows,
+          previewSections: approval.previewSections,
+          command: approval.command,
+          cwd: approval.cwd,
+          completionEvidence: approval.completionEvidence,
+        })),
     [approvalCards],
   );
 
@@ -438,7 +440,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
 
   const enabledMcpServers = mcpServers.filter((server: any) => server.enabled).length;
   const mcpStatusLabel = `${enabledMcpServers}/${mcpServers.length || 0} MCP`;
-  const pendingApprovalCount = approvalCards.filter((approval) => approval.status === "pending").length;
+  const pendingApprovalCount = approvalCards.filter((approval) => approval.status === "pending" && approval.kind !== "advisor_tool").length;
   const approvalStatusLabel = `${pendingApprovalCount} 个审批`;
   const contextStats = sessionContextPreview?.budgetStats;
   const contextStatusLabel = contextStats?.maxContextTokens

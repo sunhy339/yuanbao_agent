@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ..planner.types import normalize_subtask_profile_contract
+from .subagent_contract import normalize_subtask_profile_contract
 from .worker_environment import normalize_child_tool_allowlist
 from .worker_runner import ChildTaskRequest, WorkerRunner
 

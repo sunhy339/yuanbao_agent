@@ -24,6 +24,7 @@ _CHAT_COMPAT_EVENT_TYPES = {
     "content_start",
     "content_delta",
     "thinking",
+    "status",
     "tool_use_complete",
     "tool_result",
     "permission_request",
@@ -37,6 +38,7 @@ _RECOVERABLE_CHAT_COMPAT_EVENT_TYPES = {
     "message_complete",
     "permission_request",
     "plan_update",
+    "status",
     "thinking",
     "tool_result",
     "tool_use_complete",
@@ -101,7 +103,6 @@ _ROOT_CHAT_DERIVATION_EVENT_TYPES = {
     "task.cancelled",
     "task.completed",
     "task.failed",
-    "task.started",
     "task.updated",
 }
 
@@ -112,6 +113,7 @@ _ROOT_PANEL_EVENT_TYPES = {
     "task.orphaned",
     "task.queued",
     "task.runtime_work_waiting",
+    "task.started",
 }
 
 _ROOT_PANEL_EVENT_PREFIXES = (
@@ -140,6 +142,7 @@ _ROOT_TRACE_EVENT_TYPES = {
     "mcp.error",
     "provider.error",
     "runtime.error",
+    "runtime.context.prepared",
 }
 
 _RAW_PANEL_MIRROR_EVENT_TYPES = {
@@ -249,6 +252,26 @@ _INTERNAL_VISIBLE_PAYLOAD_KEYS = {
     "workspaceRoot",
     "workspace_root",
 }
+
+_TOOL_PRESENTATION_PAYLOAD_KEYS = (
+    "target",
+    "inputSummary",
+    "displayTitle",
+    "displaySummary",
+    "displayTarget",
+    "displayKind",
+    "parentToolUseId",
+    "toolCategory",
+    "toolPhaseId",
+    "toolPhaseLabel",
+    "toolSemanticParentId",
+    "toolSemanticParentLabel",
+    "toolGroupId",
+    "toolIndex",
+    "toolTotal",
+    "toolOperationId",
+    "toolOperationLabel",
+)
 
 
 class PublishingMixin:
@@ -415,12 +438,16 @@ class PublishingMixin:
             return payload
         safe_payload = dict(payload)
         for key in ("arguments", "result"):
+            if key == "arguments":
+                value = safe_payload.get(key)
+                if isinstance(value, dict):
+                    safe_payload[key] = cls._public_tool_input(str(safe_payload.get("toolName") or ""), value)
+                elif isinstance(value, (list, str)):
+                    safe_payload[key] = cls._sanitize_visible_payload_value(key, value)
+                continue
             if key == "result" and event_type in {"tool.completed", "tool.failed", "tool.blocked"}:
                 value = safe_payload.get(key)
-                if isinstance(value, dict) and (
-                    str(value.get("status") or "").strip().lower() == "approval_required"
-                    or isinstance(value.get("approval"), dict)
-                ):
+                if isinstance(value, dict):
                     preview = safe_payload.get("resultPreview")
                     safe_payload[key] = _frontend_visible_tool_result(
                         str(safe_payload.get("toolName") or ""),
@@ -469,6 +496,26 @@ class PublishingMixin:
             "approvalId",
             "taskId",
             "kind",
+            "toolCallId",
+            "toolUseId",
+            "toolName",
+            "target",
+            "inputSummary",
+            "displayTitle",
+            "displaySummary",
+            "displayTarget",
+            "displayKind",
+            "parentToolUseId",
+            "toolCategory",
+            "toolPhaseId",
+            "toolPhaseLabel",
+            "toolSemanticParentId",
+            "toolSemanticParentLabel",
+            "toolGroupId",
+            "toolIndex",
+            "toolTotal",
+            "toolOperationId",
+            "toolOperationLabel",
             "summary",
             "decision",
             "decidedBy",
@@ -494,15 +541,27 @@ class PublishingMixin:
             value = payload.get(key)
             if value in (None, "", [], {}):
                 continue
-            safe[key] = cls._sanitize_visible_payload_value(key, value)
+            if key == "diffText" and isinstance(value, str):
+                # Keep diff text as text for the patch/approval renderer. Large
+                # file contents are hidden at the tool input/result layer, but
+                # compacting diffText into JSON breaks live/replay parity and
+                # prevents the UI from rendering a real diff.
+                safe[key] = value
+            else:
+                safe[key] = cls._sanitize_visible_payload_value(key, value)
         return safe
 
     @classmethod
     def _public_permission_request_input(cls, kind: str, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict):
             return {}
-        if str(kind or "") == "plan":
+        normalized_kind = str(kind or "").strip()
+        if normalized_kind == "plan":
             return cls._public_plan_request_input(request)
+        if normalized_kind in {"write_file", "apply_patch"}:
+            return cls._public_file_change_request_input(normalized_kind, request)
+        if normalized_kind == "run_command":
+            return cls._public_command_request_input(request)
         safe: dict[str, Any] = {}
         for key, value in request.items():
             if key in {
@@ -528,9 +587,80 @@ class PublishingMixin:
                 "workspace_root",
             }:
                 continue
+            if normalized_kind == "run_command" and key in {
+                "cellIndex",
+                "command",
+                "notebookAction",
+                "path",
+                "shell",
+                "timeoutMs",
+                "toolName",
+            }:
+                if value not in (None, "", [], {}):
+                    safe[str(key)] = cls._sanitize_visible_payload_value(str(key), value)
+                continue
             if value in (None, "", [], {}):
                 continue
             safe[str(key)] = cls._sanitize_visible_payload_value(str(key), value)
+        return safe
+
+    @classmethod
+    def _public_file_change_request_input(cls, kind: str, request: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {}
+        for key in ("path", "summary", "filesChanged", "changedPaths", "overwrite", "create_dirs", "dry_run"):
+            value = request.get(key)
+            if value in (None, "", [], {}):
+                continue
+            public_key = "dryRun" if key == "dry_run" else key
+            safe[public_key] = cls._sanitize_visible_payload_value(public_key, value)
+        content = request.get("content")
+        if isinstance(content, str):
+            safe["contentChars"] = len(content)
+        files = request.get("files")
+        if isinstance(files, list) and files:
+            public_files: list[dict[str, Any]] = []
+            for item in files[:_VISIBLE_PAYLOAD_LIST_LIMIT]:
+                if not isinstance(item, dict):
+                    continue
+                public_file: dict[str, Any] = {}
+                path = item.get("path")
+                if isinstance(path, str) and path.strip():
+                    public_file["path"] = path
+                file_content = item.get("content")
+                if isinstance(file_content, str):
+                    public_file["contentChars"] = len(file_content)
+                if public_file:
+                    public_files.append(public_file)
+            if public_files:
+                safe["files"] = public_files
+        if kind == "apply_patch":
+            patch_text = request.get("patchText") or request.get("patch") or request.get("diffText")
+            if isinstance(patch_text, str):
+                safe["patchChars"] = len(patch_text)
+        return safe
+
+    @classmethod
+    def _public_command_request_input(cls, request: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {}
+        for key in (
+            "command",
+            "cwd",
+            "shell",
+            "timeoutMs",
+            "background",
+            "runInBackground",
+            "toolName",
+            "notebookAction",
+            "path",
+            "cellIndex",
+        ):
+            value = request.get(key)
+            if value in (None, "", [], {}):
+                continue
+            safe[key] = cls._sanitize_visible_payload_value(key, value)
+        background_job = request.get("backgroundJob")
+        if background_job not in (None, "", [], {}):
+            safe["backgroundJob"] = cls._sanitize_visible_payload_value("backgroundJob", background_job)
         return safe
 
     @classmethod
@@ -577,7 +707,7 @@ class PublishingMixin:
         )
         if any(marker in lowered for marker in internal_markers):
             return True
-        return bool(re.search(r"(?:[a-z]:[\\/]|%systemdrive%|/users/|/home/|/tmp/)", lowered))
+        return bool(re.search(r"(?:^|[\s\"'([{<])(?:[a-z]:[\\/]|%systemdrive%|/users/|/home/|/tmp/)", lowered))
 
     @classmethod
     def _public_plan_request_input(cls, request: dict[str, Any]) -> dict[str, Any]:
@@ -636,8 +766,13 @@ class PublishingMixin:
     def _public_tool_input(cls, tool_name: str, arguments: Any) -> Any:
         if not isinstance(arguments, dict):
             return arguments if arguments is not None else {}
-        if str(tool_name or "") == "exit_plan_mode":
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name == "exit_plan_mode":
             return cls._public_plan_request_input(arguments)
+        if normalized_tool_name in {"write_file", "apply_patch"}:
+            return cls._public_file_change_request_input(normalized_tool_name, arguments)
+        if normalized_tool_name == "run_command":
+            return cls._public_command_request_input(arguments)
         return cls._sanitize_visible_payload_value("input", arguments)
 
     @classmethod
@@ -853,6 +988,31 @@ class PublishingMixin:
         persist_trace: bool = False,
     ) -> None:
         compat_payload = dict(payload)
+        if event_type == "content_start" and compat_payload.get("blockType") == "text":
+            active_msg_id = compat_payload.get("messageId") or task.get("activeAssistantMessageId")
+            block_state = self._open_chat_text_block(
+                task=task,
+                message_id=active_msg_id,
+                content_block_id=compat_payload.get("contentBlockId"),
+            )
+            if active_msg_id:
+                compat_payload["messageId"] = active_msg_id
+            if block_state.get("contentBlockId"):
+                compat_payload["contentBlockId"] = block_state["contentBlockId"]
+            if isinstance(block_state.get("blockIndex"), int):
+                compat_payload["blockIndex"] = block_state["blockIndex"]
+        elif event_type == "content_start" and compat_payload.get("blockType") == "tool_use":
+            self._remember_chat_content_start(task=task, payload=compat_payload)
+        elif event_type == "message.delta":
+            active_msg_id = compat_payload.get("messageId") or task.get("activeAssistantMessageId")
+            if active_msg_id:
+                compat_payload["messageId"] = active_msg_id
+            block_state = self._current_chat_text_block(task=task, message_id=active_msg_id)
+            if isinstance(block_state, dict):
+                if block_state.get("contentBlockId"):
+                    compat_payload.setdefault("contentBlockId", block_state["contentBlockId"])
+                if isinstance(block_state.get("blockIndex"), int):
+                    compat_payload.setdefault("blockIndex", block_state["blockIndex"])
         compat_payload["_chatCompat"] = True
         if _should_persist_chat_compat_trace_mirror(
             event_type=event_type,
@@ -888,7 +1048,7 @@ class PublishingMixin:
         state: str,
         verb: Any = None,
         payload: dict[str, Any] | None = None,
-        visibility: str = "trace",
+        visibility: str = "chat",
         force: bool = False,
     ) -> None:
         if task.get("role", "root") != "root":
@@ -922,19 +1082,21 @@ class PublishingMixin:
             return
         if cache_key:
             fingerprint_cache[cache_key] = fingerprint
-        bridge = status_payload.get("_bridge")
-        status_payload["_bridge"] = {
-            **(bridge if isinstance(bridge, dict) else {}),
-            "suppressRealtimeFlat": True,
-            "suppressChatReplay": True,
-        }
-        self._publish_event_raw(
+        self._publish_chat_compat_event(
             session_id=session_id,
             task=task,
             event_type="status",
             payload=status_payload,
-            visibility="trace",
+            visibility=visibility,
         )
+
+    @staticmethod
+    def _tool_presentation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: payload.get(key)
+            for key in _TOOL_PRESENTATION_PAYLOAD_KEYS
+            if payload.get(key) not in (None, "", [], {})
+        }
 
     def _mark_tool_output_delta_seen(self, task_id: str, tool_use_id: Any, stream: Any, text: Any) -> bool:
         if not tool_use_id or not isinstance(text, str) or not text:
@@ -962,18 +1124,100 @@ class PublishingMixin:
         cache.add(key)
         return False
 
+    def _chat_text_state(self) -> dict[str, dict[str, Any]]:
+        state = getattr(self, "_chat_text_stream_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            setattr(self, "_chat_text_stream_state", state)
+        return state
+
+    @staticmethod
+    def _chat_text_key(*, task: dict[str, Any], message_id: Any = None) -> str:
+        return str(message_id or task.get("activeAssistantMessageId") or task.get("id") or "")
+
     def _chat_text_start_seen(self, *, task: dict[str, Any], message_id: Any = None) -> bool:
-        cache = getattr(self, "_chat_text_start_message_ids", None)
-        if not isinstance(cache, set):
-            cache = set()
-            setattr(self, "_chat_text_start_message_ids", cache)
-        key = str(message_id or task.get("activeAssistantMessageId") or task.get("id") or "")
+        key = self._chat_text_key(task=task, message_id=message_id)
         if not key:
             return False
-        if key in cache:
-            return True
-        cache.add(key)
-        return False
+        return bool(self._chat_text_state().get(key, {}).get("open"))
+
+    def _open_chat_text_block(self, *, task: dict[str, Any], message_id: Any = None, content_block_id: Any = None) -> dict[str, Any]:
+        key = self._chat_text_key(task=task, message_id=message_id)
+        state = self._chat_text_state()
+        previous = state.get(key, {}) if key else {}
+        if key and not previous:
+            previous = self._recover_chat_text_block_state(task=task, message_id=message_id)
+            if previous:
+                state[key] = previous
+        if (
+            content_block_id
+            and isinstance(previous, dict)
+            and previous.get("open")
+            and previous.get("contentBlockId") == str(content_block_id)
+        ):
+            return previous
+        block_index = previous.get("blockIndex")
+        if not isinstance(block_index, int):
+            block_index = -1
+        block_index += 1
+        message_key = str(message_id or task.get("activeAssistantMessageId") or task.get("id") or "assistant")
+        block_id = str(content_block_id or f"{message_key}:text:{block_index}")
+        next_state = {
+            "open": True,
+            "messageId": message_id or task.get("activeAssistantMessageId"),
+            "contentBlockId": block_id,
+            "blockIndex": block_index,
+        }
+        if key:
+            state[key] = next_state
+        return next_state
+
+    def _recover_chat_text_block_state(self, *, task: dict[str, Any], message_id: Any = None) -> dict[str, Any]:
+        active_msg_id = str(message_id or task.get("activeAssistantMessageId") or "").strip()
+        task_id = str(task.get("id") or "").strip()
+        if not active_msg_id or not task_id:
+            return {}
+        try:
+            trace_events = self._store.list_trace_events({"taskId": task_id, "limit": 5000}).get("traceEvents", [])
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to recover chat text state for task=%s message=%s", task_id, active_msg_id, exc_info=True)
+            return {}
+
+        last: dict[str, Any] | None = None
+        for event in trace_events:
+            if not isinstance(event, dict) or event.get("type") != "content_start":
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            if payload.get("blockType") != "text" or str(payload.get("messageId") or "") != active_msg_id:
+                continue
+            block_index = payload.get("blockIndex")
+            if not isinstance(block_index, int):
+                continue
+            content_block_id = payload.get("contentBlockId")
+            if not isinstance(content_block_id, str) or not content_block_id:
+                content_block_id = f"{active_msg_id}:text:{block_index}"
+            last = {
+                "open": False,
+                "messageId": active_msg_id,
+                "contentBlockId": content_block_id,
+                "blockIndex": block_index,
+            }
+        return last or {}
+
+    def _current_chat_text_block(self, *, task: dict[str, Any], message_id: Any = None) -> dict[str, Any] | None:
+        key = self._chat_text_key(task=task, message_id=message_id)
+        if not key:
+            return None
+        state = self._chat_text_state().get(key)
+        return state if isinstance(state, dict) and state.get("open") else None
+
+    def _close_chat_text_block(self, *, task: dict[str, Any], message_id: Any = None) -> None:
+        key = self._chat_text_key(task=task, message_id=message_id)
+        if not key:
+            return
+        state = self._chat_text_state().get(key)
+        if isinstance(state, dict):
+            state["open"] = False
 
     def _chat_tool_start_seen(self, *, task: dict[str, Any], tool_use_id: Any) -> bool:
         if not tool_use_id:
@@ -991,9 +1235,16 @@ class PublishingMixin:
     def _remember_chat_content_start(self, *, task: dict[str, Any], payload: dict[str, Any]) -> None:
         block_type = payload.get("blockType")
         if block_type == "text":
-            self._chat_text_start_seen(task=task, message_id=payload.get("messageId"))
+            content_block_id = payload.get("contentBlockId")
+            if content_block_id:
+                self._open_chat_text_block(
+                    task=task,
+                    message_id=payload.get("messageId"),
+                    content_block_id=content_block_id,
+                )
         elif block_type == "tool_use":
             self._chat_tool_start_seen(task=task, tool_use_id=payload.get("toolUseId"))
+            self._close_chat_text_block(task=task)
 
     @staticmethod
     def _chat_compat_usage_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1219,7 +1470,9 @@ class PublishingMixin:
         if any(marker in lowered for marker in sensitive_markers):
             return True
         stripped = lowered.strip()
-        return stripped.startswith(("{", "[")) and any(marker in stripped for marker in ("request", "approval", "workspace"))
+        if not stripped.startswith(("{", "[")):
+            return False
+        return any(marker in stripped for marker in ("request", "approval", "workspace"))
 
     def _tool_result_activity_item_text(self, item: Any) -> str:
         if isinstance(item, str):
@@ -1351,14 +1604,7 @@ class PublishingMixin:
                         "blockType": "tool_use",
                         "toolName": tool_name,
                         "toolUseId": tool_call_id,
-                        **({"target": payload.get("target")} if payload.get("target") else {}),
-                        **({"inputSummary": payload.get("inputSummary")} if payload.get("inputSummary") else {}),
-                        **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
-                        **({"toolCategory": payload.get("toolCategory")} if payload.get("toolCategory") else {}),
-                        **({"toolPhaseId": payload.get("toolPhaseId")} if payload.get("toolPhaseId") else {}),
-                        **({"toolPhaseLabel": payload.get("toolPhaseLabel")} if payload.get("toolPhaseLabel") else {}),
-                        **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
-                        **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
+                        **self._tool_presentation_payload(payload),
                     },
                     visibility=effective_visibility,
                 )
@@ -1371,14 +1617,7 @@ class PublishingMixin:
                         "toolUseId": tool_call_id,
                         "toolName": tool_name,
                         "input": visible_arguments,
-                        **({"target": payload.get("target")} if payload.get("target") else {}),
-                        **({"inputSummary": payload.get("inputSummary")} if payload.get("inputSummary") else {}),
-                        **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
-                        **({"toolCategory": payload.get("toolCategory")} if payload.get("toolCategory") else {}),
-                        **({"toolPhaseId": payload.get("toolPhaseId")} if payload.get("toolPhaseId") else {}),
-                        **({"toolPhaseLabel": payload.get("toolPhaseLabel")} if payload.get("toolPhaseLabel") else {}),
-                        **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
-                        **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
+                        **self._tool_presentation_payload(payload),
                     },
                     visibility=effective_visibility,
                 )
@@ -1395,14 +1634,7 @@ class PublishingMixin:
                     payload={
                         "toolUseId": tool_call_id,
                         "toolName": tool_name,
-                        "target": payload.get("target"),
-                        "inputSummary": payload.get("inputSummary"),
-                        "parentToolUseId": parent_tool_use_id,
-                        "toolCategory": payload.get("toolCategory"),
-                        "toolPhaseId": payload.get("toolPhaseId"),
-                        "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                        "toolSemanticParentId": payload.get("toolSemanticParentId"),
-                        "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
+                        **self._tool_presentation_payload(payload),
                         "toolOutput": output_delta,
                         "outputStream": "activity",
                     },
@@ -1434,14 +1666,7 @@ class PublishingMixin:
                 payload={
                     "toolUseId": tool_use_id,
                     "toolName": payload.get("toolName") or "run_command",
-                    "target": payload.get("target"),
-                    "inputSummary": payload.get("inputSummary"),
-                    "parentToolUseId": payload.get("parentToolUseId"),
-                    "toolCategory": payload.get("toolCategory"),
-                    "toolPhaseId": payload.get("toolPhaseId"),
-                    "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                    "toolSemanticParentId": payload.get("toolSemanticParentId"),
-                    "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
+                    **self._tool_presentation_payload(payload),
                     "toolOutput": visible_chunk,
                     "outputStream": payload.get("stream") or "stdout",
                 },
@@ -1477,14 +1702,7 @@ class PublishingMixin:
                 payload={
                     "toolUseId": tool_use_id,
                     "toolName": payload.get("toolName"),
-                    "target": payload.get("target"),
-                    "inputSummary": payload.get("inputSummary"),
-                    "parentToolUseId": payload.get("parentToolUseId"),
-                    "toolCategory": payload.get("toolCategory"),
-                    "toolPhaseId": payload.get("toolPhaseId"),
-                    "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                    "toolSemanticParentId": payload.get("toolSemanticParentId"),
-                    "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
+                    **self._tool_presentation_payload(payload),
                     "toolOutput": chunk,
                     "outputStream": stream,
                 },
@@ -1498,6 +1716,14 @@ class PublishingMixin:
                 return
             result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
             if result_payload.get("_chatCompatSuppressToolResult") is True:
+                return
+            if (
+                event_type == "tool.blocked"
+                and (
+                    str(payload.get("reason") or "").strip().lower() == "approval_required"
+                    or str(result_payload.get("status") or "").strip().lower() == "approval_required"
+                )
+            ):
                 return
             activity_deltas = self._tool_result_activity_delta_texts(payload)
             if activity_deltas and payload.get("toolName") != "run_command":
@@ -1514,19 +1740,12 @@ class PublishingMixin:
                         payload={
                             "toolUseId": tool_call_id,
                             "toolName": payload.get("toolName"),
-                            "target": payload.get("target"),
-                            "inputSummary": payload.get("inputSummary"),
-                            "parentToolUseId": payload.get("parentToolUseId"),
-                            "toolCategory": payload.get("toolCategory"),
-                            "toolPhaseId": payload.get("toolPhaseId"),
-                            "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                            "toolSemanticParentId": payload.get("toolSemanticParentId"),
-                            "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
+                            **self._tool_presentation_payload(payload),
                             "toolOutput": activity_delta,
                             "outputStream": "activity",
-                    },
-                    visibility=effective_visibility,
-                )
+                        },
+                        visibility=effective_visibility,
+                    )
             output_delta = self._public_tool_output_delta_text(self._tool_result_output_delta_text(payload))
             already_streamed_result_preview = self._mark_tool_stream_seen(
                 task["id"],
@@ -1554,14 +1773,7 @@ class PublishingMixin:
                     payload={
                         "toolUseId": tool_call_id,
                         "toolName": payload.get("toolName"),
-                        "target": payload.get("target"),
-                        "inputSummary": payload.get("inputSummary"),
-                        "parentToolUseId": payload.get("parentToolUseId"),
-                        "toolCategory": payload.get("toolCategory"),
-                        "toolPhaseId": payload.get("toolPhaseId"),
-                        "toolPhaseLabel": payload.get("toolPhaseLabel"),
-                        "toolSemanticParentId": payload.get("toolSemanticParentId"),
-                        "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
+                        **self._tool_presentation_payload(payload),
                         "toolOutput": output_delta,
                         "outputStream": "result_preview",
                     },
@@ -1582,17 +1794,10 @@ class PublishingMixin:
                         preview=payload.get("resultPreview") if isinstance(payload.get("resultPreview"), list) else None,
                     ),
                     "isError": event_type != "tool.completed",
-                    **({"target": payload.get("target")} if payload.get("target") else {}),
-                    **({"inputSummary": payload.get("inputSummary")} if payload.get("inputSummary") else {}),
+                    **self._tool_presentation_payload(payload),
                     **({"resultSummary": payload.get("resultSummary")} if payload.get("resultSummary") else {}),
                     **({"resultPreview": payload.get("resultPreview")} if payload.get("resultPreview") else {}),
                     **({"durationMs": payload.get("durationMs")} if payload.get("durationMs") is not None else {}),
-                    **({"toolCategory": payload.get("toolCategory")} if payload.get("toolCategory") else {}),
-                    **({"toolPhaseId": payload.get("toolPhaseId")} if payload.get("toolPhaseId") else {}),
-                    **({"toolPhaseLabel": payload.get("toolPhaseLabel")} if payload.get("toolPhaseLabel") else {}),
-                    **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
-                    **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
-                    **({"parentToolUseId": payload.get("parentToolUseId")} if payload.get("parentToolUseId") else {}),
                 },
                 visibility=effective_visibility,
             )
@@ -1602,6 +1807,7 @@ class PublishingMixin:
             request = payload.get("request")
             request_id = payload.get("approvalId")
             tool_name = payload.get("kind") or "approval"
+            tool_use_id = payload.get("toolUseId") or payload.get("toolCallId")
             visible_request = self._public_permission_request_input(
                 str(tool_name or ""),
                 request if isinstance(request, dict) else {},
@@ -1643,8 +1849,10 @@ class PublishingMixin:
                 payload={
                     "requestId": request_id,
                     "toolName": tool_name,
+                    **({"toolUseId": tool_use_id} if tool_use_id else {}),
                     "input": visible_request,
                     "description": payload.get("summary"),
+                    **self._tool_presentation_payload(payload),
                     "preview": self._public_permission_preview(payload.get("preview")),
                     "previewSections": (
                         visible_request.get("previewSections")
@@ -1678,6 +1886,16 @@ class PublishingMixin:
                 tool_name = payload.get("kind") or (
                     approval_request.get("kind") if isinstance(approval_request, dict) else None
                 )
+                tool_use_id = (
+                    payload.get("toolUseId")
+                    or payload.get("toolCallId")
+                    or (approval_request.get("toolUseId") if isinstance(approval_request, dict) else None)
+                    or (approval_request.get("toolCallId") if isinstance(approval_request, dict) else None)
+                )
+                presentation_source: dict[str, Any] = {}
+                if isinstance(approval_request, dict):
+                    presentation_source.update(approval_request)
+                presentation_source.update(payload)
                 visible_request = self._public_permission_request_input(
                     str(tool_name or ""),
                     request if isinstance(request, dict) else {},
@@ -1724,8 +1942,10 @@ class PublishingMixin:
                         payload={
                             "requestId": approval_id,
                             "toolName": tool_name,
+                            **({"toolUseId": tool_use_id} if tool_use_id else {}),
                             "input": visible_request,
                             "description": payload.get("summary"),
+                            **self._tool_presentation_payload(presentation_source),
                             "preview": self._public_permission_preview(payload.get("preview")),
                             "previewSections": (
                                 visible_request.get("previewSections")
@@ -1797,10 +2017,23 @@ class PublishingMixin:
                 request = decoded
         except Exception:  # noqa: BLE001
             logger.debug("Failed to decode approval request %s", approval_id, exc_info=True)
-        return {
+        payload = {
             "kind": approval.get("kind"),
             "request": request,
         }
+        for key in _TOOL_PRESENTATION_PAYLOAD_KEYS:
+            value = approval.get(key)
+            if value in (None, "", [], {}) and isinstance(request, dict):
+                value = request.get(key)
+            if value not in (None, "", [], {}):
+                payload[key] = value
+        for key in ("toolCallId", "toolUseId", "toolName", "summary"):
+            value = approval.get(key)
+            if value in (None, "", [], {}) and isinstance(request, dict):
+                value = request.get(key)
+            if value not in (None, "", [], {}):
+                payload[key] = value
+        return payload
 
     @staticmethod
     def _computer_use_permission_payload(
@@ -1882,6 +2115,14 @@ class PublishingMixin:
             return {"task": task}
         self._validate_task_transition(task["status"], "cancelled", task["id"])
         cancel_background_commands(database_path=self._store.database_path, task_id=task["id"])
+        self._terminal_pending_react_tool_result(
+            session_id=task["sessionId"],
+            task=task,
+            status="cancelled",
+            summary="Task was cancelled before the pending tool completed.",
+            reason="The task was cancelled by the user.",
+            error_code="TASK_CANCELLED",
+        )
         task = self._store.update_task(task_id=params["taskId"], status="cancelled")
         self._clear_pending_react_state(task["id"])
         self._publish(
@@ -2053,6 +2294,22 @@ class PublishingMixin:
             payload.setdefault("acceptanceCriteria", list(task.get("acceptanceCriteria") or []))
             payload.setdefault("outOfScope", list(task.get("outOfScope") or []))
             payload.setdefault("currentStep", task.get("currentStep"))
+        if event_type == "content_start" and payload.get("blockType") == "text":
+            payload = dict(payload)
+            active_msg_id = payload.get("messageId") or task.get("activeAssistantMessageId")
+            block_state = self._open_chat_text_block(
+                task=task,
+                message_id=active_msg_id,
+                content_block_id=payload.get("contentBlockId"),
+            )
+            if active_msg_id:
+                payload["messageId"] = active_msg_id
+            if block_state.get("contentBlockId"):
+                payload["contentBlockId"] = block_state["contentBlockId"]
+            if isinstance(block_state.get("blockIndex"), int):
+                payload["blockIndex"] = block_state["blockIndex"]
+        elif event_type in {"message_complete", "message.completed", "message.failed", "task.completed", "task.failed", "task.cancelled"}:
+            self._close_chat_text_block(task=task, message_id=payload.get("messageId") if isinstance(payload, dict) else None)
         raw_payload = deepcopy(payload)
         effective_visibility = visibility or self._infer_event_visibility(event_type, task)
         if self._should_drop_event_after_terminal_task(
@@ -2074,9 +2331,35 @@ class PublishingMixin:
         token_delta_payload: dict[str, Any] | None = None
         if event_type == "assistant.token":
             visible_payload = dict(visible_payload)
+            raw_payload = dict(raw_payload)
+            raw_bridge = raw_payload.get("_bridge")
+            raw_payload["_bridge"] = {
+                **(raw_bridge if isinstance(raw_bridge, dict) else {}),
+                "internal": True,
+                "derivedBy": "message.delta",
+                "suppressRealtimeFlat": True,
+                "suppressChatReplay": True,
+            }
             active_msg_id = task.get("activeAssistantMessageId")
             if active_msg_id:
                 visible_payload["messageId"] = active_msg_id
+            if not self._chat_text_start_seen(task=task, message_id=active_msg_id):
+                self._publish_chat_compat_event(
+                    session_id=session_id,
+                    task=task,
+                    event_type="content_start",
+                    payload={
+                        "blockType": "text",
+                        "messageId": active_msg_id,
+                    },
+                    visibility=effective_visibility,
+                )
+            block_state = self._current_chat_text_block(task=task, message_id=active_msg_id)
+            if isinstance(block_state, dict):
+                if block_state.get("contentBlockId"):
+                    visible_payload["contentBlockId"] = block_state["contentBlockId"]
+                if isinstance(block_state.get("blockIndex"), int):
+                    visible_payload["blockIndex"] = block_state["blockIndex"]
             visible_payload["_chatCompat"] = True
             token_delta_payload = {**visible_payload}
             token_delta_payload.setdefault("messageId", active_msg_id or "")

@@ -1,3 +1,4 @@
+import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,7 +149,7 @@ describe("useEventSubscription", () => {
     expect(screen.queryByText("正在整理上下文")).toBeNull();
   });
 
-  it("preserves haha-cc messages on the live trace cache", async () => {
+  it("preserves the single flat server message on the live trace cache", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
 
@@ -162,14 +163,15 @@ describe("useEventSubscription", () => {
         seq: 3,
         visibility: "chat",
         payload: { text: "hello" },
-        hahaCc: { type: "content_delta", text: "hello" },
+        yuanbao: { type: "content_delta", text: "hello" },
       });
     });
 
-    await waitFor(() => expect(traceSnapshots.at(-1)?.[0]?.hahaCc).toEqual({
+    await waitFor(() => expect(traceSnapshots.at(-1)?.[0]?.yuanbao).toEqual({
       type: "content_delta",
       text: "hello",
     }));
+    expect(traceSnapshots.at(-1)?.[0]?.hahaCc).toBeUndefined();
   });
 
   it("renders chat-compat message.delta as the canonical live text stream", async () => {
@@ -190,7 +192,7 @@ describe("useEventSubscription", () => {
           delta: "hello ",
           _chatCompat: true,
         },
-        hahaCc: { type: "content_delta", text: "hello " },
+        yuanbao: { type: "content_delta", text: "hello " },
       });
       runtimeMocks.handler?.({
         eventId: "evt_msg_delta_2",
@@ -205,7 +207,7 @@ describe("useEventSubscription", () => {
           delta: "world",
           _chatCompat: true,
         },
-        hahaCc: { type: "content_delta", text: "world" },
+        yuanbao: { type: "content_delta", text: "world" },
       });
       runtimeMocks.handler?.({
         eventId: "evt_legacy_token",
@@ -227,7 +229,122 @@ describe("useEventSubscription", () => {
     expect(screen.queryByText(/ignored/)).toBeNull();
   });
 
-  it("renders flat haha-style tool output deltas into the matching tool row", async () => {
+  it("renders a new assistant text block after a live tool boundary", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_text_start_0",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "content_start",
+        ts: 10,
+        seq: 10,
+        visibility: "chat",
+        payload: {
+          blockType: "text",
+          messageId: "msg_1",
+          contentBlockId: "msg_1:text:0",
+          blockIndex: 0,
+          _chatCompat: true,
+        },
+      } as AgentEventEnvelope);
+      runtimeMocks.handler?.({
+        eventId: "evt_text_delta_0",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "message.delta",
+        ts: 11,
+        seq: 11,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_1",
+          contentBlockId: "msg_1:text:0",
+          blockIndex: 0,
+          delta: "先读项目。",
+          _chatCompat: true,
+        },
+      } as AgentEventEnvelope);
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_start",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "content_start",
+        ts: 12,
+        seq: 12,
+        visibility: "chat",
+        payload: {
+          blockType: "tool_use",
+          toolName: "read_file",
+          toolUseId: "tool_read",
+          target: "README.md",
+        },
+      } as AgentEventEnvelope);
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_result",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "tool_result",
+        ts: 13,
+        seq: 13,
+        visibility: "chat",
+        payload: {
+          toolUseId: "tool_read",
+          toolName: "read_file",
+          target: "README.md",
+          resultSummary: "read README.md",
+          _chatCompat: true,
+        },
+      } as AgentEventEnvelope);
+      runtimeMocks.handler?.({
+        eventId: "evt_text_start_1",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "content_start",
+        ts: 14,
+        seq: 14,
+        visibility: "chat",
+        payload: {
+          blockType: "text",
+          messageId: "msg_1",
+          contentBlockId: "msg_1:text:1",
+          blockIndex: 1,
+          _chatCompat: true,
+        },
+      } as AgentEventEnvelope);
+      runtimeMocks.handler?.({
+        eventId: "evt_text_delta_1",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "message.delta",
+        ts: 15,
+        seq: 15,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_1",
+          contentBlockId: "msg_1:text:1",
+          blockIndex: 1,
+          delta: "然后继续实现。",
+          _chatCompat: true,
+        },
+      } as AgentEventEnvelope);
+    });
+
+    const rows = screen.getAllByText(/先读项目|README\.md|然后继续实现/);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "先读项目。",
+      "README.mdread README.md",
+      "然后继续实现。",
+    ]);
+    expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual([
+      "",
+      "tool_activity",
+      "",
+    ]);
+  });
+
+  it("renders envelope tool output deltas into the matching tool row", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
 
@@ -246,12 +363,11 @@ describe("useEventSubscription", () => {
           toolUseId: "call_read",
           target: "README.md",
         },
-        hahaCc: {
+        yuanbao: {
           type: "content_start",
           blockType: "tool_use",
           toolName: "read_file",
           toolUseId: "call_read",
-          target: "README.md",
         } as any,
       });
       runtimeMocks.handler?.({
@@ -269,14 +385,6 @@ describe("useEventSubscription", () => {
           toolOutput: "read README.md\n",
           outputStream: "result_preview",
         },
-        hahaCc: {
-          type: "content_delta",
-          toolUseId: "call_read",
-          toolName: "read_file",
-          target: "README.md",
-          toolOutput: "read README.md\n",
-          outputStream: "result_preview",
-        } as any,
       });
     });
 
@@ -525,6 +633,44 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-status")).toBe("completed");
   });
 
+  it("does not render internal approval aliases as permission cards", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_review_permission",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "permission_request",
+        ts: 10,
+        visibility: "chat",
+        payload: {
+          requestId: "approval_review",
+          kind: "completion_review",
+          input: { summary: "internal completion review" },
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_advisor_resolved",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "approval.resolved",
+        ts: 11,
+        visibility: "chat",
+        payload: {
+          approvalId: "approval_advisor",
+          approvalKind: "advisor_tool",
+          request: { kind: "advisor_tool", summary: "internal advisor" },
+        },
+      });
+    });
+
+    expect(screen.queryByText(/internal completion review/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/internal advisor/)).not.toBeInTheDocument();
+    expect(document.querySelector('[data-kind="permission_request"]')).toBeNull();
+  });
+
   it("streams command.output events into matching tool messages when toolUseId is present", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
@@ -708,6 +854,75 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-status")).toBe("streaming");
     expect(row.getAttribute("data-tool-use-id")).toBe("call_search");
     expect(row.getAttribute("data-operation-id")).toBe("context:search:needle");
+  });
+
+  it("skips raw task/provider/tool progress json in live chat-compatible streams", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+    const rawProgress = JSON.stringify({
+      taskId: "task_1",
+      provider: "yuanbao",
+      tool_progress: { toolCallId: "call_search", status: "running" },
+    });
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_raw_message_delta",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "message.delta",
+        ts: 10,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_final",
+          delta: rawProgress,
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_progress_json",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "tool.progress",
+        ts: 11,
+        visibility: "chat",
+        payload: {
+          toolUseId: "call_search",
+          toolName: "search_files",
+          message: rawProgress,
+          outputStream: "activity",
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_visible_delta",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "message.delta",
+        ts: 12,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_final",
+          delta: "Final answer.",
+        },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_complete",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "message_complete",
+        ts: 13,
+        visibility: "chat",
+        payload: {
+          messageId: "msg_final",
+          content: "Final answer.",
+        },
+      });
+    });
+
+    const bodyText = document.body.textContent ?? "";
+    expect(bodyText).toContain("Final answer.");
+    expect(bodyText.match(/Final answer\./g)).toHaveLength(1);
+    expect(bodyText).not.toContain("tool_progress");
+    expect(bodyText).not.toContain("\"provider\"");
   });
 
   it("creates a visible tool row from command.started before output arrives", async () => {
@@ -932,7 +1147,7 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-status")).toBe("cancelled");
   });
 
-  it("renders live haha-style team_update as an agent group panel", async () => {
+  it("renders live flat team_update as an agent group panel", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
 
@@ -945,7 +1160,7 @@ describe("useEventSubscription", () => {
         ts: 10,
         visibility: "chat",
         payload: { rawJson: { should: "not render" } },
-        hahaCc: {
+        yuanbao: {
           type: "team_update",
           teamName: "swarm",
           members: [
@@ -966,7 +1181,7 @@ describe("useEventSubscription", () => {
     expect(screen.queryByText(/rawJson/)).toBeNull();
   });
 
-  it("renders live haha-style task_update without leaking envelope payload", async () => {
+  it("renders live flat task_update without leaking envelope payload", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
 
@@ -979,7 +1194,7 @@ describe("useEventSubscription", () => {
         ts: 10,
         visibility: "chat",
         payload: { rawJson: { should: "not render" } },
-        hahaCc: {
+        yuanbao: {
           type: "task_update",
           taskId: "task_1",
           status: "running",

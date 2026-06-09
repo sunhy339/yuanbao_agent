@@ -48,9 +48,6 @@ _TOOL_VISIBLE_SNIPPET_LIMIT = 600
 SUBAGENT_TOOL_NAMES = {"agent", "task"}
 _SUBAGENT_INTERNAL_RESULT_KEYS = {
     "acceptanceCriteria",
-    "advisorEvidenceExecutionSuggestions",
-    "advisorEvidenceExecutor",
-    "advisorRequestedEvidence",
     "completionEvidence",
     "completionGate",
     "completionReview",
@@ -237,9 +234,61 @@ def _public_nested_result(value: Any, *, depth: int = 0) -> Any:
     return public
 
 
-def _public_tool_arguments(arguments: Any) -> Any:
+def _public_file_change_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    public: dict[str, Any] = {}
+    for key in ("path", "summary", "filesChanged", "changedPaths", "overwrite", "create_dirs", "dry_run"):
+        value = arguments.get(key)
+        if value in (None, "", [], {}):
+            continue
+        public["dryRun" if key == "dry_run" else key] = _public_nested_result(value)
+    content = arguments.get("content")
+    if isinstance(content, str):
+        public["content"] = {"omitted": True, "chars": len(content)}
+    files = arguments.get("files")
+    if isinstance(files, list) and files:
+        public_files: list[dict[str, Any]] = []
+        for item in files[:_TOOL_VISIBLE_COLLECTION_LIMIT]:
+            if not isinstance(item, dict):
+                continue
+            public_file: dict[str, Any] = {}
+            path = item.get("path")
+            if isinstance(path, str) and path.strip():
+                public_file["path"] = path
+            file_content = item.get("content")
+            if isinstance(file_content, str):
+                public_file["content"] = {"omitted": True, "chars": len(file_content)}
+            if public_file:
+                public_files.append(public_file)
+        if public_files:
+            public["files"] = public_files
+    if tool_name == "apply_patch":
+        patch_text = arguments.get("patchText") or arguments.get("patch") or arguments.get("diffText")
+        if isinstance(patch_text, str):
+            public["patch"] = {"omitted": True, "chars": len(patch_text)}
+    return public
+
+
+def _public_command_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    public: dict[str, Any] = {}
+    for key in ("command", "cwd", "shell", "timeoutMs", "background", "runInBackground"):
+        value = arguments.get(key)
+        if value in (None, "", [], {}):
+            continue
+        public[key] = _public_nested_result(value)
+    background_job = arguments.get("backgroundJob")
+    if background_job not in (None, "", [], {}):
+        public["backgroundJob"] = _public_nested_result(background_job)
+    return public
+
+
+def _public_tool_arguments(arguments: Any, tool_name: str = "") -> Any:
     if not isinstance(arguments, dict):
         return arguments
+    normalized_tool_name = str(tool_name or "").strip()
+    if normalized_tool_name in {"write_file", "apply_patch"}:
+        return _public_file_change_arguments(normalized_tool_name, arguments)
+    if normalized_tool_name == "run_command":
+        return _public_command_arguments(arguments)
     public: dict[str, Any] = {}
     for key, value in arguments.items():
         key_text = str(key)
@@ -478,7 +527,91 @@ def _model_visible_tool_result(tool_name: str, result: Any, target: str = "", *,
 
 
 def _frontend_visible_tool_result(tool_name: str, result: Any, target: str = "", *, summary: str = "", preview: list[dict[str, str]] | None = None) -> Any:
-    return _visible_tool_result(tool_name, result, target, summary=summary, preview=preview)
+    """Return UI-facing tool result data.
+
+    This intentionally differs from _model_visible_tool_result. The provider
+    needs enough detail to reason over tool output; the transcript needs the
+    same kind of concise, tool-specific render payload haha-cc gets from each
+    tool's renderToolResultMessage/getToolUseSummary hooks.
+    """
+    if not isinstance(result, dict):
+        return {"summary": _compact_text(result), "target": target} if str(result or "").strip() else {}
+
+    rows = preview if preview is not None else _tool_result_preview(tool_name, result, target)
+    summary_text = summary or _tool_result_summary(tool_name, result, target)
+    if tool_name in SUBAGENT_TOOL_NAMES:
+        subagent_public = _public_subagent_tool_result(result)
+        if summary_text:
+            subagent_public.setdefault("summary", summary_text)
+        if target:
+            subagent_public.setdefault("target", target)
+        if rows:
+            subagent_public.setdefault("preview", rows)
+        subagent_public.setdefault("status", result.get("status") or "completed")
+        return {key: value for key, value in subagent_public.items() if value not in (None, "", [], {})}
+
+    public: dict[str, Any] = {
+        "status": result.get("status") or ("failed" if _tool_result_is_failure_like(result) else "completed"),
+        "summary": summary_text,
+        "target": target or result.get("path") or result.get("url") or result.get("command") or result.get("query"),
+        "preview": rows,
+    }
+
+    if tool_name in {"write_file", "apply_patch"}:
+        paths = result.get("changedPaths")
+        if not isinstance(paths, list) and isinstance(result.get("patch"), dict):
+            paths = result["patch"].get("changedPaths")
+        if isinstance(paths, list) and paths:
+            public["changedPaths"] = paths[:_TOOL_VISIBLE_COLLECTION_LIMIT]
+        files_changed = result.get("filesChanged")
+        if files_changed is None and isinstance(result.get("patch"), dict):
+            files_changed = result["patch"].get("filesChanged")
+        if files_changed is not None:
+            public["filesChanged"] = files_changed
+        path = result.get("path") or target
+        if path:
+            public["path"] = path
+
+    if tool_name == "run_command":
+        command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
+        public.update({
+            "command": command_log.get("command") or result.get("command") or target,
+            "exitCode": result.get("exitCode"),
+            "cwd": result.get("cwd") or command_log.get("cwd"),
+            "shell": result.get("shell") or command_log.get("shell"),
+            "durationMs": result.get("durationMs"),
+        })
+        if _tool_result_is_failure_like(result):
+            public["stdout"] = _head_tail_text(result.get("stdout") or "")
+            public["stderr"] = _head_tail_text(result.get("stderr") or "")
+
+    if tool_name not in {"run_command", "write_file", "apply_patch"}:
+        for key in ("items", "entries", "results", "matches", "files"):
+            if isinstance(result.get(key), list):
+                public[key] = _compact_list_items(result.get(key))
+                break
+
+    for key in ("steps", "logs", "events", "progress", "timeline"):
+        if isinstance(result.get(key), list):
+            public[key] = _compact_list_items(result.get(key))
+            break
+
+    if _tool_result_is_failure_like(result):
+        for key in ("error", "message", "failureKind", "recoveryHint", "code"):
+            if result.get(key) not in (None, "", [], {}):
+                public[key] = _compact_snippet(result.get(key))
+
+    approval = result.get("approval")
+    if isinstance(approval, dict):
+        public["approvalKind"] = approval.get("kind") or tool_name
+        public["approvalStatus"] = approval.get("decision") or "waiting"
+    else:
+        if result.get("approvalKind") not in (None, "", [], {}):
+            public["approvalKind"] = _compact_snippet(result.get("approvalKind"))
+        if result.get("approvalStatus") not in (None, "", [], {}):
+            public["approvalStatus"] = _compact_snippet(result.get("approvalStatus"))
+
+    return {key: value for key, value in public.items() if value not in (None, "", [], {})}
 
 
 def _visible_command_output_chunk(chunk: Any) -> str:
@@ -1013,6 +1146,19 @@ def _tool_target(tool_name: str, arguments: dict[str, Any], result: dict[str, An
     result = result or {}
     if tool_name == "run_command":
         return _compact_text(arguments.get("command") or result.get("command") or "", 140)
+    if tool_name in SUBAGENT_TOOL_NAMES:
+        return _compact_text(
+            arguments.get("description")
+            or arguments.get("title")
+            or arguments.get("subagent_type")
+            or arguments.get("agent_type")
+            or arguments.get("agentType")
+            or arguments.get("prompt")
+            or result.get("title")
+            or result.get("summary")
+            or "",
+            180,
+        )
     if tool_name in {"read_file", "write_file", "list_dir", "list_directory"}:
         return _compact_text(result.get("path") or arguments.get("path") or ".", 180)
     if tool_name == "notebook":
@@ -1068,6 +1214,8 @@ def _tool_target(tool_name: str, arguments: dict[str, Any], result: dict[str, An
 def _tool_input_summary(tool_name: str, arguments: dict[str, Any], target: str = "") -> str:
     if tool_name == "run_command":
         return _compact_text(arguments.get("command") or target or "run command", 180)
+    if tool_name in SUBAGENT_TOOL_NAMES:
+        return _compact_text(f"dispatch {target or 'subtask'}", 180)
     if tool_name == "read_file":
         return _compact_text(f"read {target or arguments.get('path') or 'file'}", 180)
     if tool_name == "write_file":
@@ -1108,6 +1256,73 @@ def _tool_input_summary(tool_name: str, arguments: dict[str, Any], target: str =
     if tool_name == "scratchpad.read":
         return _compact_text(f"scratchpad read {target or arguments.get('key') or 'key'}", 180)
     return _compact_text(target or tool_name, 180)
+
+
+def _tool_display_metadata(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    target: str = "",
+    input_summary: str = "",
+    result: dict[str, Any] | None = None,
+    result_summary: str = "",
+    tool_category: str = "",
+) -> dict[str, str]:
+    """Return UI-facing tool presentation fields, similar to haha-cc tool render contracts."""
+    result = result if isinstance(result, dict) else None
+    display_target = _compact_text(target or _tool_target(tool_name, arguments, result), 180)
+    query = _compact_text(arguments.get("query") or arguments.get("pattern") or display_target, 120)
+    action = _compact_text(arguments.get("action") or result.get("action") if result else arguments.get("action"), 80)
+
+    if tool_name == "run_command":
+        title = "运行命令"
+    elif tool_name == "read_file":
+        title = f"读取 {display_target or '文件'}"
+    elif tool_name == "write_file":
+        title = f"写入 {display_target or '文件'}"
+    elif tool_name in {"list_dir", "list_directory"}:
+        title = f"查看 {display_target or '目录'}"
+    elif tool_name in {"search_files", "code_search"}:
+        title = f"搜索 {query or '文件'}"
+    elif tool_name == "git_status":
+        title = "查看 Git 状态"
+    elif tool_name == "git_diff":
+        title = "查看 Git 差异"
+    elif tool_name == "apply_patch":
+        title = f"修改 {display_target or '文件'}"
+    elif tool_name in SUBAGENT_TOOL_NAMES:
+        title = f"派发 {display_target or '子任务'}"
+    elif tool_name == "computer_use":
+        title = f"桌面操作 {display_target or action or ''}".strip()
+    elif tool_name == "web_fetch":
+        title = f"读取网页 {display_target}".strip()
+    elif tool_name == "browser":
+        title = f"浏览器 {action or display_target or '操作'}"
+    elif tool_name == "notebook":
+        title = f"Notebook {action or display_target or '操作'}"
+    elif tool_name == "memory.remember":
+        title = "写入记忆"
+    elif tool_name == "memory.recall":
+        title = f"查询记忆 {display_target}".strip()
+    elif tool_name == "scratchpad.write":
+        title = f"写入 scratchpad {display_target}".strip()
+    elif tool_name == "scratchpad.read":
+        title = f"读取 scratchpad {display_target}".strip()
+    elif tool_name.startswith("mcp__"):
+        parts = tool_name.split("__", 2)
+        title = f"调用 MCP {parts[-1] if parts else tool_name}"
+    else:
+        title = f"调用 {tool_name}{f' {display_target}' if display_target else ''}"
+
+    summary = _compact_text(result_summary or input_summary or display_target or title, 220)
+    metadata = {
+        "displayTitle": _compact_text(title, 180),
+        "displaySummary": summary,
+        "displayKind": tool_category or _tool_category(tool_name, arguments),
+    }
+    if display_target:
+        metadata["displayTarget"] = display_target
+    return {key: value for key, value in metadata.items() if value}
 
 
 def _tool_write_execution_is_unblocked(tool_name: str, arguments: dict[str, Any], approval_required: bool) -> bool:
@@ -1885,9 +2100,9 @@ class ToolExecutionMixin:
             routing = {}
         if routing.get("disableWorktreeBinding") is True:
             return context, None
-        if routing.get("preferredWorktree") is True:
-            return context, None
-        if routing.get("worktreeBindingRequired") is not True:
+        requires_worktree = routing.get("worktreeBindingRequired") is True
+        prefers_worktree = routing.get("preferredWorktree") is True
+        if not requires_worktree and not prefers_worktree:
             return context, None
         if self._store.get_worktree_by_task({"taskId": task["id"]}).get("worktree") is not None:
             return context, None
@@ -1903,6 +2118,8 @@ class ToolExecutionMixin:
             routing=routing_for_bind,
         )
         if worktree is None:
+            if prefers_worktree and not requires_worktree:
+                return context, None
             return context, {
                 "status": "failed",
                 "ok": False,
@@ -1989,12 +2206,26 @@ class ToolExecutionMixin:
         tool_category = _tool_category(tool_spec["name"], tool_arguments)
         tool_phase_metadata = _tool_phase_metadata(tool_category)
         tool_semantic_parent_metadata = _tool_semantic_parent_metadata(tool_phase_metadata, tool_batch_metadata)
+        tool_display_metadata = _tool_display_metadata(
+            tool_spec["name"],
+            tool_arguments,
+            target=tool_target,
+            input_summary=tool_input_summary,
+            tool_category=tool_category,
+        )
+        for key, value in {
+            "target": tool_target,
+            "inputSummary": tool_input_summary,
+            "toolCategory": tool_category,
+            **tool_display_metadata,
+            **tool_phase_metadata,
+            **tool_semantic_parent_metadata,
+        }.items():
+            tool_arguments.setdefault(key, value)
         if tool_spec["name"] == "run_command":
-            tool_arguments.setdefault("target", tool_target)
-            tool_arguments.setdefault("inputSummary", tool_input_summary)
-            tool_arguments.setdefault("toolCategory", tool_category)
-            for key, value in {**tool_phase_metadata, **tool_semantic_parent_metadata}.items():
-                tool_arguments.setdefault(key, value)
+            tool_arguments.setdefault("toolUseId", tool_call_id)
+            if parent_tool_use_id:
+                tool_arguments.setdefault("parentToolUseId", parent_tool_use_id)
         approval_required = False
         if tool_spec["name"] in {"apply_patch", "write_file"}:
             try:
@@ -2014,9 +2245,10 @@ class ToolExecutionMixin:
                 **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
                 **tool_batch_metadata,
                 "toolName": tool_spec["name"],
-                "arguments": _public_tool_arguments(tool_arguments),
+                "arguments": _public_tool_arguments(tool_arguments, tool_spec["name"]),
                 "target": tool_target,
                 "inputSummary": tool_input_summary,
+                **tool_display_metadata,
                 "toolCategory": tool_category,
                 **tool_phase_metadata,
                 **tool_semantic_parent_metadata,
@@ -2041,6 +2273,7 @@ class ToolExecutionMixin:
                     "toolName": tool_spec["name"],
                     "target": tool_target,
                     "inputSummary": tool_input_summary,
+                    **tool_display_metadata,
                     "toolCategory": tool_category,
                     **tool_phase_metadata,
                     **tool_semantic_parent_metadata,
@@ -2082,6 +2315,7 @@ class ToolExecutionMixin:
                 **tool_semantic_parent_metadata,
                 "target": tool_target,
                 "inputSummary": tool_input_summary,
+                **tool_display_metadata,
             }
 
         def publish_command_started(command_log: dict[str, Any]) -> None:
@@ -2186,6 +2420,7 @@ class ToolExecutionMixin:
                         "toolName": tool_spec["name"],
                         "target": tool_target,
                         "inputSummary": tool_input_summary,
+                        **tool_display_metadata,
                         "toolCategory": tool_category,
                         **tool_phase_metadata,
                         **tool_semantic_parent_metadata,
@@ -2196,6 +2431,15 @@ class ToolExecutionMixin:
             output_target = _tool_target(tool_spec["name"], tool_arguments, result) or tool_target
             runtime_output_message = _tool_runtime_output_message(tool_spec["name"], result, output_target)
             if runtime_output_message:
+                output_display_metadata = _tool_display_metadata(
+                    tool_spec["name"],
+                    tool_arguments,
+                    target=output_target,
+                    input_summary=tool_input_summary,
+                    result=result,
+                    result_summary=runtime_output_message,
+                    tool_category=tool_category,
+                )
                 result_preview_streamed = True
                 self._publish(
                     session_id=session_id,
@@ -2209,6 +2453,7 @@ class ToolExecutionMixin:
                         "toolName": tool_spec["name"],
                         "target": output_target,
                         "inputSummary": tool_input_summary,
+                        **output_display_metadata,
                         "toolCategory": tool_category,
                         **tool_phase_metadata,
                         **tool_semantic_parent_metadata,
@@ -2225,14 +2470,24 @@ class ToolExecutionMixin:
                 result if isinstance(result, dict) else None,
                 tool_batch_metadata,
             )
+            display_metadata = _tool_display_metadata(
+                tool_spec["name"],
+                tool_arguments,
+                target=target,
+                input_summary=tool_input_summary,
+                result=result if isinstance(result, dict) else None,
+                result_summary=result_summary,
+                tool_category=tool_category,
+            )
             payload = {
                 "toolCallId": tool_call_id,
                 **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
                 **operation_metadata,
                 "toolName": tool_spec["name"],
-                "arguments": _public_tool_arguments(tool_arguments),
+                "arguments": _public_tool_arguments(tool_arguments, tool_spec["name"]),
                 "target": target,
                 "inputSummary": tool_input_summary,
+                **display_metadata,
                 "toolCategory": tool_category,
                 **tool_phase_metadata,
                 **tool_semantic_parent_metadata,
@@ -2261,6 +2516,15 @@ class ToolExecutionMixin:
                 result if isinstance(result, dict) else None,
                 tool_batch_metadata,
             )
+            display_metadata = _tool_display_metadata(
+                tool_spec["name"],
+                tool_arguments,
+                target=target,
+                input_summary=tool_input_summary,
+                result=result if isinstance(result, dict) else None,
+                result_summary=result_summary,
+                tool_category=tool_category,
+            )
             return {
                 "id": tool_call_id,
                 "name": tool_spec["name"],
@@ -2269,6 +2533,7 @@ class ToolExecutionMixin:
                 **operation_metadata,
                 "target": target,
                 "inputSummary": tool_input_summary,
+                **display_metadata,
                 **({"resultSummary": result_summary} if result_summary else {}),
                 **({"resultPreview": result_preview} if result_preview else {}),
                 "toolCategory": tool_category,
@@ -2298,6 +2563,7 @@ class ToolExecutionMixin:
                         **tool_semantic_parent_metadata,
                         "target": tool_target,
                         "inputSummary": tool_input_summary,
+                        **tool_display_metadata,
                         "stream": "stdout",
                         "chunk": result["stdout"],
                     },
@@ -2318,6 +2584,7 @@ class ToolExecutionMixin:
                         **tool_semantic_parent_metadata,
                         "target": tool_target,
                         "inputSummary": tool_input_summary,
+                        **tool_display_metadata,
                         "stream": "stderr",
                         "chunk": result["stderr"],
                     },
@@ -2438,6 +2705,17 @@ class ToolExecutionMixin:
                     "approvalId": approval.get("id"),
                     "taskId": task["id"],
                     "kind": approval_kind,
+                    "toolCallId": tool_call_id,
+                    "toolUseId": tool_call_id,
+                    **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
+                    **tool_batch_metadata,
+                    "toolName": tool_spec["name"],
+                    "target": tool_target,
+                    "inputSummary": tool_input_summary,
+                    **tool_display_metadata,
+                    "toolCategory": tool_category,
+                    **tool_phase_metadata,
+                    **tool_semantic_parent_metadata,
                     "request": approval_request_payload,
                     "preview": approval_preview,
                     "patchId": result.get("patch", {}).get("id"),

@@ -1,8 +1,8 @@
 """React Runner Mixin — core ReAct loop orchestration.
 
 Composes ProviderTurnMixin, ReactToolHelpersMixin, and ReactResumeMixin.
-This module retains the main loop, context/budget helpers, minimal loop,
-and plan advancement logic.
+This module retains the provider/tool loop, context/budget helpers, and
+plan advancement logic.
 """
 from __future__ import annotations
 
@@ -72,6 +72,121 @@ _READ_ONLY_RUN_COMMAND_RE = re.compile(
 
 
 class ReactRunnerMixin:
+    def _terminal_pending_react_tool_result(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        status: str,
+        summary: str,
+        reason: str | None = None,
+        approval: dict[str, Any] | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Close a visible pending tool when the waiting task reaches a terminal path."""
+
+        state = self._load_pending_react_state(task["id"])
+        if not isinstance(state, dict):
+            return None
+        pending_tool_call = state.get("pending_tool_call")
+        pending_tool_spec = state.get("pending_tool_spec")
+        if not isinstance(pending_tool_call, dict) or not isinstance(pending_tool_spec, dict):
+            return None
+
+        tool_call_id = str(
+            pending_tool_call.get("id")
+            or pending_tool_spec.get("id")
+            or (approval or {}).get("toolCallId")
+            or self._store.new_id("tc")
+        )
+        existing_results = state.get("tool_results")
+        if isinstance(existing_results, list):
+            for existing in existing_results:
+                if isinstance(existing, dict) and str(existing.get("id") or "") == tool_call_id:
+                    return existing
+
+        tool_name = str(pending_tool_spec.get("name") or pending_tool_call.get("name") or "tool")
+        arguments = pending_tool_spec.get("arguments") if isinstance(pending_tool_spec.get("arguments"), dict) else {}
+        target = str(
+            pending_tool_spec.get("target")
+            or _tool_target(tool_name, arguments)
+            or tool_name
+        )
+        result_payload: dict[str, Any] = {
+            "status": status,
+            "summary": summary,
+        }
+        if reason:
+            result_payload["error"] = reason
+        if error_code:
+            result_payload["errorCode"] = error_code
+        if approval:
+            result_payload["approvalId"] = approval.get("id")
+            result_payload["decision"] = approval.get("decision")
+
+        tool_category = str(pending_tool_spec.get("toolCategory") or _tool_category(tool_name, arguments))
+        phase_metadata = {
+            "toolPhaseId": pending_tool_spec.get("toolPhaseId"),
+            "toolPhaseLabel": pending_tool_spec.get("toolPhaseLabel"),
+        }
+        phase_metadata = {
+            key: value
+            for key, value in phase_metadata.items()
+            if value not in (None, "", [], {})
+        } or _tool_phase_metadata(tool_category)
+        batch_metadata = _tool_batch_metadata(pending_tool_spec)
+        semantic_metadata = self._tool_semantic_metadata_for_spec({
+            **pending_tool_spec,
+            **phase_metadata,
+            **batch_metadata,
+        })
+        result_preview = _tool_result_preview(tool_name, result_payload, target)
+        tool_result = {
+            "id": tool_call_id,
+            "name": tool_name,
+            "arguments": deepcopy(arguments),
+            **({"parentToolUseId": pending_tool_spec.get("parentToolUseId")} if pending_tool_spec.get("parentToolUseId") else {}),
+            **batch_metadata,
+            "target": target,
+            "inputSummary": str(pending_tool_spec.get("inputSummary") or target)[:500],
+            "toolCategory": tool_category,
+            **phase_metadata,
+            **semantic_metadata,
+            "resultSummary": summary,
+            **({"resultPreview": result_preview} if result_preview else {}),
+            "result": result_payload,
+            "modelVisibleResult": result_payload,
+        }
+
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="tool.failed",
+            payload={
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+                **({"parentToolUseId": pending_tool_spec.get("parentToolUseId")} if pending_tool_spec.get("parentToolUseId") else {}),
+                **batch_metadata,
+                "target": target,
+                "inputSummary": tool_result["inputSummary"],
+                "toolCategory": tool_category,
+                **phase_metadata,
+                **semantic_metadata,
+                "resultSummary": summary,
+                **({"resultPreview": result_preview} if result_preview else {}),
+                "result": result_payload,
+            },
+        )
+
+        state = deepcopy(state)
+        state.setdefault("tool_results", []).append(tool_result)
+        state.setdefault("messages", []).append(self._tool_result_message(pending_tool_call, tool_result))
+        state["pending_tool_call"] = None
+        state["pending_tool_spec"] = None
+        self._pending_react_tasks[task["id"]] = state
+        self._save_pending_react_state(task["id"], state)
+        return tool_result
+
     def _run_react_loop(
         self,
         session_id: str,
@@ -82,8 +197,6 @@ class ReactRunnerMixin:
         budget: WorkerBudget | None = None,
     ) -> dict[str, Any]:
         if not hasattr(self._provider, "generate"):
-            if self._should_use_deterministic_fallback(goal=goal, context=context):
-                return {"status": "fallback"}
             raise RuntimeError("Provider does not implement generate().")
 
         max_steps = self._max_task_steps(context)
@@ -518,18 +631,7 @@ class ReactRunnerMixin:
         patch_repair_attempts: int,
     ) -> dict[str, Any]:
 
-        # --- Context policy advisory: consult DecisionAdvisor for compaction threshold ---
         ctx_threshold = self._compaction_threshold(context)
-        ctx_policy_advice = self._consult_context_policy_advisor(task, goal, ctx_threshold, context)
-        if ctx_policy_advice is not None:
-            advised_threshold = ctx_policy_advice.get("compaction_threshold")
-            if isinstance(advised_threshold, int) and advised_threshold > 0:
-                ctx_threshold = advised_threshold
-                # Store the advisor-provided threshold in context so subsequent turns use it
-                context = dict(context)
-                context["_advised_compaction_threshold"] = ctx_threshold
-        # --- End context policy advisory ---
-
         # Cache provider tools list — it does not change within the loop
         cached_provider_tools: list[dict[str, Any]] | None = None
         read_file_cache: dict[str, dict[str, Any]] = {}
@@ -720,23 +822,6 @@ class ReactRunnerMixin:
                 provider_turn_id=provider_turn["id"],
                 decision=preflight_result.get("decision"),
             )
-            if provider_context.get("_provider_preflight_runtime_action") == "execute_split":
-                self._store.complete_provider_turn(
-                    turn_id=provider_turn["id"],
-                    finish_reason="provider_preflight_split",
-                    usage={},
-                    tool_call_count=0,
-                    turn_decision="continue",
-                    thought_summary="Provider preflight recommended bounded task splitting before the model call.",
-                    response_transport="provider_preflight_split",
-                )
-                return {
-                    "status": "provider_preflight_split",
-                    "summary": "Provider preflight recommended bounded task splitting before the model call.",
-                    "preflight_split_plan": provider_context.get("_provider_preflight_split_plan"),
-                    "preflight": provider_context.get("_provider_preflight"),
-                    "tool_results": tool_results,
-                }
             self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
             # --- ContextSnapshot: capture what the model will see ---
             snapshot_meta = (context.get("_build_result") or context).get("snapshot_metadata", {}) or {}
@@ -814,19 +899,15 @@ class ReactRunnerMixin:
             if task["status"] == "cancelled":
                 self._store.cancel_provider_turn(turn_id=provider_turn["id"])
                 return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
-            deterministic_fallback_allowed = self._should_use_deterministic_fallback(
-                goal=goal,
-                context=context,
-            )
             parsed = self._parse_provider_response(
                 response,
-                allow_fallback=deterministic_fallback_allowed and not react_started and steps == 0,
+                allow_fallback=False,
                 allow_plain_message_final=react_started,
             )
             # --- Structured turn result for decision tracing ---
             turn_result = self._parse_turn_result(
                 response,
-                allow_fallback=deterministic_fallback_allowed and not react_started and steps == 0,
+                allow_fallback=False,
                 allow_plain_message_final=react_started,
             )
             # --- ProviderTurn: mark completed with turn decision ---
@@ -1322,7 +1403,7 @@ class ReactRunnerMixin:
         dimensions["steps"] = step_dimension
         budget_state["dimensions"] = dimensions
         workflow["budget"] = budget_state
-        advice = self._budget_convergence_decision(
+        convergence_decision = self._budget_convergence_decision(
             session_id=session_id,
             task=task,
             goal=goal,
@@ -1339,25 +1420,23 @@ class ReactRunnerMixin:
             "toolResultCount": len(tool_results),
             "resumable": True,
             "requiresUserDecision": True,
-            "recommendedAction": self._budget_convergence_runtime_action(advice),
+            "recommendedAction": self._budget_convergence_runtime_action(convergence_decision),
             "availableActions": ["review_partial", "continue_with_more_budget", "change_goal", "stop"],
             "budgetPressure": "exhausted",
-            "source": advice.get("source") or "runtime",
+            "source": convergence_decision.get("source") or "runtime",
         }
-        if advice.get("proposalRecordId"):
-            convergence["proposalRecordId"] = advice["proposalRecordId"]
-        if advice.get("advisorProposalId"):
-            convergence["advisorProposalId"] = advice["advisorProposalId"]
-        if advice.get("reason"):
-            convergence["advisorReason"] = advice["reason"]
-        if advice.get("handoffFocus"):
-            convergence["handoffFocus"] = advice["handoffFocus"]
-        if advice.get("resumePolicy"):
-            convergence["resumePolicy"] = advice["resumePolicy"]
-        if advice.get("nextUserOptions"):
-            convergence["nextUserOptions"] = advice["nextUserOptions"]
-        if advice.get("constraints"):
-            convergence["constraints"] = advice["constraints"]
+        if convergence_decision.get("proposalRecordId"):
+            convergence["proposalRecordId"] = convergence_decision["proposalRecordId"]
+        if convergence_decision.get("reason"):
+            convergence["reasonDetail"] = convergence_decision["reason"]
+        if convergence_decision.get("handoffFocus"):
+            convergence["handoffFocus"] = convergence_decision["handoffFocus"]
+        if convergence_decision.get("resumePolicy"):
+            convergence["resumePolicy"] = convergence_decision["resumePolicy"]
+        if convergence_decision.get("nextUserOptions"):
+            convergence["nextUserOptions"] = convergence_decision["nextUserOptions"]
+        if convergence_decision.get("constraints"):
+            convergence["constraints"] = convergence_decision["constraints"]
         workflow["convergence"] = convergence
         routing["mainWorkflow"] = workflow
         task = self._store.update_task(task_id=task["id"], routing=routing)
@@ -1388,8 +1467,8 @@ class ReactRunnerMixin:
         no_successful_tool_results = result_counts["total"] > 0 and result_counts["completed"] == 0
         if not no_successful_tool_results and convergence.get("recommendedAction") == "review_partial":
             question = str(
-                advice.get("userMessage")
-                or advice.get("handoffFocus")
+                convergence_decision.get("userMessage")
+                or convergence_decision.get("handoffFocus")
                 or self._budget_handoff_focus(goal=goal, tool_results=tool_results)
                 or "当前任务已达到步骤预算，需要你确认下一步。"
             ).strip()
@@ -1409,10 +1488,10 @@ class ReactRunnerMixin:
                 react_started=react_started,
                 patch_repair_attempts=patch_repair_attempts,
                 question=question,
-                summary=str(advice.get("reason") or "任务已达到步骤预算，需要用户决定是否继续。"),
+                summary=str(convergence_decision.get("reason") or "任务已达到步骤预算，需要用户决定是否继续。"),
                 reason="max_steps_exhausted",
-                resume_policy=str(advice.get("resumePolicy") or "requires_user_budget_update"),
-                options=advice.get("nextUserOptions") or [
+                resume_policy=str(convergence_decision.get("resumePolicy") or "requires_user_budget_update"),
+                options=convergence_decision.get("nextUserOptions") or [
                     {
                         "label": "继续并追加预算",
                         "value": "continue_with_more_budget",
@@ -1429,7 +1508,7 @@ class ReactRunnerMixin:
                         "description": "保留当前进展并整理结论。",
                     },
                 ],
-                source=str(advice.get("source") or "budget_convergence"),
+                source=str(convergence_decision.get("source") or "budget_convergence"),
             )
         return {
             "status": "failed",
@@ -1627,8 +1706,8 @@ class ReactRunnerMixin:
             },
         )
 
-    def _budget_convergence_runtime_action(self, advice: dict[str, Any]) -> str:
-        action = str(advice.get("action") or "")
+    def _budget_convergence_runtime_action(self, decision: dict[str, Any]) -> str:
+        action = str(decision.get("action") or "")
         if action in {"pause_for_user", "ask_user", "request_more_budget"}:
             return "review_partial"
         if action == "fail":
@@ -1650,135 +1729,25 @@ class ReactRunnerMixin:
         max_steps: int,
         reason: str,
     ) -> dict[str, Any]:
-        fallback = {
+        decision = {
             "action": "pause_for_user",
             "reason": reason,
             "handoffFocus": self._budget_handoff_focus(goal=goal, tool_results=tool_results),
             "resumePolicy": "requires_user_follow_up",
             "source": "runtime_fallback",
         }
-        advisor = getattr(self, "_decision_advisor", None)
-        if advisor is None:
-            return fallback
-        advice = None
-        try:
-            input_context = {
-                "goal": goal,
-                "budget_state": budget_state,
-                "task_status": task.get("status"),
-                "automation": ((task.get("routing") or {}).get("mainWorkflow") or {}).get("automation"),
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="agent.decision.budget_convergence",
+            payload={
+                "decision": decision,
+                "budget": budget_state,
                 "reason": reason,
-                "steps": steps,
-                "max_steps": max_steps,
-                "tool_results_summary": self._tool_results_summary_for_budget(tool_results),
-                "main_workflow": ((task.get("routing") or {}).get("mainWorkflow"))
-                if isinstance(task.get("routing"), dict)
-                else None,
-                "config": context.get("config") if isinstance(context, dict) else None,
-            }
-            advice = advisor.advise("budget_convergence", input_context)
-            payload = advice.payload if isinstance(advice.payload, dict) else {}
-            if advice.accepted and payload.get("action"):
-                decision = {
-                    **fallback,
-                    "action": str(payload.get("action")),
-                    "reason": str(payload.get("reason") or advice.rationale or reason)[:500],
-                    "source": advice.source,
-                    "advisorProposalId": advice.proposal_id,
-                }
-                self._copy_optional_budget_advice_fields(payload, decision)
-            else:
-                decision = {
-                    **fallback,
-                    "source": getattr(advice, "source", "rule_fallback"),
-                    "fallbackReason": getattr(advice, "fallback_reason", None),
-                }
-            record_id = self._record_budget_convergence_proposal(
-                session_id=session_id,
-                task=task,
-                goal=goal,
-                advice=advice,
-                runtime_decision=decision,
-            )
-            if record_id:
-                decision["proposalRecordId"] = record_id
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type="agent.decision.budget_convergence",
-                payload={
-                    "decision": decision,
-                    "budget": budget_state,
-                    "reason": reason,
-                },
-                visibility="panel",
-            )
-            return decision
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Budget convergence advisor failed for task %s: %s", task.get("id"), exc)
-            return fallback
-
-    @staticmethod
-    def _copy_optional_budget_advice_fields(payload: dict[str, Any], decision: dict[str, Any]) -> None:
-        field_map = {
-            "handoff_focus": "handoffFocus",
-            "resume_policy": "resumePolicy",
-            "next_user_options": "nextUserOptions",
-            "constraints": "constraints",
-            "userMessage": "userMessage",
-        }
-        for source_key, target_key in field_map.items():
-            value = payload.get(source_key)
-            if value:
-                decision[target_key] = value
-
-    def _record_budget_convergence_proposal(
-        self,
-        *,
-        session_id: str,
-        task: dict[str, Any],
-        goal: str,
-        advice: Any,
-        runtime_decision: dict[str, Any],
-    ) -> str | None:
-        try:
-            proposal = dict(getattr(advice, "payload", None) or {})
-            proposal.setdefault("action", runtime_decision.get("action"))
-            proposal["runtimeAction"] = runtime_decision.get("action")
-            source = {
-                "type": getattr(advice, "source", runtime_decision.get("source") or "runtime"),
-                "confidence": getattr(advice, "confidence", None),
-                "rationale": getattr(advice, "rationale", None),
-                "fallbackReason": getattr(advice, "fallback_reason", None),
-                "advisorProposalId": getattr(advice, "proposal_id", None),
-            }
-            model_id = getattr(advice, "model_id", None)
-            if model_id:
-                source["model_id"] = model_id
-            record = self._store.create_proposal({
-                "kind": "budget_convergence",
-                "sessionId": session_id,
-                "taskId": task["id"],
-                "proposal": proposal,
-                "source": source,
-                "inputSummary": str(goal or "")[:500],
-                "modelId": model_id,
-            })
-            proposal_id = record["proposal"]["id"]
-            accepted = bool(getattr(advice, "accepted", False))
-            reasons = [] if accepted else (
-                list(getattr(advice, "validation_reasons", None) or [])
-                or [str(getattr(advice, "fallback_reason", None) or "advisor unavailable")]
-            )
-            self._store.validate_proposal({
-                "proposalId": proposal_id,
-                "status": "accepted" if accepted else "rejected",
-                "reasons": reasons,
-            })
-            return proposal_id
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to record budget convergence proposal", exc_info=True)
-            return None
+            },
+            visibility="trace",
+        )
+        return decision
 
     @staticmethod
     def _budget_handoff_focus(*, goal: str, tool_results: list[dict[str, Any]]) -> str:
@@ -1790,27 +1759,22 @@ class ReactRunnerMixin:
         )
 
     @staticmethod
-    def _tool_results_summary_for_budget(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
-        recent: list[dict[str, Any]] = []
-        completed = 0
-        failed = 0
+    def _tool_results_summary_for_budget(tool_results: list[dict[str, Any]]) -> dict[str, int]:
+        counts = {"total": len(tool_results), "completed": 0, "failed": 0, "waiting": 0, "partial": 0}
         for item in tool_results:
-            result = item.get("result") if isinstance(item, dict) else None
+            result = item.get("result")
             status = result.get("status") if isinstance(result, dict) else None
-            if status in {None, "completed", "applied", "written"}:
-                completed += 1
-            if status in {"failed", "error", "timeout"}:
-                failed += 1
-            recent.append({
-                "name": item.get("name"),
-                "status": status or "completed",
-            })
-        return {
-            "total": len(tool_results),
-            "completed": completed,
-            "failed": failed,
-            "recent": recent[-5:],
-        }
+            ok = result.get("ok") if isinstance(result, dict) else None
+            if status in {"waiting_approval", "waiting_user", "pending"}:
+                counts["waiting"] += 1
+            elif status in {"failed", "error", "timeout"} or ok is False:
+                counts["failed"] += 1
+            elif status == "partial":
+                counts["partial"] += 1
+                counts["completed"] += 1
+            else:
+                counts["completed"] += 1
+        return counts
 
     def _pause_react_for_user_question(
         self,
@@ -2859,11 +2823,6 @@ class ReactRunnerMixin:
             return f"{text.rstrip()}\n[truncated]"
         return text
 
-    # Strategies that are allowed to create child tasks via subagent tools.
-    _TASK_TOOL_STRATEGIES: frozenset[str] = frozenset({
-        "plan_execute", "plan_supervise", "plan_swarm",
-    })
-
     def _provider_tools(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         if context.get("minimal") is True or context.get("disableTools") is True:
             return []
@@ -2881,14 +2840,6 @@ class ReactRunnerMixin:
         for schema in self._tool_registry.schemas:
             if isinstance(schema, dict) and isinstance(schema.get("name"), str):
                 tools_by_name.setdefault(schema["name"], schema)
-        # 3. Remove subagent tools when the routing strategy does not need them,
-        #    so that the LLM cannot spontaneously create child tasks for simple queries.
-        routing = context.get("routing")
-        if isinstance(routing, dict):
-            strategy = routing.get("strategy", "")
-            if strategy not in self._TASK_TOOL_STRATEGIES:
-                tools_by_name.pop("agent", None)
-                tools_by_name.pop("task", None)
         return [tools_by_name[name] for name in sorted(tools_by_name)]
 
     def _provider_tools_for_turn(
@@ -3037,95 +2988,6 @@ class ReactRunnerMixin:
             return threshold
         return 256000
 
-    def _consult_context_policy_advisor(
-        self,
-        task: dict[str, Any],
-        goal: str,
-        current_threshold: int,
-        context: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        advisor = getattr(self, "_decision_advisor", None)
-        if advisor is None:
-            return None
-        if not self._should_consult_context_policy_advisor(task, current_threshold, context):
-            return None
-        try:
-            input_context: dict[str, Any] = {
-                "goal": goal[:2000],
-                "token_budget": current_threshold,
-            }
-            config = context.get("config") if isinstance(context, dict) else None
-            if isinstance(config, dict):
-                input_context["config"] = config
-            result = advisor.advise("context_policy", input_context)
-            # Emit trace event for the decision
-            if hasattr(self._store, "append_trace_event"):
-                self._store.append_trace_event(
-                    task_id=task["id"],
-                    session_id=task.get("sessionId"),
-                    event_type="agent.decision.context_policy",
-                    source="advisor",
-                    related_id=result.proposal_id,
-                    payload={
-                        "proposalId": result.proposal_id,
-                        "accepted": result.accepted,
-                        "source": result.source,
-                        "rationale": result.rationale,
-                        "confidence": result.confidence,
-                        "currentThreshold": current_threshold,
-                        "advisedThreshold": result.payload.get("compaction_threshold") if result.accepted else None,
-                        "fallbackReason": result.fallback_reason,
-                    },
-                )
-            if result.accepted:
-                return result.payload
-            return None
-        except Exception as exc:
-            logger.warning("Context policy advisor call failed for task %s: %s", task.get("id"), exc)
-            return None
-
-    def _should_consult_context_policy_advisor(
-        self,
-        task: dict[str, Any],
-        current_threshold: int,
-        context: dict[str, Any],
-    ) -> bool:
-        if context.get("_skip_context_policy_advisor") is True:
-            return False
-        if context.get("_child_worker") is True or task.get("role") != "root":
-            return bool(self._advisor_config(context).get("enableChildContextPolicyAdvisor"))
-        budget_stats = context.get("budgetStats") if isinstance(context, dict) else None
-        estimated_tokens = budget_stats.get("estimatedTokens") if isinstance(budget_stats, dict) else None
-        try:
-            estimated = int(estimated_tokens)
-            threshold = max(1, int(current_threshold))
-        except (TypeError, ValueError):
-            return False
-        near_budget_ratio = self._advisor_context_policy_near_budget_ratio(context)
-        return estimated >= int(threshold * near_budget_ratio)
-
-    def _advisor_context_policy_near_budget_ratio(self, context: dict[str, Any]) -> float:
-        raw_ratio = self._advisor_config(context).get("contextPolicyNearBudgetRatio", 0.92)
-        try:
-            ratio = float(raw_ratio)
-        except (TypeError, ValueError):
-            return 0.92
-        return min(0.98, max(0.1, ratio))
-
-    def _advisor_config(self, context: dict[str, Any]) -> dict[str, Any]:
-        config = context.get("config") if isinstance(context, dict) else None
-        if not isinstance(config, dict):
-            return {}
-        advisor = config.get("advisor")
-        if isinstance(advisor, dict):
-            return advisor
-        autonomy = config.get("autonomy")
-        if isinstance(autonomy, dict):
-            advisor = autonomy.get("advisor")
-            if isinstance(advisor, dict):
-                return advisor
-        return {}
-
     def _autonomy_profile_int(self, context: dict[str, Any], key: str) -> int | None:
         profile = None
         routing = context.get("routing")
@@ -3183,99 +3045,6 @@ class ReactRunnerMixin:
             payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
         )
 
-    def _run_minimal_loop(
-        self,
-        session_id: str,
-        task: dict[str, Any],
-        goal: str,
-        context: dict[str, Any],
-        budget: WorkerBudget | None = None,
-    ) -> list[dict[str, Any]]:
-        tool_results: list[dict[str, Any]] = []
-        tool_sequence = self._annotate_tool_spec_batch(self._provider.choose_tool_sequence(goal=goal, context=context))
-
-        for index, tool_spec in enumerate(tool_sequence):
-            tool_result = self._execute_tool(
-                session_id=session_id,
-                task=task,
-                tool_spec=tool_spec,
-                budget=budget,
-            )
-            tool_results.append(tool_result)
-            if self._is_patch_validation_failure(tool_spec["name"], tool_result["result"]):
-                raise RuntimeError(self._tool_failure_summary(tool_spec, tool_result["result"]))
-            if task["status"] == "waiting_approval":
-                self._publish(
-                    session_id=session_id,
-                    task=task,
-                    event_type="task.updated",
-                    payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
-                )
-                return tool_results
-            task["plan"] = self._planner.advance(
-                task["plan"],
-                tool_spec["plan_step_id"],
-                next_step_id=self._next_minimal_loop_step_id(
-                    task["plan"],
-                    tool_sequence,
-                    current_index=index,
-                    completed_step_id=tool_spec["plan_step_id"],
-                ),
-            )
-            updated_task = self._store.update_task(
-                task_id=task["id"],
-                status=task["status"],
-                plan=task["plan"],
-            )
-            task.update(updated_task)
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type="task.updated",
-                payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
-            )
-
-        follow_up_tool = self._provider.pick_follow_up_tool(context=context, tool_results=tool_results)
-        if follow_up_tool is not None:
-            follow_up_tool = self._annotate_follow_up_tool_spec(follow_up_tool, tool_results)
-            tool_results.append(
-                self._execute_tool(
-                    session_id=session_id,
-                    task=task,
-                    tool_spec=follow_up_tool,
-                    budget=budget,
-                )
-            )
-
-        final_completed_step_id = self._last_completed_minimal_step_id(tool_sequence, tool_results)
-        if final_completed_step_id is not None:
-            next_step_id = self._next_plan_step_id(task["plan"], final_completed_step_id)
-            if next_step_id is not None:
-                task["plan"] = self._planner.advance(
-                    task["plan"],
-                    final_completed_step_id,
-                    next_step_id=next_step_id,
-                )
-        updated_task = self._store.update_task(
-            task_id=task["id"],
-            status=task["status"],
-            plan=task["plan"],
-        )
-        task.update(updated_task)
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="task.updated",
-            payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
-        )
-        self._publish(
-            session_id=session_id,
-            task=task,
-            event_type="assistant.token",
-            payload={"delta": "Completed the minimal tool loop and preparing a summary..."},
-        )
-        return tool_results
-
     def _consume_budget_from_provider_response(
         self,
         *,
@@ -3301,43 +3070,6 @@ class ReactRunnerMixin:
                 "budget": budget.to_metadata(),
             },
         )
-
-    def _next_step_id(self, tool_sequence: list[dict[str, Any]], current_index: int) -> str | None:
-        if current_index + 1 >= len(tool_sequence):
-            return "summarize-findings"
-        return tool_sequence[current_index + 1]["plan_step_id"]
-
-    def _next_minimal_loop_step_id(
-        self,
-        plan: list[dict[str, Any]],
-        tool_sequence: list[dict[str, Any]],
-        *,
-        current_index: int,
-        completed_step_id: str,
-    ) -> str | None:
-        next_plan_step = self._next_plan_step_id(plan, completed_step_id)
-        if next_plan_step is not None:
-            return next_plan_step
-        return self._next_step_id(tool_sequence, current_index)
-
-    def _last_completed_minimal_step_id(
-        self,
-        tool_sequence: list[dict[str, Any]],
-        tool_results: list[dict[str, Any]],
-    ) -> str | None:
-        completed_step_ids = [
-            spec.get("plan_step_id")
-            for spec in tool_sequence
-            if isinstance(spec.get("plan_step_id"), str)
-        ]
-        if tool_results:
-            maybe_follow_up = self._plan_step_for_tool(tool_results[-1]["name"])
-            if isinstance(maybe_follow_up, str):
-                completed_step_ids.append(maybe_follow_up)
-        for step_id in reversed(completed_step_ids):
-            if isinstance(step_id, str) and step_id:
-                return step_id
-        return None
 
     def _next_plan_step_id(self, plan: list[dict[str, Any]], completed_step_id: str) -> str | None:
         seen_completed = False

@@ -311,6 +311,14 @@ function normalizeForTextComparison(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function compactForTextComparison(value: string) {
+  return normalizeRenderedMarkdownText(value)
+    .normalize("NFKC")
+    .replace(/复制|引用/g, "")
+    .replace(/[^A-Za-z0-9\u4e00-\u9fff]+/g, "")
+    .toLowerCase();
+}
+
 function normalizeRenderedMarkdownText(value: string) {
   return normalizeForTextComparison(
     value
@@ -322,7 +330,7 @@ function normalizeRenderedMarkdownText(value: string) {
 }
 
 function visibleComparableLength(value: string) {
-  return Array.from(value.replace(/\s+/g, "")).length;
+  return Array.from(compactForTextComparison(value)).length;
 }
 
 function meaningfulTextFragments(value: string) {
@@ -341,8 +349,72 @@ function meaningfulTextFragments(value: string) {
   return visibleComparableLength(normalized) >= minFragmentLength ? [normalized.slice(0, 160)] : [];
 }
 
+function visibleAssistantFragmentCoverage(fragments: string[], assistantText: string) {
+  if (!fragments.length) {
+    return { matched: [] as string[], ratio: 0 };
+  }
+  const matched = fragments.filter((fragment) => assistantText.includes(normalizeForTextComparison(fragment)));
+  return {
+    matched,
+    ratio: matched.length / fragments.length,
+  };
+}
+
+function robustMeaningfulTextFragments(value: string) {
+  const normalized = normalizeRenderedMarkdownText(value);
+  const minFragmentLength = /[\u4e00-\u9fff]/.test(normalized) ? 8 : 16;
+  const clauses = normalized
+    .split(/[\r\n]+|[.!?\u3002\uff01\uff1f;:\uff1b\uff1a]+|(?:\s+-\s+)|\s{2,}/)
+    .map((fragment) => fragment.trim())
+    .filter((fragment) =>
+      visibleComparableLength(fragment) >= minFragmentLength &&
+      /[A-Za-z0-9\u4e00-\u9fff]/.test(fragment),
+    );
+  const fragments = clauses.flatMap((fragment) => {
+    const compact = compactForTextComparison(fragment);
+    if (!/[\u4e00-\u9fff]/.test(fragment) || compact.length <= 28) {
+      return [fragment];
+    }
+    const chars = Array.from(compact);
+    const chunks: string[] = [];
+    for (let index = 0; index < chars.length; index += 12) {
+      const chunk = chars.slice(index, index + 16).join("");
+      if (chunk.length >= minFragmentLength) {
+        chunks.push(chunk);
+      }
+      if (chunks.length >= 4) {
+        break;
+      }
+    }
+    return chunks.length ? chunks : [fragment];
+  });
+  if (fragments.length) {
+    return fragments.slice(0, 20);
+  }
+  return visibleComparableLength(normalized) >= minFragmentLength ? [normalized.slice(0, 160)] : [];
+}
+
+function robustVisibleAssistantFragmentCoverage(fragments: string[], assistantText: string) {
+  if (!fragments.length) {
+    return { matched: [] as string[], ratio: 0 };
+  }
+  const compactAssistantText = compactForTextComparison(assistantText);
+  const matched = fragments.filter((fragment) => {
+    const normalizedFragment = normalizeForTextComparison(fragment);
+    if (assistantText.includes(normalizedFragment)) {
+      return true;
+    }
+    const compactFragment = compactForTextComparison(normalizedFragment);
+    return compactFragment.length >= 8 && compactAssistantText.includes(compactFragment);
+  });
+  return {
+    matched,
+    ratio: matched.length / fragments.length,
+  };
+}
+
 async function waitForAssistantContentVisible(assistantContent: string, timeoutMs = 30_000) {
-  const fragments = meaningfulTextFragments(assistantContent);
+  const fragments = robustMeaningfulTextFragments(assistantContent);
   if (!fragments.length) {
     throw new Error("Cannot verify assistant UI visibility because the persisted assistant content has no meaningful text fragment.");
   }
@@ -368,12 +440,15 @@ async function waitForAssistantContentVisible(assistantContent: string, timeoutM
           count: visibleAssistantNodes.length,
           sample: assistantText.slice(0, 800),
         };
-        const matched = fragments.find((fragment) => assistantText.includes(fragment));
-        if (!matched) {
+        const { matched, ratio } = robustVisibleAssistantFragmentCoverage(fragments, assistantText);
+        if (!matched.length) {
           return false;
         }
         return {
-          matchedFragment: matched.slice(0, 180),
+          matchedFragment: matched[0].slice(0, 180),
+          matchedFragments: matched.length,
+          expectedFragments: fragments.length,
+          coverage: ratio,
           assistantBubbleCount: visibleAssistantNodes.length,
           assistantTextSample: assistantText.slice(0, 500),
         };

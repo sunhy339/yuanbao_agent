@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
-
 import pytest
 
 from local_agent_runtime.event_bus import EventBus
-from local_agent_runtime.policy.decision_advisor import AdviceResult
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.store.sqlite_store import SQLiteStore
@@ -22,8 +19,6 @@ from local_agent_runtime.tools.registry import ToolRegistry
 def _make_runtime(
     tmp_path: Any,
     tools: dict[str, Any] | None = None,
-    *,
-    decision_advisor: Any | None = None,
 ) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
@@ -33,7 +28,6 @@ def _make_runtime(
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=None,
-        decision_advisor=decision_advisor,
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -125,157 +119,6 @@ class TestMcpToolLifecycleEvents:
         assert "connection refused" in mcp_failed[0]["payload"]["error"]
         # No completed event for failed tool
         assert len(mcp_completed) == 0
-
-    def test_mcp_tool_failure_records_advisor_recovery_decision(self, tmp_path: Any) -> None:
-        """Failed MCP tools ask advisor for a bounded recovery action."""
-
-        class Advisor:
-            def __init__(self) -> None:
-                self.calls: list[tuple[str, dict[str, Any]]] = []
-
-            def advise(self, kind: str, context: dict[str, Any]) -> AdviceResult:
-                self.calls.append((kind, context))
-                return AdviceResult(
-                    proposal_id="tool_recovery_1",
-                    kind=kind,
-                    payload={
-                        "action": "refresh_mcp_tools",
-                        "refreshMcpTools": True,
-                        "reason": "Refresh MCP tools, then retry the lookup through the normal tool pipeline.",
-                    },
-                    confidence=0.88,
-                    rationale="The MCP server appears disconnected.",
-                    source="llm",
-                    accepted=True,
-                )
-
-        def _failing_tool(args: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "status": "failed",
-                "ok": False,
-                "error": "MCP server kb is unavailable",
-            }
-
-        advisor = Advisor()
-        runtime = _make_runtime(
-            tmp_path,
-            tools={"mcp__kb__lookup": _failing_tool},
-            decision_advisor=advisor,
-        )
-        session = _open_session(runtime, tmp_path)
-        task = runtime.store.create_task(
-            session_id=session["id"],
-            task_type="main",
-            goal="Use KB evidence",
-            plan=[],
-        )
-        tool_spec = {
-            "name": "mcp__kb__lookup",
-            "arguments": {"query": "release checklist", "apiToken": "secret"},
-            "start_token": "<tool_call_begin>",
-            "end_token": "<tool_call_end>",
-        }
-
-        tool_result = runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
-
-        assert advisor.calls[0][0] == "tool_recovery"
-        advisor_context = advisor.calls[0][1]
-        assert advisor_context["tool_failure"]["failureKind"] == "mcp_server_unavailable"
-        assert advisor_context["tool_failure"]["mcpServerId"] == "kb"
-        assert advisor_context["tool_failure"]["arguments"]["apiToken"] == "<redacted>"
-        result = tool_result["result"]
-        assert result["failureKind"] == "mcp_server_unavailable"
-        assert result["recoveryDecision"]["action"] == "refresh_mcp_tools"
-        assert result["recoveryDecision"]["advisorAccepted"] is True
-        assert result["recoveryDecision"]["execution"] == "approval_pending"
-        assert result["recoveryDecision"]["followup"]["toolRecoveryAction"] == "refresh_mcp_tools"
-        assert result["recoveryDecision"]["followup"]["approvalKind"] == "advisor_tool"
-        approval_id = result["recoveryDecision"]["followup"]["approvalId"]
-        approval = runtime.store.get_approval({"approvalId": approval_id})["approval"]
-        assert approval["kind"] == "advisor_tool"
-        assert "toolRecoveryAction" in approval["requestJson"]
-        recovery_events = [e for e in runtime.events if e["type"] == "agent.decision.tool_recovery"]
-        assert len(recovery_events) == 1
-        assert recovery_events[0]["payload"]["decision"]["action"] == "refresh_mcp_tools"
-        approval_events = [
-            e for e in runtime.events
-            if e["type"] == "approval.requested" and e["payload"].get("source") == "tool_recovery_advisor"
-        ]
-        assert approval_events[0]["payload"]["approvalId"] == approval_id
-        proposals = runtime.store.list_proposals({"taskId": task["id"], "kind": "tool_recovery"})["proposals"]
-        assert len(proposals) == 2
-        assert {proposal["source"]["type"] for proposal in proposals} == {"llm", "runtime_bounded_recovery"}
-
-        refreshed_schema = {
-            "name": "mcp__kb__lookup",
-            "description": "Lookup KB",
-            "input_schema": {"type": "object", "properties": {}},
-        }
-        with patch.object(runtime.orchestrator._mcp_manager, "sync_refresh_tools", return_value=[refreshed_schema]) as refresh:
-            runtime.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
-
-        refresh.assert_called_once_with("kb")
-        executed_events = [e for e in runtime.events if e["type"] == "tool.recovery.executed"]
-        assert executed_events[-1]["payload"]["toolRecoveryAction"] == "refresh_mcp_tools"
-        assert executed_events[-1]["payload"]["serverId"] == "kb"
-
-    def test_partial_tool_result_uses_recovery_advisor(self, tmp_path: Any) -> None:
-        """Partial responses are recovery decisions, not silent success."""
-
-        class Advisor:
-            def __init__(self) -> None:
-                self.calls: list[tuple[str, dict[str, Any]]] = []
-
-            def advise(self, kind: str, context: dict[str, Any]) -> AdviceResult:
-                self.calls.append((kind, context))
-                return AdviceResult(
-                    proposal_id="tool_recovery_partial",
-                    kind=kind,
-                    payload={
-                        "action": "use_partial_evidence",
-                        "usePartialEvidence": True,
-                        "reason": "The partial result is enough for this task.",
-                    },
-                    confidence=0.76,
-                    rationale="Partial response contains usable evidence.",
-                    source="llm",
-                    accepted=True,
-                )
-
-        def _partial_tool(args: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "status": "partial",
-                "ok": True,
-                "summary": "Only 3 of 10 records returned.",
-            }
-
-        advisor = Advisor()
-        runtime = _make_runtime(
-            tmp_path,
-            tools={"mcp__kb__lookup": _partial_tool},
-            decision_advisor=advisor,
-        )
-        session = _open_session(runtime, tmp_path)
-        task = runtime.store.create_task(
-            session_id=session["id"],
-            task_type="main",
-            goal="Use partial KB evidence",
-            plan=[],
-        )
-        tool_spec = {
-            "name": "mcp__kb__lookup",
-            "arguments": {"query": "release checklist"},
-            "start_token": "<tool_call_begin>",
-            "end_token": "<tool_call_end>",
-        }
-
-        tool_result = runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
-
-        assert advisor.calls[0][0] == "tool_recovery"
-        assert advisor.calls[0][1]["tool_failure"]["failureKind"] == "partial_response"
-        assert tool_result["result"]["recoveryDecision"]["action"] == "use_partial_evidence"
-        assert [e for e in runtime.events if e["type"] == "tool.failed"]
-        assert [e for e in runtime.events if e["type"] == "agent.decision.tool_recovery"]
 
     def test_non_mcp_tool_no_mcp_events(self, tmp_path: Any) -> None:
         """Non-MCP tool should not emit any mcp.tool.* events."""

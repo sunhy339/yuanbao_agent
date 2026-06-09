@@ -516,7 +516,6 @@ class SQLiteStore(
             )
             if yuanbao is not None:
                 record["yuanbao"] = yuanbao
-                record["hahaCc"] = yuanbao
         return record
 
     def _require_non_empty(self, params: dict[str, Any], key: str) -> str:

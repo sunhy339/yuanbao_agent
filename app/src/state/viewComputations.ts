@@ -577,7 +577,6 @@ function buildCompletionEvidenceView(request: Record<string, unknown>): Approval
     countMetric(counts, "failedAcceptanceCriteria", "failed criteria"),
     countMetric(counts, "unverifiedAcceptanceCriteria", "unverified criteria"),
     countMetric(counts, "failedToolResults", "tool failures"),
-    ...advisorEvidenceAdapterMetrics(advisorEvidenceAdapters),
   ].filter((item): item is { label: string; value: string } => Boolean(item));
 
   const issues = [
@@ -585,7 +584,6 @@ function buildCompletionEvidenceView(request: Record<string, unknown>): Approval
     ...summarizeToolFailures(evidence["unresolvedToolFailures"]),
     ...summarizeVerificationGap(gateStatus, evidence),
     ...summarizeVerificationRequirements(evidence["verificationRequirements"]),
-    ...summarizeAdvisorEvidenceAdapters(advisorEvidenceAdapters),
   ].slice(0, 5);
 
   return {
@@ -764,39 +762,6 @@ function readAdvisorEvidenceAdapters(raw: unknown): ApprovalCompletionEvidenceVi
     }
   }
   return summary.status || summary.adapters.length || summary.counts ? summary : undefined;
-}
-
-function advisorEvidenceAdapterMetrics(
-  summary: ApprovalCompletionEvidenceView["advisorEvidenceAdapters"] | undefined,
-): Array<{ label: string; value: string }> {
-  if (!summary) return [];
-  const metrics: Array<{ label: string; value: string }> = [];
-  const counts = summary.counts;
-  if (counts?.total && counts.total > 0) metrics.push({ label: "evidence adapters", value: String(counts.total) });
-  if (counts?.ready && counts.ready > 0) metrics.push({ label: "adapters ready", value: String(counts.ready) });
-  if (counts?.approvalRequired && counts.approvalRequired > 0) metrics.push({ label: "adapter approvals", value: String(counts.approvalRequired) });
-  if (counts?.blocked && counts.blocked > 0) metrics.push({ label: "adapters blocked", value: String(counts.blocked) });
-  if (counts?.missingAdapter && counts.missingAdapter > 0) metrics.push({ label: "adapters missing", value: String(counts.missingAdapter) });
-  if (!metrics.length && summary.adapters.length) {
-    metrics.push({ label: "evidence adapters", value: String(summary.adapters.length) });
-  }
-  return metrics;
-}
-
-function summarizeAdvisorEvidenceAdapters(
-  summary: ApprovalCompletionEvidenceView["advisorEvidenceAdapters"] | undefined,
-): string[] {
-  if (!summary) return [];
-  return summary.adapters
-    .filter((adapter) => {
-      const status = adapter.status ?? adapter.executorState ?? summary.status;
-      return status === "blocked" || status === "missing_adapter" || status === "approval_required" || status === "failed" || status === "rejected";
-    })
-    .map((adapter) => {
-      const kind = adapter.adapterKind ?? "evidence adapter";
-      const status = adapter.status ?? adapter.executorState ?? summary.status ?? "needs review";
-      return `${kind}: ${adapter.summary ?? status}`;
-    });
 }
 
 function summarizeAcceptanceIssues(value: unknown): string[] {

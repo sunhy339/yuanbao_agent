@@ -21,16 +21,8 @@ from ..services.collaboration_service import CollaborationService
 from ..services.session_service import SessionService
 from ..services.subagent_service import SubagentService
 from ..services.worker_runner import WorkerRunner
-from ..router import MetaRouter, RoutingDecision
-from ..policy.decision_advisor import DecisionAdvisor
 from ..skills.registry import SkillRegistry
 from ..mcp.client import McpClientManager
-from ..reflection.evaluator import ReflectionEvaluator
-from ..reflection.types import ReflectionConfig
-from ..planner.decomposer import TaskDecomposer
-from ..planner.dag_executor import DAGExecutor
-from ..planner.coverage import CoverageEvaluator
-from ..orchestration import SupervisorOrchestrator, SwarmOrchestrator
 from ..services.hook_service import HookService
 from ..store.sqlite_store import SQLiteStore
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS
@@ -88,10 +80,8 @@ class Orchestrator(
         event_bus: EventBus,
         tool_registry: Any,
         provider: Any,
-        meta_router: MetaRouter | None = None,
         memory_manager: MemoryManager | None = None,
         *,
-        decision_advisor: DecisionAdvisor | None = None,
         hook_service: HookService | None = None,
         worktree_service: Any | None = None,
         _skip_orphan_cleanup: bool = False,
@@ -100,14 +90,9 @@ class Orchestrator(
         self._event_bus = event_bus
         self._tool_registry = tool_registry
         self._provider = provider
-        self._decision_advisor = decision_advisor
         self._hook_service = hook_service
         self._worktree_service = worktree_service
         self._task_state_machine = TaskStateMachine()
-        self._meta_router = meta_router or MetaRouter(
-            provider=None,
-            decision_advisor=decision_advisor,
-        )
         self._memory_manager = memory_manager
         self._planner = Planner()
         self._scratchpad = Scratchpad(store)
@@ -134,32 +119,12 @@ class Orchestrator(
         self._cache = LLMCache(store)
         if isinstance(provider, ProviderAdapter):
             provider._cache = self._cache
-        self._reflector = self._build_reflector(store, provider)
-        self._decomposer = TaskDecomposer(provider=provider)
-        self._dag_executor = DAGExecutor(subagent_service=self._subagent_service)
-        self._coverage_evaluator = CoverageEvaluator()
-        self._supervisor = SupervisorOrchestrator(provider=provider, subagent_service=self._subagent_service)
-        self._swarm = SwarmOrchestrator(provider=provider, subagent_service=self._subagent_service)
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
         self._tracer = Tracer(store)
         self._shutting_down = False
         self._streaming_mode_cache: bool | None = None
         if not _skip_orphan_cleanup:
             self._cleanup_orphan_tasks()
-
-    @staticmethod
-    def _build_reflector(store: SQLiteStore, provider: ProviderAdapter) -> ReflectionEvaluator | None:
-        config = store.get_config({})["config"]
-        rc = config.get("reflection", {})
-        if not rc.get("enabled"):
-            return None
-        reflection_config = ReflectionConfig(
-            enabled=True,
-            max_retries=rc.get("maxRetries", 2),
-            confidence_threshold=rc.get("confidenceThreshold", 0.7),
-            evaluation_prompt=rc.get("evaluationPrompt", ""),
-        )
-        return ReflectionEvaluator(provider=provider, config=reflection_config)
 
     def _merged_context_tool_schemas(self) -> list[dict[str, Any]]:
         schemas = list(BUILTIN_TOOL_SCHEMAS)
@@ -243,88 +208,11 @@ class Orchestrator(
                 type="session.created",
                 ts=self._store.now(),
                 payload={"session": session},
-                visibility="trace",
+                visibility="panel",
             )
         )
         return {"session": session}
 
-
-    # ------------------------------------------------------------------
-
-    def _record_routing_proposal(
-        self,
-        *,
-        session_id: str,
-        task_id: str,
-        goal: str,
-        routing: RoutingDecision,
-        routing_dict: dict[str, Any],
-    ) -> None:
-        """Create a proposal record when routing used LLM advisory."""
-        advice = self._meta_router.last_advice
-        if advice is None:
-            return
-        try:
-            advice_payload = getattr(advice, "payload", None)
-            proposal_payload = dict(advice_payload) if isinstance(advice_payload, dict) and advice_payload else {
-                "scenario": routing.scenario.value,
-                "strategy": routing.strategy.value,
-                "skill_id": routing.skill_id,
-            }
-            if (
-                "tool_continuation" not in proposal_payload
-                and "toolContinuation" not in proposal_payload
-                and isinstance(routing_dict.get("toolContinuation"), dict)
-            ):
-                proposal_payload["toolContinuation"] = routing_dict["toolContinuation"]
-            source = {
-                "type": advice.source,
-                "confidence": advice.confidence,
-                "rationale": advice.rationale,
-            }
-            if advice.model_id:
-                source["model_id"] = advice.model_id
-            status = "accepted" if advice.accepted else "rejected"
-            record = self._store.create_proposal({
-                "kind": "routing_strategy",
-                "sessionId": session_id,
-                "taskId": task_id,
-                "proposal": proposal_payload,
-                "source": source,
-                "inputSummary": goal[:500],
-                "modelId": advice.model_id,
-            })
-            proposal_id = record["proposal"]["id"]
-            if status == "accepted":
-                self._store.validate_proposal({
-                    "proposalId": proposal_id,
-                    "status": "accepted",
-                    "reasons": [],
-                })
-            else:
-                self._store.validate_proposal({
-                    "proposalId": proposal_id,
-                    "status": "rejected",
-                    "reasons": advice.validation_reasons or [advice.fallback_reason or "advisor rejected"],
-                })
-            # Publish decision event
-            self._publish(
-                session_id=session_id,
-                task={"id": task_id},
-                event_type="agent.decision.routing_strategy",
-                payload={
-                    "proposalId": proposal_id,
-                    "outcome": status,
-                    "scenario": routing.scenario.value,
-                    "strategy": routing.strategy.value,
-                    "toolContinuation": routing_dict.get("toolContinuation"),
-                    "source": advice.source,
-                    "confidence": advice.confidence,
-                    "rationale": advice.rationale,
-                },
-            )
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to record routing proposal", exc_info=True)
 
     def _record_failure_recovery_proposal(
         self,
@@ -334,7 +222,6 @@ class Orchestrator(
         provider_turn_id: str | None,
         failure_recovery: dict[str, Any] | None = None,
         error: BaseException | str | None = None,
-        advice: Any | None = None,
     ) -> None:
         try:
             recovery = failure_recovery or classify_provider_failure(error or "").to_dict()
@@ -374,47 +261,12 @@ class Orchestrator(
                     "reasons": reasons,
                 })
 
-            if advice is not None:
-                advice_payload = getattr(advice, "payload", None)
-                if isinstance(advice_payload, dict) and advice_payload:
-                    proposal = dict(advice_payload)
-                    proposal.setdefault("strategy", runtime_proposal["strategy"])
-                    proposal.update({
-                        "category": recovery.get("category"),
-                        "httpStatus": recovery.get("httpStatus"),
-                        "runtimeStrategy": runtime_proposal["strategy"],
-                    })
-                    source = {
-                        "type": getattr(advice, "source", "llm"),
-                        "confidence": getattr(advice, "confidence", None),
-                        "rationale": getattr(advice, "rationale", None),
-                        "fallbackReason": getattr(advice, "fallback_reason", None),
-                        "runtimeClassifier": {
-                            "category": recovery.get("category"),
-                            "reason": recovery.get("reason"),
-                            "userMessage": recovery.get("userMessage"),
-                        },
-                    }
-                    status = "accepted" if bool(getattr(advice, "accepted", False)) else "rejected"
-                    reasons = [] if status == "accepted" else (
-                        list(getattr(advice, "validation_reasons", None) or [])
-                        or [str(getattr(advice, "fallback_reason", None) or "advisor rejected")]
-                    )
-                    _create_and_validate(
-                        proposal=proposal,
-                        source=source,
-                        status=status,
-                        reasons=reasons,
-                        model_id=getattr(advice, "model_id", None),
-                    )
-
             _create_and_validate(
                 proposal=runtime_proposal,
                 source={
-                    "type": "runtime_bounded_recovery" if advice is not None else "runtime_classifier",
+                    "type": "runtime_classifier",
                     "reason": recovery.get("reason"),
                     "userMessage": recovery.get("userMessage"),
-                    "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
                 },
                 status="accepted",
                 reasons=[],
@@ -429,7 +281,6 @@ class Orchestrator(
         task: dict[str, Any],
         provider_turn_id: str | None,
         preflight: dict[str, Any] | None,
-        advice: Any | None = None,
     ) -> None:
         try:
             decision = preflight if isinstance(preflight, dict) else {}
@@ -442,9 +293,6 @@ class Orchestrator(
                 "nearContextLimit": facts.get("nearContextLimit"),
                 "overContextLimit": facts.get("overContextLimit"),
                 "hasPriorProviderFailure": facts.get("hasPriorProviderFailure"),
-                "topProviderProfile": (
-                    facts.get("topProviderProfile") or {}
-                ).get("id") if isinstance(facts.get("topProviderProfile"), dict) else None,
             }, ensure_ascii=False, sort_keys=True)[:500]
             runtime_action = str(decision.get("runtimeAction") or "proceed")
             provider_preflight = (
@@ -452,27 +300,11 @@ class Orchestrator(
                 if isinstance(decision.get("providerPreflight"), dict)
                 else {}
             )
-            split_plan = decision.get("splitPlan") if isinstance(decision.get("splitPlan"), dict) else None
-            if split_plan is None and isinstance(provider_preflight, dict):
-                candidate = provider_preflight.get("splitPlan")
-                split_plan = candidate if isinstance(candidate, dict) else None
-            provider_switch = (
-                decision.get("providerSwitch")
-                if isinstance(decision.get("providerSwitch"), dict)
-                else None
-            )
-            if provider_switch is None and isinstance(provider_preflight, dict):
-                candidate = provider_preflight.get("providerSwitch")
-                provider_switch = candidate if isinstance(candidate, dict) else None
-            proposal_action = "propose_split" if runtime_action == "execute_split" else runtime_action
-            if advice is None and runtime_action == "proceed" and facts.get("riskLevel") == "low":
+            proposal_action = runtime_action
+            if runtime_action == "proceed" and facts.get("riskLevel") == "low":
                 return
             if runtime_action == "compact_context":
                 context_strategy = "compact_recent_context"
-            elif runtime_action == "execute_split":
-                context_strategy = "split_into_bounded_subtasks"
-            elif runtime_action == "switch_provider":
-                context_strategy = "switch_provider_profile_for_turn"
             else:
                 context_strategy = "preserve_context"
             runtime_proposal = {
@@ -489,19 +321,6 @@ class Orchestrator(
                 "maxContextTokens": facts.get("maxContextTokens"),
                 "compactionThreshold": facts.get("compactionThreshold"),
             }
-            profile_ranking = facts.get("providerProfileRanking")
-            if isinstance(profile_ranking, list) and profile_ranking:
-                runtime_proposal["providerProfileRanking"] = profile_ranking[:10]
-            if proposal_action == "propose_split" and isinstance(split_plan, dict):
-                runtime_proposal["splitRecommendation"] = {
-                    "subtasks": list(split_plan.get("subtasks") or []),
-                    "dag": split_plan.get("dag"),
-                    "executionOrder": split_plan.get("execution_order") or split_plan.get("executionOrder"),
-                    "reason": split_plan.get("reason"),
-                }
-            if proposal_action == "switch_provider" and isinstance(provider_switch, dict):
-                runtime_proposal["fallbackProviderId"] = provider_switch.get("toProfileId")
-                runtime_proposal["providerSwitch"] = provider_switch
 
             def _create_and_validate(
                 *,
@@ -527,55 +346,9 @@ class Orchestrator(
                     "reasons": reasons,
                 })
 
-            if advice is not None:
-                advice_payload = getattr(advice, "payload", None)
-                if isinstance(advice_payload, dict) and advice_payload:
-                    proposal = dict(advice_payload)
-                    proposal.setdefault("action", proposal_action)
-                    proposal.setdefault("riskLevel", facts.get("riskLevel") or "low")
-                    proposal["runtimeAction"] = runtime_action
-                    proposal["runtimeApplied"] = bool(decision.get("runtimeApplied"))
-                    source = {
-                        "type": getattr(advice, "source", "llm"),
-                        "confidence": getattr(advice, "confidence", None),
-                        "rationale": getattr(advice, "rationale", None),
-                        "fallbackReason": getattr(advice, "fallback_reason", None),
-                        "runtimeFacts": {
-                            "nearContextLimit": facts.get("nearContextLimit"),
-                            "overContextLimit": facts.get("overContextLimit"),
-                            "hasPriorProviderFailure": facts.get("hasPriorProviderFailure"),
-                            "providerProfileRanking": (
-                                facts.get("providerProfileRanking")[:10]
-                                if isinstance(facts.get("providerProfileRanking"), list)
-                                else []
-                            ),
-                        },
-                    }
-                    status = "accepted" if bool(getattr(advice, "accepted", False)) else "rejected"
-                    reasons = [] if status == "accepted" else (
-                        list(getattr(advice, "validation_reasons", None) or [])
-                        or [str(getattr(advice, "fallback_reason", None) or "advisor rejected")]
-                    )
-                    _create_and_validate(
-                        proposal=proposal,
-                        source=source,
-                        status=status,
-                        reasons=reasons,
-                        model_id=getattr(advice, "model_id", None),
-                    )
-
             runtime_source = {
                 "type": "runtime_provider_preflight",
-                "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
-                "advisorAction": (
-                    getattr(advice, "payload", {}) or {}
-                ).get("action") if advice is not None and isinstance(getattr(advice, "payload", None), dict) else None,
             }
-            if isinstance(provider_switch, dict):
-                runtime_source["providerSwitch"] = provider_switch
-            profile_ranking = facts.get("providerProfileRanking")
-            if isinstance(profile_ranking, list) and profile_ranking:
-                runtime_source["providerProfileRanking"] = profile_ranking[:10]
 
             _create_and_validate(
                 proposal=runtime_proposal,
@@ -612,8 +385,8 @@ class Orchestrator(
         return [
             f"Resolve the user's request: {normalized_goal}",
             "Keep the work focused on the requested task and avoid unrelated changes.",
-            "Use local tools for inspection, edits and commands; report real results instead of guessing.",
-            "When files or commands are involved, summarize changed files, command outcomes and verification.",
+            "Use tools only when they are needed to inspect, modify, verify, or answer accurately.",
+            "When files or commands are actually used, summarize the real outcome without inventing extra work.",
         ]
 
     def _default_out_of_scope(self) -> list[str]:

@@ -128,7 +128,6 @@ class ReplayService:
                 "source": evt.get("source"),
                 "payload": evt.get("payload"),
                 "yuanbao": evt.get("yuanbao"),
-                "hahaCc": evt.get("hahaCc"),
                 "replayable": True,
             })
 

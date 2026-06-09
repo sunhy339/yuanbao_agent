@@ -105,7 +105,6 @@ def main() -> int:
         provider_model = os.environ.get("YUANBAO_SMOKE_PROVIDER_MODEL", "gpt-5.4")
         provider_api_format = os.environ.get("YUANBAO_SMOKE_PROVIDER_API_FORMAT", "openai-chat")
         provider_timeout = int(os.environ.get("YUANBAO_SMOKE_PROVIDER_TIMEOUT", "180"))
-        routing_advisor_timeout = float(os.environ.get("YUANBAO_SMOKE_ROUTING_ADVISOR_TIMEOUT", "3"))
         max_task_steps = int(os.environ.get("YUANBAO_SMOKE_MAX_TASK_STEPS", "20"))
         child_timeout_ms = int(os.environ.get("YUANBAO_SMOKE_CHILD_TIMEOUT_MS", "60000"))
 
@@ -123,9 +122,6 @@ def main() -> int:
                 "policy": {
                     "approvalMode": "none",
                     "maxTaskSteps": max_task_steps,
-                },
-                "advisor": {
-                    "routingStrategyTimeoutSeconds": routing_advisor_timeout,
                 },
                 "autonomy": {
                     "activeProfileId": "worktree-mcp",

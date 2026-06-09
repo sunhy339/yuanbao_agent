@@ -98,6 +98,10 @@ def _command_tool_metadata(
     tool_semantic_parent_label: str | None,
     tool_target: str | None,
     tool_input_summary: str | None,
+    display_title: str | None = None,
+    display_summary: str | None = None,
+    display_target: str | None = None,
+    display_kind: str | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {"toolName": "run_command"}
     for key, value in {
@@ -113,6 +117,10 @@ def _command_tool_metadata(
         "toolSemanticParentLabel": tool_semantic_parent_label,
         "target": tool_target,
         "inputSummary": tool_input_summary,
+        "displayTitle": display_title,
+        "displaySummary": display_summary,
+        "displayTarget": display_target,
+        "displayKind": display_kind,
     }.items():
         if isinstance(value, str) and value.strip():
             metadata[key] = value.strip()
@@ -146,6 +154,10 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         tool_semantic_parent_label = str(params.get("toolSemanticParentLabel") or params.get("tool_semantic_parent_label") or "").strip() or None
         tool_target = str(params.get("target") or params.get("toolTarget") or params.get("tool_target") or "").strip() or None
         tool_input_summary = str(params.get("inputSummary") or params.get("input_summary") or "").strip() or None
+        display_title = str(params.get("displayTitle") or params.get("display_title") or "").strip() or None
+        display_summary = str(params.get("displaySummary") or params.get("display_summary") or "").strip() or None
+        display_target = str(params.get("displayTarget") or params.get("display_target") or "").strip() or None
+        display_kind = str(params.get("displayKind") or params.get("display_kind") or "").strip() or None
         tool_index = params.get("toolIndex", params.get("tool_index"))
         tool_total = params.get("toolTotal", params.get("tool_total"))
         stdout_callback = params.get("_stdoutCallback")
@@ -231,6 +243,26 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         if allowlist_review_reason:
             request["policyReason"] = allowlist_review_reason
             request["policyAction"] = "approval_required"
+        request.update(_command_tool_metadata(
+            tool_use_id=tool_use_id,
+            parent_tool_use_id=parent_tool_use_id,
+            tool_group_id=tool_group_id,
+            tool_index=tool_index,
+            tool_total=tool_total,
+            tool_operation_id=tool_operation_id,
+            tool_operation_label=tool_operation_label,
+            tool_category=tool_category,
+            tool_phase_id=tool_phase_id,
+            tool_phase_label=tool_phase_label,
+            tool_semantic_parent_id=tool_semantic_parent_id,
+            tool_semantic_parent_label=tool_semantic_parent_label,
+            tool_target=tool_target,
+            tool_input_summary=tool_input_summary,
+            display_title=display_title,
+            display_summary=display_summary,
+            display_target=display_target,
+            display_kind=display_kind,
+        ))
         existing_approval = approval_for_request(store, request_task_id, request, approval_id)
         if existing_approval is not None:
             decision = existing_approval.get("decision")
@@ -305,6 +337,10 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 tool_semantic_parent_label=tool_semantic_parent_label,
                 tool_target=tool_target,
                 tool_input_summary=tool_input_summary,
+                display_title=display_title,
+                display_summary=display_summary,
+                display_target=display_target,
+                display_kind=display_kind,
             ),
         )
         params["commandLogId"] = command_log["id"]
@@ -338,6 +374,10 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 tool_semantic_parent_label=tool_semantic_parent_label,
                 target=tool_target,
                 input_summary=tool_input_summary,
+                display_title=display_title,
+                display_summary=display_summary,
+                display_target=display_target,
+                display_kind=display_kind,
                 command=command,
                 cwd=cwd_rel,
                 shell=shell_name,

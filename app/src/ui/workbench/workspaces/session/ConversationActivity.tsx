@@ -427,14 +427,29 @@ function buildWorklogSummary(items: RuntimeTimelineItem[]) {
 }
 
 function buildRuntimeRowSummary(item: RuntimeTimelineItem) {
+  const status = getProcessStatusLabel(item.status);
   return compactText(
     compactMeta([
       item.summary,
-      getProcessStatusLabel(item.status),
+      status && status !== "已记录" ? status : undefined,
       item.durationMs !== undefined ? formatDuration(item.durationMs) ?? undefined : undefined,
     ]).join(" · "),
     160,
   );
+}
+
+function isDiagnosticRuntimeStatus(status?: string | null) {
+  return ["failed", "error", "blocked", "cancelled", "rejected"].includes(status?.toLowerCase() ?? "");
+}
+
+function worklogRowOutput(item: RuntimeTimelineItem) {
+  if (item.kind === "command") {
+    return buildCommandOutput(item);
+  }
+  if (!isDiagnosticRuntimeStatus(item.status)) {
+    return "";
+  }
+  return item.rawDetail || item.code || "";
 }
 
 function collectActivityRuntimeItems(items: ConversationActivityItem[]) {
@@ -549,7 +564,7 @@ function RuntimeWorklogCard({
       </button>
       <div className="runtime-worklog-list">
         {visibleItems.map((item) => {
-          const output = item.kind === "command" ? buildCommandOutput(item) : item.rawDetail || item.code || "";
+          const output = worklogRowOutput(item);
           const canCopy = Boolean(onCopyRuntimeText && output.trim());
           const canRefresh = Boolean(item.kind === "command" && item.sourceId && onRefreshCommandJob);
           const canStop = Boolean(

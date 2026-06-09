@@ -15,20 +15,28 @@ class ResumeFlowMixin:
 
         span = self._tracer.start_span("task_resume", trace_id=task.get("id", ""))
 
-        # Check DAG paused state first
         dag_state = self._load_pending_dag_state(task["id"])
         if dag_state is not None:
             running_task = self._store.update_task_status(task_id=task["id"], status="running")
+            self._clear_pending_dag_state(task["id"])
             self._publish(
                 session_id=running_task["sessionId"],
                 task=running_task,
                 event_type="task.resumed",
-                payload={"status": "running", "detail": "Resuming paused DAG execution."},
+                payload={
+                    "status": "running",
+                    "detail": "Cleared legacy planner checkpoint; continue with the model-first tool loop.",
+                    "legacyCheckpoint": "dag",
+                },
             )
-            self._fire_hooks("on_task_resume", running_task["sessionId"], running_task, extra_context={"resumePath": "dag"})
-            resumed_task = self._resume_dag_execution(task=running_task, state=dag_state)
-            self._tracer.end_span(span.span_id, status="ok", attributes={"path": "dag"})
-            return {"task": resumed_task}
+            self._fire_hooks(
+                "on_task_resume",
+                running_task["sessionId"],
+                running_task,
+                extra_context={"resumePath": "legacy_dag_cleared"},
+            )
+            self._tracer.end_span(span.span_id, status="ok", attributes={"path": "legacy_dag_cleared"})
+            return {"task": running_task}
 
         pending_state = self._load_pending_react_state(task["id"])
         if pending_state is not None:
@@ -182,121 +190,21 @@ class ResumeFlowMixin:
             self._store.delete_pending_dag_state(task_id)
 
     def _resume_dag_execution(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-        """Resume a paused DAG execution from its saved checkpoint."""
-        try:
-            from ..planner.types import plan_result_from_dict, plan_result_to_dict
-
-            plan = plan_result_from_dict(state["plan"])
-
-            execution = self._dag_executor.execute(
-                plan,
-                session_id=state["session_id"],
-                parent_task_id=task["id"],
-                max_workers=self._max_parallel_subtasks(state.get("context") or {}),
-                parent_goal=state.get("goal"),
-                child_timeout_ms=self._child_subtask_timeout_ms(state.get("context") or {}),
-                is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
-                completed_ids=set(state["completed"]),
-                failed_ids=set(state["failed"]),
-                prior_results=state["results"],
-                tracer=self._tracer,
-            )
-
-            if execution.get("paused"):
-                # Paused again — update persisted state
-                updated_plan_data = plan_result_to_dict(plan)
-                if hasattr(self._store, "upsert_pending_dag_state"):
-                    self._store.upsert_pending_dag_state(
-                        task_id=task["id"],
-                        session_id=state["session_id"],
-                        goal=state["goal"],
-                        context=state["context"],
-                        plan_json=json.dumps(updated_plan_data, ensure_ascii=False),
-                        completed_ids=execution["completed"],
-                        failed_ids=execution["failed"],
-                        results=execution.get("results", {}),
-                    )
-                if execution.get("waitingApproval") or execution.get("status") == "waiting_approval":
-                    latest = self._store.get_task({"taskId": task["id"]})["task"]
-                    if latest.get("status") != "waiting_approval":
-                        self._validate_task_transition(latest["status"], "waiting_approval", task["id"])
-                        latest = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
-                    self._publish(
-                        session_id=state["session_id"],
-                        task=latest,
-                        event_type="task.waiting_approval",
-                        payload={
-                            "status": "waiting_approval",
-                            "detail": "Child worker is waiting for approval.",
-                            "waitingSubtaskId": execution.get("waitingSubtaskId"),
-                        },
-                    )
-                    return latest
-                return task
-
-            # Completed — clean up and finalize
-            self._clear_pending_dag_state(task["id"])
-
-            # Pre-merge git diff check
-            merge_check = self._check_git_diff_before_merge(
-                session_id=state["session_id"],
-                task=task,
-                execution=execution,
-                workspace_root=(state.get("context") or {}).get("workspace_root"),
-            )
-            if not merge_check["safe"]:
-                logger.warning(
-                    "Pre-merge check found issues for resumed task=%s: %s",
-                    task["id"], merge_check["warnings"],
-                )
-
-            coverage = self._coverage_evaluator.evaluate(state["goal"], execution["subtasks"])
-            summary = execution["summary"]
-
-            self._publish(
-                session_id=state["session_id"], task=task,
-                event_type="task.planning.completed",
-                payload={"coverage": coverage, "success": execution["success"]},
-            )
-
-            if execution["success"] is False:
-                return self._fail_task(
-                    session_id=state["session_id"],
-                    task=task,
-                    summary=summary,
-                    error_code="PLANNING_SUBTASKS_FAILED",
-                    structured_result={
-                        "status": "failed",
-                        "coverage": coverage,
-                        "partialHandoffs": execution.get("partialHandoffs", []),
-                        "subtasks": [
-                            {
-                                "id": subtask.id,
-                                "title": subtask.title,
-                                "status": subtask.status,
-                                "result": subtask.result,
-                            }
-                            for subtask in execution["subtasks"]
-                        ],
-                    },
-                )
-
-            return self._complete_task(
-                session_id=state["session_id"],
-                task=task,
-                summary=summary,
-                context=state["context"],
-                force_complete_after_review=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("DAG resume failed for task=%s: %s", task["id"], exc, exc_info=True)
-            self._clear_pending_dag_state(task["id"])
-            return self._fail_task(
-                session_id=state["session_id"],
-                task=task,
-                summary=str(exc),
-                error_code="DAG_RESUME_FAILED",
-            )
+        """Clear legacy DAG checkpoints instead of resuming fixed orchestration."""
+        session_id = str(state.get("session_id") or task.get("sessionId") or "")
+        self._clear_pending_dag_state(task["id"])
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.updated",
+            payload={
+                "status": task.get("status"),
+                "detail": "Legacy planner checkpoint cleared; model-first execution remains active.",
+                "legacyCheckpoint": "dag",
+            },
+            visibility="trace",
+        )
+        return task
 
     def _cleanup_orphan_tasks(self) -> None:
         """Reset tasks stuck in running state from a crashed previous process.

@@ -7,7 +7,7 @@ from .yuanbao_event_adapter import normalize_yuanbao_usage, to_yuanbao_server_me
 
 
 def to_haha_cc_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
-    """Return the legacy haha-cc-compatible alias of a Yuanbao ServerMessage."""
+    """Return the haha-cc-compatible flat ServerMessage for a runtime event."""
 
     return to_yuanbao_server_message(event)
 

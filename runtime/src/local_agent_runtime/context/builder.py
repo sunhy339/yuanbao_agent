@@ -1070,24 +1070,22 @@ class ContextBuilder(HistoryMixin):
             "Guidelines:",
             "- Focus only on the files and directories in your assigned scope.",
             "- Do NOT commit changes. The root agent will handle merging and committing.",
-            "- After completing your work, report: changed files, tests run, and risks found.",
+            "- Report material changes, verification actually run, and known risks when relevant.",
             "- Keep your changes minimal and focused on the assigned task.",
         ],
         "reviewer": [
             "You are a reviewer agent. Your role is to review changes made by worker agents.",
             "Guidelines:",
             "- Read-only access: do NOT modify any files.",
-            "- Check for: correctness, scope compliance, test coverage, and potential risks.",
-            "- Report findings as a structured review with approved/feedback status.",
+            "- Review correctness, scope compliance, test coverage, and potential risks as applicable.",
+            "- Report concrete findings and residual risk.",
             "- Flag any files changed outside the worker's assigned scope.",
         ],
         "planner": [
-            "You are a planner agent. Your role is to analyze tasks and create execution plans.",
+            "You are a planner agent. Your role is to analyze scope, dependencies, and possible plans when planning is requested.",
             "Guidelines:",
-            "- Break down complex tasks into well-defined subtasks.",
-            "- Assign appropriate roles (worker/reviewer) to each subtask.",
-            "- Define clear scope boundaries for each subtask to prevent conflicts.",
-            "- Consider dependencies between subtasks and order them appropriately.",
+            "- Identify meaningful subtasks, roles, scope boundaries, and dependencies when they are useful.",
+            "- Keep planning output proportional to the user's request.",
         ],
         "summarizer": [
             "You are a summarizer agent. Your role is to synthesize results from multiple agents.",
@@ -1171,7 +1169,8 @@ class ContextBuilder(HistoryMixin):
 
     def _communication_prompt(self) -> str:
         return (
-            "User-facing text: before first tool, say what you will inspect; after tool batches, summarize findings briefly. Backend status is not thinking."
+            "User-facing text should follow the assistant's actual work: explain meaningful next steps when helpful, "
+            "summarize real findings after tool results, and avoid boilerplate progress narration. Backend status is not thinking."
         )
 
     def _role_prompt(self, role: str | None = None) -> str:
@@ -1192,7 +1191,7 @@ class ContextBuilder(HistoryMixin):
             f"Workspace root: {workspace_root}",
             "Safety boundaries:",
             "- stay within the workspace root for file and git operations.",
-            "- write files only through apply_patch or write_file; use write_file for new/full files and apply_patch for small edits.",
+            "- file writes are available only through apply_patch or write_file; apply_patch supports targeted edits and write_file supports create/full replacement.",
             "- run commands only through run_command; if the runtime requests approval, wait for approval before execution.",
             "- do not bypass the provided tools or approval workflow.",
             "- do not read secrets or operate outside the workspace unless the user explicitly provides content.",
@@ -1312,7 +1311,7 @@ class ContextBuilder(HistoryMixin):
                 f"Workspace root: {workspace_root}",
                 "Safety boundaries:",
                 "- stay within the workspace root for file and git operations.",
-                "- write files only through apply_patch or write_file; use write_file for new/full files and apply_patch for small edits.",
+                "- file writes are available only through apply_patch or write_file; apply_patch supports targeted edits and write_file supports create/full replacement.",
                 "- run commands only through run_command; if the runtime requests approval, wait for approval before execution.",
                 "- do not bypass the provided tools or approval workflow.",
                 "- do not read secrets or operate outside the workspace unless the user explicitly provides content.",
@@ -1347,7 +1346,6 @@ class ContextBuilder(HistoryMixin):
             return "\n".join(lines)
 
         lines.append("- status: Workspace root is accessible and non-empty.")
-        lines.append("- note: inspect concrete files via tools when needed.")
         return "\n".join(lines)
 
     def _workspace_summary(self, workspace: dict[str, Any]) -> str:
@@ -1590,22 +1588,6 @@ class ContextBuilder(HistoryMixin):
         workspace_summary = self._refresh_workspace_listing(workspace_root, context)
         if workspace_summary:
             updated["_refreshed_workspace_listing"] = workspace_summary
-
-        # 3. Inject a concise refresh hint into the messages so the model
-        #    sees the updated state on the next turn.
-        refresh_hint = self._build_refresh_hint(
-            git_text=git_text,
-            workspace_listing=workspace_summary,
-            tool_name=tool_name,
-            tool_result=tool_result,
-        )
-        if refresh_hint:
-            messages = list(updated.get("messages") or [])
-            messages.append({
-                "role": "system",
-                "content": refresh_hint,
-            })
-            updated["messages"] = messages
 
         return updated
 

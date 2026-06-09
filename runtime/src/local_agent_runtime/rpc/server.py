@@ -157,9 +157,7 @@ class JsonRpcServer:
             "mcp.tools.refresh": self._orchestrator.mcp_tools_refresh,
             "events.after": self._events_after,
             "events.yuanbaoAfter": self._yuanbao_events_after,
-            "events.hahaCcAfter": self._haha_cc_events_after,
             "events.yuanbaoTeamSnapshot": self._yuanbao_team_snapshot,
-            "events.hahaCcTeamSnapshot": self._haha_cc_team_snapshot,
             "provider_turn.list": self._provider_turn_list,
             "context_snapshot.list": self._context_snapshot_list,
             "context_snapshot.get": self._context_snapshot_get,
@@ -450,8 +448,12 @@ class JsonRpcServer:
         limit = int(params.get("limit", 500))
         return self._store.events_after(session_id, after_seq, limit=min(limit, 500))
 
-    def _yuanbao_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Fetch Yuanbao flat ServerMessages after a trace sequence."""
+    def _flat_messages_after(
+        self,
+        params: dict[str, Any],
+        *,
+        extractor: Callable[[Any], dict[str, Any] | None],
+    ) -> dict[str, Any]:
         session_id = params.get("sessionId") or params.get("session_id", "")
         after_seq = int(params.get("afterSeq", params.get("after_seq", 0)))
         message_limit = max(1, min(int(params.get("limit", 500)), 5000))
@@ -473,7 +475,7 @@ class JsonRpcServer:
                 sequence = event.get("sequence")
                 if isinstance(sequence, (int, float)) and not isinstance(sequence, bool):
                     last_seq = max(last_seq, int(sequence))
-                message = yuanbao_message_from_event_payload(event)
+                message = extractor(event)
                 if message is None:
                     continue
                 messages.append(message)
@@ -495,18 +497,14 @@ class JsonRpcServer:
             "truncated": truncated,
         }
 
-    def _haha_cc_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Fetch legacy haha-cc flat ServerMessages after a trace sequence."""
+    def _yuanbao_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch Yuanbao flat ServerMessages after a trace sequence."""
 
-        return self._yuanbao_events_after(params)
+        return self._flat_messages_after(params, extractor=yuanbao_message_from_event_payload)
 
     def _yuanbao_team_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
         """Fetch current team flat ServerMessages for adapter reconnects."""
         return self._collaboration.team_snapshot_messages(params)
-
-    def _haha_cc_team_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Fetch legacy haha-cc current team flat ServerMessages."""
-        return self._yuanbao_team_snapshot(params)
 
     def _provider_turn_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List provider turns for a task."""
@@ -537,34 +535,31 @@ class JsonRpcServer:
         session_id = session_id.strip()
         task_id = task_id.strip()
         now = int(time.time() * 1000)
-        messages = [
-            to_yuanbao_server_message(
-                RuntimeEvent(
-                    event_id=f"evt_ping_connected_{now}",
-                    session_id=session_id,
-                    task_id=task_id,
-                    type="connected",
-                    ts=now,
-                    payload={"sessionId": session_id},
-                )
+        ping_events = [
+            RuntimeEvent(
+                event_id=f"evt_ping_connected_{now}",
+                session_id=session_id,
+                task_id=task_id,
+                type="connected",
+                ts=now,
+                payload={"sessionId": session_id},
             ),
-            to_yuanbao_server_message(
-                RuntimeEvent(
-                    event_id=f"evt_ping_pong_{now}",
-                    session_id=session_id,
-                    task_id=task_id,
-                    type="pong",
-                    ts=now,
-                    payload={},
-                )
+            RuntimeEvent(
+                event_id=f"evt_ping_pong_{now}",
+                session_id=session_id,
+                task_id=task_id,
+                type="pong",
+                ts=now,
+                payload={},
             ),
         ]
-        yuanbao_messages = [message for message in messages if message is not None]
+        yuanbao_messages = [
+            message for event in ping_events if (message := to_yuanbao_server_message(event)) is not None
+        ]
         return {
             "ok": True,
             "transport": "json-rpc-stdio",
             "yuanbaoMessages": yuanbao_messages,
-            "hahaCcMessages": yuanbao_messages,
             "connected": yuanbao_messages[0] if yuanbao_messages else None,
             "pong": yuanbao_messages[1] if len(yuanbao_messages) > 1 else None,
         }

@@ -15,9 +15,6 @@ from .worker_health import (
 
 _VISIBLE_INTERNAL_RESULT_KEYS = {
     "acceptanceCriteria",
-    "advisorEvidenceExecutionSuggestions",
-    "advisorEvidenceExecutor",
-    "advisorRequestedEvidence",
     "completionEvidence",
     "completionEvidenceSnapshot",
     "completionGate",

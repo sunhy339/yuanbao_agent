@@ -191,16 +191,34 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
   }
 
   const CONTROL_FLOW_TOOL_NAMES = new Set(["ask_user_question", "enter_plan_mode", "exit_plan_mode"]);
-  const INTERNAL_APPROVAL_KINDS = new Set(["completion_review"]);
+  const INTERNAL_APPROVAL_KINDS = new Set(["completion_review", "advisor_tool"]);
 
   function isControlFlowToolPayload(payload: unknown): boolean {
     if (!payload || typeof payload !== "object") return false;
-    const toolName = String((payload as { toolName?: unknown }).toolName ?? "").toLowerCase();
+    const toolName = normalizedKind((payload as { toolName?: unknown }).toolName);
     return CONTROL_FLOW_TOOL_NAMES.has(toolName);
   }
 
+  function normalizedKind(value: unknown): string {
+    return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : "";
+  }
+
   function isInternalApprovalKind(value: unknown): boolean {
-    return typeof value === "string" && INTERNAL_APPROVAL_KINDS.has(value);
+    return INTERNAL_APPROVAL_KINDS.has(normalizedKind(value));
+  }
+
+  function internalApprovalKindFromPayload(payload: unknown): string {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+    const record = payload as Record<string, unknown>;
+    for (const key of ["toolName", "kind", "approvalKind", "toolKind", "name"]) {
+      const candidate = normalizedKind(record[key]);
+      if (INTERNAL_APPROVAL_KINDS.has(candidate)) return candidate;
+    }
+    for (const key of ["request", "input", "metadata", "payload"]) {
+      const nested = internalApprovalKindFromPayload(record[key]);
+      if (nested) return nested;
+    }
+    return "";
   }
 
   function isApprovalRequiredToolResultPayload(payload: unknown): boolean {
@@ -233,7 +251,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     const lines = text.split(/\r?\n/).filter((line) => line.trim());
     if (
       lines.length >= 3 &&
-      /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
+      /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|provider|rawJson|toolProgress|tool_progress|trace|uiReplayScope|visibility|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
     ) {
       return true;
     }
@@ -245,18 +263,32 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           return keys.some((key) => [
             "_chatCompat",
             "context",
+            "currentTaskId",
             "eventId",
+            "frames",
             "messages",
             "metadata",
             "options",
             "payload",
+            "progress",
+            "provider",
+            "providerRequest",
+            "providerResponse",
             "questions",
+            "rawJson",
             "requestId",
             "sessionId",
             "taskId",
+            "taskStatus",
             "toolCallId",
+            "toolProgress",
+            "tool_progress",
             "tool_results",
+            "trace",
+            "uiReplayScope",
+            "visibility",
             "workspaceRoot",
+            "yuanbao",
           ].includes(key));
         }
       } catch {
@@ -289,6 +321,30 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
       }
     }
     return "";
+  }
+
+  function safePayloadChunk(payload: unknown, keys: string[]): string {
+    const chunk = readPayloadChunk(payload, keys);
+    return chunk && !looksLikeInternalDisplayText(chunk) ? chunk : "";
+  }
+
+  function toolPresentationFields(payload: {
+    displayTitle?: string;
+    displaySummary?: string;
+    displayTarget?: string;
+    displayKind?: string;
+  }): {
+    displayTitle?: string;
+    displaySummary?: string;
+    displayTarget?: string;
+    displayKind?: string;
+  } {
+    return {
+      displayTitle: payload.displayTitle,
+      displaySummary: payload.displaySummary,
+      displayTarget: payload.displayTarget,
+      displayKind: payload.displayKind,
+    };
   }
 
   function appendCommandOutputTail(current: string, chunk: string, maxLength = 4000): string {
@@ -329,6 +385,10 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
       toolSemanticParentLabel: payload.toolSemanticParentLabel ?? current?.toolSemanticParentLabel,
       target: payload.target ?? current?.target,
       inputSummary: payload.inputSummary ?? current?.inputSummary,
+      displayTitle: payload.displayTitle ?? current?.displayTitle,
+      displaySummary: payload.displaySummary ?? current?.displaySummary,
+      displayTarget: payload.displayTarget ?? current?.displayTarget,
+      displayKind: payload.displayKind ?? current?.displayKind,
     };
   }
 
@@ -403,7 +463,6 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         visibility: event.visibility,
         uiReplayScope: "chat",
         yuanbao: event.yuanbao ?? event.hahaCc,
-        hahaCc: event.hahaCc ?? event.yuanbao,
       };
       const existingIndex = current.findIndex((item) => item.id === trace.id);
       if (existingIndex >= 0) {
@@ -529,6 +588,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 toolName: payload.toolName,
                 target: payload.target,
                 inputSummary: payload.inputSummary,
+                ...toolPresentationFields(payload),
                 parentToolUseId: payload.parentToolUseId,
                 toolGroupId: payload.toolGroupId,
                 toolIndex: payload.toolIndex,
@@ -566,7 +626,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             return;
           }
           const payload = event.payload as ContentDeltaPayload;
-          if (typeof payload.text === "string" && payload.text) {
+          if (typeof payload.text === "string" && payload.text && !looksLikeInternalDisplayText(payload.text)) {
             const text = payload.text;
             const messageId =
               typeof payload.messageId === "string" && payload.messageId
@@ -575,6 +635,8 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             setChatMessages((current) =>
               appendOrUpdateAssistantMessageDelta(current, {
                 messageId,
+                contentBlockId: typeof payload.contentBlockId === "string" ? payload.contentBlockId : undefined,
+                blockIndex: typeof payload.blockIndex === "number" ? payload.blockIndex : undefined,
                 sessionId: event.sessionId,
                 taskId: event.taskId,
                 delta: text,
@@ -593,6 +655,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 toolName: payload.toolName,
                 target: payload.target,
                 inputSummary: payload.inputSummary,
+                ...toolPresentationFields(payload),
                 parentToolUseId: payload.parentToolUseId,
                 toolGroupId: payload.toolGroupId,
                 toolIndex: payload.toolIndex,
@@ -611,7 +674,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               }),
             );
           }
-          if (typeof payload.toolOutput === "string" && payload.toolOutput) {
+          if (typeof payload.toolOutput === "string" && payload.toolOutput && !looksLikeInternalDisplayText(payload.toolOutput)) {
             const toolUseId =
               typeof payload.toolUseId === "string" && payload.toolUseId
                 ? payload.toolUseId
@@ -622,6 +685,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 toolName: payload.toolName,
                 target: payload.target,
                 inputSummary: payload.inputSummary,
+                ...toolPresentationFields(payload),
                 parentToolUseId: payload.parentToolUseId,
                 toolGroupId: payload.toolGroupId,
                 toolIndex: payload.toolIndex,
@@ -659,6 +723,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               input: payload.input,
               target: payload.target,
               inputSummary: payload.inputSummary,
+              ...toolPresentationFields(payload),
               parentToolUseId: payload.parentToolUseId,
               toolGroupId: payload.toolGroupId,
               toolIndex: payload.toolIndex,
@@ -705,6 +770,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               isError: payload.isError,
               target: payload.target,
               inputSummary: payload.inputSummary,
+              ...toolPresentationFields(payload),
               resultSummary: payload.resultSummary,
               resultPreview: payload.resultPreview,
               durationMs: payload.durationMs,
@@ -731,6 +797,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               input: payload.arguments,
               target: payload.target,
               inputSummary: payload.inputSummary,
+              ...toolPresentationFields(payload),
               parentToolUseId: payload.parentToolUseId,
               toolGroupId: payload.toolGroupId,
               toolIndex: payload.toolIndex,
@@ -793,6 +860,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               lifecycleStatus: event.type.slice("tool.".length),
               target: payload.target,
               inputSummary: payload.inputSummary,
+              ...toolPresentationFields(payload),
               resultSummary: payload.resultSummary ?? payload.reason,
               resultPreview: payload.resultPreview,
               durationMs: payload.durationMs,
@@ -816,7 +884,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (!toolUseId) {
             return;
           }
-          const delta = readPayloadChunk(payload, ["chunk", "delta", "toolOutput", "message", "summary", "text"]);
+          const delta = safePayloadChunk(payload, ["chunk", "delta", "toolOutput", "message", "summary", "text"]);
           if (!delta) {
             return;
           }
@@ -827,6 +895,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               toolName: payload.toolName,
               target: payload.target,
               inputSummary: payload.inputSummary,
+              ...toolPresentationFields(payload),
               parentToolUseId: payload.parentToolUseId,
               toolGroupId: payload.toolGroupId,
               toolIndex: payload.toolIndex,
@@ -864,6 +933,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               toolName: payload.toolName ?? "run_command",
               target: commandTarget,
               inputSummary: payload.inputSummary ?? commandTarget,
+              ...toolPresentationFields(payload),
               parentToolUseId: payload.parentToolUseId,
               toolGroupId: payload.toolGroupId,
               toolIndex: payload.toolIndex,
@@ -898,6 +968,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               toolName: payload.toolName ?? "run_command",
               target: payload.target,
               inputSummary: payload.inputSummary,
+              ...toolPresentationFields(payload),
               parentToolUseId: payload.parentToolUseId,
               toolGroupId: payload.toolGroupId,
               toolIndex: payload.toolIndex,
@@ -943,6 +1014,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               toolName: payload.toolName ?? "run_command",
               target: commandTarget,
               inputSummary: payload.inputSummary ?? commandTarget,
+              ...toolPresentationFields(payload),
               parentToolUseId: payload.parentToolUseId,
               toolGroupId: payload.toolGroupId,
               toolIndex: payload.toolIndex,
@@ -1030,7 +1102,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (!payload.requestId) {
             return;
           }
-          if (isInternalApprovalKind(payload.toolName)) {
+          if (internalApprovalKindFromPayload(payload)) {
             return;
           }
           if (payload.resolved) {
@@ -1039,12 +1111,14 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 requestId: payload.requestId,
                 decision: payload.decision ?? "approved",
                 toolName: payload.toolName,
+                toolUseId: payload.toolUseId,
                 input: payload.input,
                 preview: payload.preview,
                 previewSections: payload.previewSections,
                 filesChanged: payload.filesChanged,
                 changedPaths: payload.changedPaths,
                 diffText: payload.diffText,
+                ...toolPresentationFields(payload),
                 sessionId: event.sessionId,
                 taskId: event.taskId,
                 createIfMissing: true,
@@ -1063,6 +1137,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               {
                 requestId: payload.requestId,
                 toolName: payload.toolName,
+                toolUseId: payload.toolUseId,
                 input: payload.input,
                 description: payload.description,
                 preview: payload.preview,
@@ -1070,6 +1145,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 filesChanged: payload.filesChanged,
                 changedPaths: payload.changedPaths,
                 diffText: payload.diffText,
+                ...toolPresentationFields(payload),
                 sessionId: event.sessionId,
                 taskId: event.taskId,
                 now: event.ts,
@@ -1149,9 +1225,17 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             filesChanged?: unknown;
             changedPaths?: unknown;
             diffText?: unknown;
+            toolUseId?: unknown;
+            toolCallId?: unknown;
+            displayTitle?: string;
+            displaySummary?: string;
+            displayTarget?: string;
+            displayKind?: string;
+            target?: string;
+            inputSummary?: string;
           };
           if (typeof payload.approvalId === "string" && payload.approvalId.trim()) {
-            if (isInternalApprovalKind(payload.kind)) {
+            if (internalApprovalKindFromPayload(payload)) {
               return;
             }
             const approvalId = payload.approvalId.trim();
@@ -1161,12 +1245,20 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                   requestId: approvalId,
                   decision: typeof payload.decision === "string" ? payload.decision : "approved",
                   toolName: typeof payload.kind === "string" ? payload.kind : undefined,
+                  toolUseId: typeof payload.toolUseId === "string"
+                    ? payload.toolUseId
+                    : typeof payload.toolCallId === "string"
+                      ? payload.toolCallId
+                      : undefined,
                   input: payload.request,
                   preview: payload.preview,
                   previewSections: payload.previewSections,
                   filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
                   changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths.filter((item): item is string => typeof item === "string") : undefined,
                   diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,
+                  target: payload.target,
+                  inputSummary: payload.inputSummary,
+                  ...toolPresentationFields(payload),
                   sessionId: event.sessionId,
                   taskId: event.taskId,
                   createIfMissing: true,
@@ -1196,7 +1288,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const payload = event.payload as MessageDeltaPayload;
           const delta = payload.delta ?? "";
-          const displayDelta = delta;
+          const displayDelta = delta && !looksLikeInternalDisplayText(delta) ? delta : "";
           if (!displayDelta) {
             return;
           }
@@ -1207,6 +1299,8 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 current,
                 {
                   messageId,
+                  contentBlockId: typeof payload.contentBlockId === "string" ? payload.contentBlockId : undefined,
+                  blockIndex: typeof payload.blockIndex === "number" ? payload.blockIndex : undefined,
                   sessionId: event.sessionId,
                   taskId: event.taskId,
                   delta: displayDelta,

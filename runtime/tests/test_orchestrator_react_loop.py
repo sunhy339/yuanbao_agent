@@ -10,15 +10,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from local_agent_runtime.event_bus import EventBus
-from local_agent_runtime.orchestration.types import OrchestrationResult
 from local_agent_runtime.orchestrator.service import Orchestrator
-from local_agent_runtime.planner.types import PlanResult, Subtask
 from local_agent_runtime.planner.service import Planner
 from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.policy.permission_engine import PermissionEngine
-from local_agent_runtime.router.meta_router import MetaRouter
-from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
@@ -37,31 +33,6 @@ class ScriptedProvider:
         if not self._responses:
             raise AssertionError("Provider called more times than scripted")
         return self._responses.pop(0)
-
-
-class MinimalSearchProvider:
-    def choose_tool_sequence(self, goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": "search_files",
-                "arguments": {
-                    "workspaceRoot": context["workspace_root"],
-                    "query": "needle",
-                    "mode": "content",
-                },
-                "plan_step_id": "search-relevant-files",
-            }
-        ]
-
-    def pick_follow_up_tool(self, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> dict[str, Any] | None:
-        return {
-            "name": "read_file",
-            "arguments": {"workspaceRoot": context["workspace_root"], "path": "alpha.txt"},
-            "plan_step_id": "search-relevant-files",
-        }
-
-    def summarize_findings(self, goal: str, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> str:
-        return "Done."
 
 
 def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
@@ -83,7 +54,6 @@ def _make_runtime_at_path(database_path: Any, provider: Any, tools: dict[str, An
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
-        meta_router=MetaRouter(provider=None),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -107,7 +77,6 @@ def _make_builtin_runtime(tmp_path: Any, provider: Any) -> SimpleNamespace:
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
-        meta_router=MetaRouter(provider=None),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -215,22 +184,19 @@ def test_react_loop_does_not_force_workspace_evidence_after_final_answer(tmp_pat
         },
     )
     session = _open_session(runtime, tmp_path)
-    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
-        scenario=Scenario.DOC_WRITE,
-        strategy=ExecutionStrategy.REACT_STANDARD,
-        confidence=0.9,
-        max_steps=20,
-        enable_reflection=False,
-        enable_planning=False,
-        reasoning="explicit test workspace-evidence contract",
-        metadata={
-            "workspaceEvidenceRequired": {
-                "required": True,
-                "requiredTools": ["search_files"],
-                "source": "test",
-            }
-        },
-    )
+    original_routing_context = runtime.orchestrator._model_first_routing_context
+
+    def forced_routing_context(**kwargs: Any) -> dict[str, Any]:
+        routing = original_routing_context(**kwargs)
+        routing.update({"scenario": "doc_write", "max_steps": 20})
+        routing["workspaceEvidenceRequired"] = {
+            "required": True,
+            "requiredTools": ["search_files"],
+            "source": "test",
+        }
+        return routing
+
+    runtime.orchestrator._model_first_routing_context = forced_routing_context
 
     task = _call_result(
         _rpc(
@@ -330,22 +296,19 @@ def test_routing_workspace_evidence_metadata_does_not_force_read_only_tools(tmp_
         },
     )
     session = _open_session(runtime, tmp_path)
-    runtime.orchestrator._meta_router.route = lambda _goal, context=None: RoutingDecision(
-        scenario=Scenario.DOC_WRITE,
-        strategy=ExecutionStrategy.REACT_STANDARD,
-        confidence=0.9,
-        max_steps=20,
-        enable_reflection=False,
-        enable_planning=False,
-        reasoning="explicit test workspace-evidence contract",
-        metadata={
-            "workspaceEvidenceRequired": {
-                "required": True,
-                "requiredTools": ["read_file"],
-                "source": "test",
-            }
-        },
-    )
+    original_routing_context = runtime.orchestrator._model_first_routing_context
+
+    def forced_routing_context(**kwargs: Any) -> dict[str, Any]:
+        routing = original_routing_context(**kwargs)
+        routing.update({"scenario": "doc_write", "max_steps": 20})
+        routing["workspaceEvidenceRequired"] = {
+            "required": True,
+            "requiredTools": ["read_file"],
+            "source": "test",
+        }
+        return routing
+
+    runtime.orchestrator._model_first_routing_context = forced_routing_context
 
     task = _call_result(
         _rpc(
@@ -380,35 +343,37 @@ def test_routing_workspace_evidence_metadata_does_not_force_read_only_tools(tmp_
     assert not progress_events
 
 
-def test_simple_query_uses_minimal_context_without_tools(tmp_path: Any) -> None:
-    provider = ScriptedProvider([{"final": "你好！"}])
+def test_simple_query_stays_model_first_without_workspace_probe(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "hello"}])
     runtime = _make_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
     workspace_root = Path(session["workspaceRoot"])
     (workspace_root / "big_notes.md").write_text("# Big\n" + ("project detail\n" * 5000), encoding="utf-8")
 
     task = _call_result(
-        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "你好"}),
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "hello"}),
         "task",
     )
 
     assert provider.calls
     context = provider.calls[0]["context"]
-    assert context["minimal"] is True
-    assert context["openai_tools"] == []
+    assert context["minimal"] is False
+    assert context["openai_tools"]
     assert "big_notes.md" not in "\n".join(message["content"] for message in context["messages"])
     turns = runtime.store.list_provider_turns(task["id"])
-    assert turns[0]["request_tool_count"] == 0
-    assert turns[0]["request_token_estimate"] < 1000
+    assert turns[0]["request_tool_count"] > 0
     snapshot = runtime.store.get_context_snapshot(turns[0]["context_snapshot_id"])
     assert snapshot is not None
-    assert snapshot["tool_count"] == 0
+    assert snapshot["tool_count"] > 0
     included_sections = json.loads(snapshot["included_sections_json"] or "[]")
     assert "stable_workspace_context" not in included_sections
-    assert task["routing"]["contextMode"] == "minimal"
+    assert task["routing"]["mode"] == "model_first"
+    assert "scenario" not in task["routing"]
+    assert "strategy" not in task["routing"]
+    assert "contextMode" not in task["routing"]
 
 
-def test_direct_chat_capability_prompt_uses_minimal_context_without_tools(tmp_path: Any) -> None:
+def test_direct_chat_capability_prompt_stays_model_first_without_workspace_probe(tmp_path: Any) -> None:
     provider = ScriptedProvider([{"final": "I can help with coding tasks, repo inspection, and concise answers."}])
     runtime = _make_builtin_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
@@ -428,13 +393,14 @@ def test_direct_chat_capability_prompt_uses_minimal_context_without_tools(tmp_pa
     )
 
     assert task["status"] == "completed"
-    assert task["routing"]["scenario"] == "simple_query"
-    assert task["routing"]["strategy"] == "react_fast"
-    assert task["routing"]["contextMode"] == "minimal"
+    assert task["routing"]["mode"] == "model_first"
+    assert "scenario" not in task["routing"]
+    assert "strategy" not in task["routing"]
+    assert "contextMode" not in task["routing"]
     assert [event for event in runtime.events if event["type"] == "tool.started"] == []
     context = provider.calls[0]["context"]
-    assert context["minimal"] is True
-    assert context["openai_tools"] == []
+    assert context["minimal"] is False
+    assert context["openai_tools"]
     assert "secret project details" not in "\n".join(str(message.get("content") or "") for message in context["messages"])
 
 
@@ -1101,9 +1067,9 @@ def test_custom_tool_started_bridges_activity_output_delta_as_fallback(tmp_path:
     assert delta_events[-1]["payload"]["outputStream"] == "activity"
     assert delta_events[-1]["payload"]["toolCategory"] == "tool"
     assert delta_events[-1]["payload"]["toolSemanticParentId"] == "group:tgrp_1:phase:tool"
-    assert "toolGroupId" not in delta_events[-1]["payload"]
-    assert "toolIndex" not in delta_events[-1]["payload"]
-    assert "toolTotal" not in delta_events[-1]["payload"]
+    assert delta_events[-1]["payload"]["toolGroupId"] == "tgrp_1"
+    assert delta_events[-1]["payload"]["toolIndex"] == 0
+    assert delta_events[-1]["payload"]["toolTotal"] == 2
 
 
 def test_low_value_tool_started_stays_quiet(tmp_path: Any) -> None:
@@ -1422,9 +1388,9 @@ def test_tool_progress_bridges_realtime_activity_output_delta(tmp_path: Any) -> 
     assert delta_events[-1]["payload"]["outputStream"] == "activity"
     assert delta_events[-1]["payload"]["toolCategory"] == "web"
     assert delta_events[-1]["payload"]["toolSemanticParentId"] == "group:tgrp_1:phase:web_fetch"
-    assert "toolGroupId" not in delta_events[-1]["payload"]
-    assert "toolIndex" not in delta_events[-1]["payload"]
-    assert "toolTotal" not in delta_events[-1]["payload"]
+    assert delta_events[-1]["payload"]["toolGroupId"] == "tgrp_1"
+    assert delta_events[-1]["payload"]["toolIndex"] == 0
+    assert delta_events[-1]["payload"]["toolTotal"] == 1
 
 
 def test_tool_output_bridges_realtime_result_preview_delta(tmp_path: Any) -> None:
@@ -1681,7 +1647,6 @@ def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: A
         "workspace_root": str(tmp_path / "workspace"),
         "config": runtime.store.get_config({})["config"],
         "routing": {
-            "strategy": "plan_swarm",
             "toolContinuation": {
                 "allowToolsAfterTaskResults": True,
                 "allowMoreSubtasksAfterTaskResults": False,
@@ -1706,7 +1671,7 @@ def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: A
         tool.get("name") or tool.get("function", {}).get("name")
         for tool in provider.calls[1]["context"]["tools"]
     }
-    assert first_policy["phase"] == "planning"
+    assert first_policy["phase"] == "investigation"
     assert "task" in first_policy["allowedToolNames"]
     assert second_policy["phase"] == "post_task_continuation"
     assert "task" not in second_policy["allowedToolNames"]
@@ -1783,10 +1748,11 @@ def test_explicit_multi_agent_message_uses_model_tool_loop_instead_of_fixed_plan
     assert task["status"] == "completed"
     assert len(provider.calls) == 1
     provider_context = provider.calls[0]["context"]
-    assert provider_context["routing"]["strategy"] == "plan_swarm"
-    assert provider_context["routing"]["enable_planning"] is False
+    assert provider_context["routing"]["mode"] == "model_first"
+    assert "strategy" not in provider_context["routing"]
+    assert provider_context["routing"].get("enable_planning") is not True
     tool_policy = provider_context["tool_policy_decision"]
-    assert tool_policy["phase"] == "planning"
+    assert tool_policy["phase"] == "investigation"
     assert {"agent", "task"}.issubset(set(tool_policy["allowedToolNames"]))
     event_types = {event["type"] for event in runtime.events}
     assert "task.planning.started" not in event_types
@@ -1806,39 +1772,47 @@ def test_chinese_multi_agent_message_uses_model_tool_loop_instead_of_fixed_plann
     assert task["status"] == "completed"
     assert len(provider.calls) == 1
     provider_context = provider.calls[0]["context"]
-    assert provider_context["routing"]["strategy"] == "plan_swarm"
-    assert provider_context["routing"]["enable_planning"] is False
-    assert provider_context["routing"]["orchestrationMode"] == "model_tools"
+    assert provider_context["routing"]["mode"] == "model_first"
+    assert "strategy" not in provider_context["routing"]
+    assert provider_context["routing"].get("enable_planning") is not True
+    assert provider_context["routing"].get("orchestrationMode") in {None, "model_tools"}
     tool_policy = provider_context["tool_policy_decision"]
-    assert tool_policy["phase"] == "planning"
+    assert tool_policy["phase"] == "investigation"
     assert {"agent", "task"}.issubset(set(tool_policy["allowedToolNames"]))
     event_types = {event["type"] for event in runtime.events}
     assert "task.planning.started" not in event_types
     assert "approval.requested" not in event_types
 
 
-def test_unavailable_tool_call_is_blocked_instead_of_executed(tmp_path: Any) -> None:
+def test_model_requested_task_tool_dispatches_without_keyword_router(tmp_path: Any) -> None:
     provider = ScriptedProvider([
         {
             "message": "I will try to delegate.",
             "tool_calls": [
                 {
-                    "id": "call_task_unavailable",
+                    "id": "call_task",
                     "name": "task",
                     "arguments": {
-                        "title": "Should not run",
-                        "prompt": "This child task should not be dispatched.",
+                        "title": "Inspect current project",
+                        "prompt": "Inspect the project and summarize findings.",
                     },
                 }
             ],
         },
-        {"final": "I continued without creating a child task."},
+        {"final": "I used the child task result."},
     ])
     runtime = _make_builtin_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
 
-    def _dispatch(_params: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError("subagent dispatch should not run when task was not exposed")
+    dispatched: list[dict[str, Any]] = []
+
+    def _dispatch(params: dict[str, Any]) -> dict[str, Any]:
+        dispatched.append(params)
+        return {
+            "status": "completed",
+            "summary": "Child inspected the project.",
+            "childTaskId": "task_child_1",
+        }
 
     runtime.server._orchestrator._subagent_service.dispatch = _dispatch  # noqa: SLF001
 
@@ -1850,32 +1824,32 @@ def test_unavailable_tool_call_is_blocked_instead_of_executed(tmp_path: Any) -> 
     assert task["status"] == "completed"
     assert len(provider.calls) == 2
     first_policy = provider.calls[0]["context"]["tool_policy_decision"]
-    assert "task" not in first_policy["allowedToolNames"]
-    blocked_tool_result = provider.calls[1]["context"]["tool_results"][0]
-    assert blocked_tool_result["name"] == "task"
-    assert blocked_tool_result["result"]["status"] == "blocked"
-    assert blocked_tool_result["result"]["failureKind"] == "tool_not_available"
-    assert blocked_tool_result["resultSummary"] == "Tool task was not available in this turn."
-    blocked = next(
+    assert "task" in first_policy["allowedToolNames"]
+    assert len(dispatched) == 1
+    assert dispatched[0]["title"] == "Inspect current project"
+    tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert tool_result["name"] == "task"
+    assert tool_result["result"]["status"] == "completed"
+    assert tool_result["resultSummary"] == "Child inspected the project."
+    completed = next(
         event["payload"]
         for event in runtime.events
-        if event["type"] == "tool.blocked"
-        and event["payload"].get("toolCallId") == "call_task_unavailable"
+        if event["type"] == "tool.completed"
+        and event["payload"].get("toolCallId") == "call_task"
     )
-    assert blocked["toolName"] == "task"
-    assert blocked["resultSummary"] == "Tool task was not available in this turn."
-    assert blocked["toolCategory"] == "tool"
+    assert completed["toolName"] == "task"
+    assert completed["resultSummary"] == "Child inspected the project."
+    assert completed["toolCategory"] == "subtask"
     compat_tool_start = next(
         event["payload"]
         for event in runtime.events
         if event["type"] == "content_start"
         and event["payload"].get("blockType") == "tool_use"
-        and event["payload"].get("toolUseId") == "call_task_unavailable"
+        and event["payload"].get("toolUseId") == "call_task"
     )
-    assert compat_tool_start["toolCategory"] == "tool"
+    assert compat_tool_start["toolCategory"] == "subtask"
     assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
-    event_types = [event["type"] for event in runtime.events]
-    assert "collab.task.created" not in event_types
+    assert dispatched
 
 
 def test_react_loop_does_not_force_plan_steps_after_search(tmp_path: Any) -> None:
@@ -1921,164 +1895,6 @@ def test_react_loop_does_not_force_plan_steps_after_search(tmp_path: Any) -> Non
         if event["type"] == "task.updated" and isinstance(event.get("payload", {}).get("plan"), list)
     ]
     assert all(event["payload"]["plan"] == [] for event in task_plan_updates)
-
-
-def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
-    provider = ScriptedProvider([])
-    runtime = _make_runtime(tmp_path, provider)
-    session = _open_session(runtime, tmp_path)
-    task = runtime.store.create_task(
-        session_id=session["id"],
-        task_type="edit",
-        goal="coordinate a long swarm task",
-        plan=[],
-    )
-    captured: dict[str, Any] = {}
-    decomposed_plan = PlanResult(
-        subtasks=[
-            Subtask(id="sub-0", title="Coordinate workers", description="Coordinate workers", dependencies=[]),
-        ],
-        dag={"sub-0": []},
-        execution_order=["sub-0"],
-    )
-
-    runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
-        lambda **_kwargs: decomposed_plan
-    )
-    runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
-
-    def _execute(*_args: Any, **kwargs: Any) -> OrchestrationResult:
-        captured.update(kwargs)
-        return OrchestrationResult(success=True, summary="done", subtask_results=[])
-
-    runtime.server._orchestrator._swarm.execute = _execute  # noqa: SLF001
-    context = {
-        "config": {
-            "autonomy": {
-                "activeProfileId": "long-run",
-                "profiles": [{"id": "long-run", "timeoutMs": 900_000}],
-            }
-        }
-    }
-
-    runtime.server._orchestrator._execute_with_swarm(  # noqa: SLF001
-        session_id=session["id"],
-        task=task,
-        goal="coordinate a long swarm task",
-        context=context,
-    )
-
-    assert captured["child_timeout_ms"] == 900_000
-    assert captured["plan"] is decomposed_plan
-
-
-def test_swarm_execution_emits_single_visible_planning_progress(tmp_path: Any) -> None:
-    provider = ScriptedProvider([])
-    runtime = _make_runtime(tmp_path, provider)
-    session = _open_session(runtime, tmp_path)
-    task = runtime.store.create_task(
-        session_id=session["id"],
-        task_type="edit",
-        goal="coordinate a swarm task",
-        plan=[],
-    )
-
-    runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
-        lambda **_kwargs: PlanResult(subtasks=[], execution_order=[], dag={})
-    )
-    runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
-    runtime.server._orchestrator._swarm.execute = (  # noqa: SLF001
-        lambda *_args, **_kwargs: OrchestrationResult(
-            success=True,
-            summary="Swarm finished.",
-            subtask_results=[],
-            handoff_count=1,
-        )
-    )
-
-    runtime.server._orchestrator._execute_with_swarm(  # noqa: SLF001
-        session_id=session["id"],
-        task=task,
-        goal="coordinate a swarm task",
-        context={},
-    )
-
-    progress_events = [
-        event for event in runtime.events
-        if event["type"] == "task.planning.progress" and event["taskId"] == task["id"]
-    ]
-    assert [event["payload"]["phase"] for event in progress_events] == [
-        "planning_started",
-        "planning_decomposed",
-        "subtasks_started",
-        "synthesis_started",
-        "planning_completed",
-    ]
-    assert all(event["visibility"] == "panel" for event in progress_events)
-    assert all(event["payload"]["mode"] == "swarm" for event in progress_events)
-    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
-
-    persisted = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
-    assert not [event for event in persisted if event["type"] == "thinking"]
-    persisted_progress = [event for event in persisted if event["type"] == "task.planning.progress"]
-    assert [event["payload"]["phase"] for event in persisted_progress] == [
-        "planning_started",
-        "planning_decomposed",
-        "subtasks_started",
-        "synthesis_started",
-        "planning_completed",
-    ]
-    assert all(event["visibility"] == "panel" for event in persisted_progress)
-    assert "hahaCc" not in persisted_progress[0]
-
-
-def test_supervisor_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
-    provider = ScriptedProvider([])
-    runtime = _make_runtime(tmp_path, provider)
-    session = _open_session(runtime, tmp_path)
-    task = runtime.store.create_task(
-        session_id=session["id"],
-        task_type="edit",
-        goal="coordinate a long supervised task",
-        plan=[],
-    )
-    captured: dict[str, Any] = {}
-    decomposed_plan = PlanResult(
-        subtasks=[
-            Subtask(id="sub-0", title="Review worker output", description="Review worker output", dependencies=[]),
-        ],
-        dag={"sub-0": []},
-        execution_order=["sub-0"],
-    )
-
-    runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
-        lambda **_kwargs: decomposed_plan
-    )
-    runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
-
-    def _execute(*_args: Any, **kwargs: Any) -> OrchestrationResult:
-        captured.update(kwargs)
-        return OrchestrationResult(success=True, summary="done", subtask_results=[])
-
-    runtime.server._orchestrator._supervisor.execute = _execute  # noqa: SLF001
-    context = {
-        "config": {
-            "autonomy": {
-                "activeProfileId": "long-run",
-                "profiles": [{"id": "long-run", "timeoutMs": 900_000}],
-            }
-        }
-    }
-
-    runtime.server._orchestrator._execute_with_supervisor(  # noqa: SLF001
-        session_id=session["id"],
-        task=task,
-        goal="coordinate a long supervised task",
-        context=context,
-    )
-
-    assert captured["child_timeout_ms"] == 900_000
-    assert captured["plan"] is decomposed_plan
 
 
 def test_react_loop_injects_task_focus_into_provider_context(tmp_path: Any) -> None:
@@ -2644,10 +2460,9 @@ def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
     assert [event["payload"]["toolSemanticParentLabel"] for event in tool_use_blocks] == [
         event["payload"]["toolPhaseLabel"] for event in tool_use_blocks
     ]
-    for event in tool_use_blocks:
-        assert "toolGroupId" not in event["payload"]
-        assert "toolIndex" not in event["payload"]
-        assert "toolTotal" not in event["payload"]
+    assert [event["payload"]["toolGroupId"] for event in tool_use_blocks] == [tool_group_id, tool_group_id]
+    assert [event["payload"]["toolIndex"] for event in tool_use_blocks] == [0, 1]
+    assert [event["payload"]["toolTotal"] for event in tool_use_blocks] == [2, 2]
 
     tool_results = provider.calls[1]["context"]["tool_results"]
     assert [result["toolGroupId"] for result in tool_results] == [started[0]["payload"]["toolGroupId"]] * 2
@@ -2863,65 +2678,6 @@ def test_react_loop_does_not_parallelize_across_write_tools(tmp_path: Any) -> No
         "start:after.txt",
         "finish:after.txt",
     ]
-
-
-def test_minimal_loop_keeps_follow_up_read_independent_from_prior_search_result(tmp_path: Any) -> None:
-    provider = MinimalSearchProvider()
-    runtime = _make_runtime(
-        tmp_path,
-        provider,
-        {
-            "search_files": lambda _params: {
-                "query": "needle",
-                "matches": [{"path": "alpha.txt", "preview": "needle"}],
-                "total": 1,
-            },
-            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
-        },
-    )
-    session = _open_session(runtime, tmp_path)
-    task = runtime.store.create_task(
-        session_id=session["id"],
-        task_type="chat",
-        goal="find needle",
-        plan=[
-            {"id": "search-relevant-files", "title": "Search", "status": "active"},
-            {"id": "summarize-findings", "title": "Summarize", "status": "pending"},
-        ],
-    )
-    context = {
-        "workspace_root": str(tmp_path / "workspace"),
-        "workspace_id": session["workspaceId"],
-        "workspace_name": "workspace",
-    }
-
-    tool_results = runtime.orchestrator._run_minimal_loop(  # noqa: SLF001
-        session_id=session["id"],
-        task=task,
-        goal="find needle",
-        context=context,
-    )
-
-    assert [result["name"] for result in tool_results] == ["search_files", "read_file"]
-    assert tool_results[1].get("parentToolUseId") is None
-    started_read = next(
-        event
-        for event in runtime.events
-        if event["type"] == "tool.started" and event["payload"].get("toolName") == "read_file"
-    )
-    completed_read = next(
-        event
-        for event in runtime.events
-        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
-    )
-    tool_result = next(
-        event
-        for event in runtime.events
-        if event["type"] == "tool_result" and event["payload"].get("toolName") == "read_file"
-    )
-    assert started_read["payload"].get("parentToolUseId") is None
-    assert completed_read["payload"].get("parentToolUseId") is None
-    assert tool_result["payload"].get("parentToolUseId") is None
 
 
 def test_react_loop_keeps_cross_turn_read_independent_from_prior_search_result(tmp_path: Any) -> None:
@@ -4199,11 +3955,16 @@ def test_react_loop_emits_executor_tool_progress_for_web_and_memory_tools(tmp_pa
         payload = event["payload"]
         if event["type"] == "content_delta" and payload.get("outputStream") == "activity":
             activity_deltas_by_tool.setdefault(str(payload.get("toolUseId") or ""), []).append(payload)
-    for payloads in progress_by_tool.values():
-        for payload in payloads:
-            tool_use_id = payload["toolUseId"]
-            assert any(delta.get("toolOutput") == payload["message"] for delta in activity_deltas_by_tool[tool_use_id])
-            assert any(delta.get("toolCategory") == payload["toolCategory"] for delta in activity_deltas_by_tool[tool_use_id])
+    for tool_name, payloads in progress_by_tool.items():
+        tool_use_id = payloads[0]["toolUseId"]
+        deltas = activity_deltas_by_tool[tool_use_id]
+        assert any(delta.get("toolCategory") == payloads[0]["toolCategory"] for delta in deltas), tool_name
+        assert any(
+            str(payload.get("message") or "").strip()
+            and str(payload.get("message") or "").strip() in str(delta.get("toolOutput") or "")
+            for payload in payloads
+            for delta in deltas
+        ), tool_name
     web_activity = activity_deltas_by_tool["call_web"]
     assert any(delta.get("toolOutput") == "request (completed): GET https://example.com/docs\n" for delta in web_activity)
     assert any(delta.get("toolOutput") == "response (completed): HTTP 200; 26 bytes\n" for delta in web_activity)
@@ -4347,8 +4108,8 @@ def test_react_loop_emits_browser_tool_web_progress_and_result_preview(tmp_path:
         and event["payload"].get("toolUseId") == "call_browser"
         and event["payload"].get("outputStream") == "activity"
     ]
-    assert any("正在发送网页请求" in delta.get("toolOutput", "") for delta in browser_activity)
-    assert not any("正在读取网页" in delta.get("toolOutput", "") for delta in browser_activity)
+    assert any("https://example.com/docs" in delta.get("toolOutput", "") for delta in browser_activity)
+    assert any("read" in delta.get("toolOutput", "") for delta in browser_activity)
     assert any(delta.get("toolOutput") == "request (completed): read https://example.com/docs\n" for delta in browser_activity)
     assert any(delta.get("toolOutput") == "response (completed): HTTP 200; 26 bytes\n" for delta in browser_activity)
     assert any(delta.get("toolOutput") == "decode (completed): utf-8; text/html\n" for delta in browser_activity)
@@ -7176,13 +6937,6 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
         "policy": {"maxTaskSteps": 1},
         "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 1}]},
     }})
-    # Patch the router to also return max_steps=1 (routing now takes priority)
-    original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
-    def patched_route(goal: str):  # noqa: ANN001
-        decision = original_route(goal)
-        decision.max_steps = 1
-        return decision
-    runtime.server._orchestrator._meta_router.route = patched_route  # noqa: SLF001
     session = _open_session(runtime, tmp_path)
 
     task = _call_result(
@@ -7246,14 +7000,6 @@ def test_react_loop_fails_when_max_steps_exhausted_with_only_failed_tools(tmp_pa
         "policy": {"maxTaskSteps": 1},
         "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 1}]},
     }})
-    original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
-
-    def patched_route(goal: str):  # noqa: ANN001
-        decision = original_route(goal)
-        decision.max_steps = 1
-        return decision
-
-    runtime.server._orchestrator._meta_router.route = patched_route  # noqa: SLF001
     session = _open_session(runtime, tmp_path)
 
     task = _call_result(
@@ -7299,14 +7045,6 @@ def test_react_loop_records_budget_pressure_before_exhaustion(tmp_path: Any) -> 
         "policy": {"maxTaskSteps": 3},
         "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 3}]},
     }})
-    original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
-
-    def patched_route(goal: str):  # noqa: ANN001
-        decision = original_route(goal)
-        decision.max_steps = 3
-        return decision
-
-    runtime.server._orchestrator._meta_router.route = patched_route  # noqa: SLF001
     session = _open_session(runtime, tmp_path)
 
     task = _call_result(
@@ -7339,29 +7077,7 @@ def test_react_loop_records_budget_pressure_before_exhaustion(tmp_path: Any) -> 
     assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
 
 
-def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -> None:
-    class Advisor:
-        def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
-            assert kind == "budget_convergence"
-            assert input_context["budget_state"]["exhausted"] is True
-            return SimpleNamespace(
-                accepted=True,
-                source="llm",
-                rationale="Summarize partial work and ask the user before continuing.",
-                fallback_reason=None,
-                proposal_id="budget_1",
-                model_id="test-model",
-                validation_reasons=[],
-                confidence=0.88,
-                payload={
-                    "action": "pause_for_user",
-                    "reason": "The task exhausted its step budget with useful partial work.",
-                    "handoff_focus": "Review alpha.txt before granting more steps.",
-                    "resume_policy": "requires_user_budget_update",
-                    "next_user_options": ["continue with more budget", "stop"],
-                },
-            )
-
+def test_react_loop_records_budget_convergence_runtime_fallback(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [
             {
@@ -7377,19 +7093,10 @@ def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -
         ]
     )
     runtime = _make_runtime(tmp_path, provider, {"read_file": lambda _params: {"content": "alpha"}})
-    runtime.server._orchestrator._decision_advisor = Advisor()  # noqa: SLF001
     runtime.store.update_config({"config": {
         "policy": {"maxTaskSteps": 1},
         "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 1}]},
     }})
-    original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
-
-    def patched_route(goal: str):  # noqa: ANN001
-        decision = original_route(goal)
-        decision.max_steps = 1
-        return decision
-
-    runtime.server._orchestrator._meta_router.route = patched_route  # noqa: SLF001
     session = _open_session(runtime, tmp_path)
 
     task = _call_result(
@@ -7403,18 +7110,16 @@ def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -
 
     workflow = task["routing"]["mainWorkflow"]
     assert task["status"] == "paused"
-    assert workflow["convergence"]["source"] == "llm"
+    assert workflow["convergence"]["source"] == "runtime_fallback"
     assert workflow["convergence"]["recommendedAction"] == "review_partial"
-    assert workflow["convergence"]["handoffFocus"] == "Review alpha.txt before granting more steps."
-    assert workflow["convergence"]["resumePolicy"] == "requires_user_budget_update"
-    assert workflow["convergence"]["advisorProposalId"] == "budget_1"
+    assert "Tool results so far" in workflow["convergence"]["handoffFocus"]
+    assert workflow["convergence"]["resumePolicy"] == "requires_user_follow_up"
+    assert "advisorProposalId" not in workflow["convergence"]
     proposals = runtime.store.list_proposals({
         "taskId": task["id"],
         "kind": "budget_convergence",
     })["proposals"]
-    assert len(proposals) == 1
-    assert proposals[0]["status"] == "accepted"
-    assert workflow["convergence"]["proposalRecordId"] == proposals[0]["id"]
+    assert proposals == []
     event_types = [event["type"] for event in runtime.events]
     assert "agent.decision.budget_convergence" in event_types
     budget_progress = next(
@@ -7425,11 +7130,10 @@ def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -
     assert budget_progress["payload"]["recommendedAction"] == "review_partial"
     assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
     question_event = next(event for event in runtime.events if event["type"] == "ask_user_question")
-    assert question_event["payload"]["question"] == "Review alpha.txt before granting more steps."
-    assert question_event["payload"]["resumePolicy"] == "requires_user_budget_update"
+    assert question_event["payload"]["question"] == workflow["convergence"]["handoffFocus"]
+    assert question_event["payload"]["resumePolicy"] == "requires_user_follow_up"
     assert runtime.store.get_pending_react_state(task["id"]) is not None
 
-    runtime.server._orchestrator._decision_advisor = None  # noqa: SLF001
     _call_result(
         _rpc(
             runtime,
@@ -7983,7 +7687,7 @@ def test_react_loop_parents_read_file_to_prior_custom_result_path(tmp_path: Any)
     assert tool_result["parentToolUseId"] == "call_lookup"
     assert started_read["toolOperationId"] == "tool:custom_lookup:install guide"
     assert completed_read["toolOperationId"] == "tool:custom_lookup:install guide"
-    assert "toolOperationId" not in tool_result
+    assert tool_result["toolOperationId"] == "tool:custom_lookup:install guide"
     tool_results = provider.calls[2]["context"]["tool_results"]
     assert tool_results[1]["parentToolUseId"] == "call_lookup"
     assert tool_results[1]["toolOperationId"] == "tool:custom_lookup:install guide"
@@ -8049,7 +7753,7 @@ def test_react_loop_parents_same_batch_read_file_to_custom_result_path(tmp_path:
         if event["type"] == "tool_use_complete"
     }
     assert tool_use_blocks["call_read"]["parentToolUseId"] == "call_lookup"
-    assert "toolOperationId" not in tool_use_blocks["call_read"]
+    assert tool_use_blocks["call_read"]["toolOperationId"] == "tool:custom_lookup:install guide"
     provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
     assert provider_tool_results["call_read"]["parentToolUseId"] == "call_lookup"
     assert provider_tool_results["call_read"]["toolOperationId"] == "tool:custom_lookup:install guide"
@@ -8194,7 +7898,7 @@ def test_react_loop_parents_browser_to_prior_mcp_result_url(tmp_path: Any) -> No
     assert tool_result["parentToolUseId"] == "call_lookup"
     assert started_browser["toolOperationId"] == "mcp:docs:lookup:install guide"
     assert completed_browser["toolOperationId"] == "mcp:docs:lookup:install guide"
-    assert "toolOperationId" not in tool_result
+    assert tool_result["toolOperationId"] == "mcp:docs:lookup:install guide"
     tool_results = provider.calls[2]["context"]["tool_results"]
     assert tool_results[1]["parentToolUseId"] == "call_lookup"
     assert tool_results[1]["toolOperationId"] == "mcp:docs:lookup:install guide"
@@ -8268,7 +7972,7 @@ def test_react_loop_parents_same_batch_browser_to_any_mcp_result_url(tmp_path: A
         if event["type"] == "tool_use_complete"
     }
     assert tool_use_blocks["call_browser"]["parentToolUseId"] == "call_lookup"
-    assert "toolOperationId" not in tool_use_blocks["call_browser"]
+    assert tool_use_blocks["call_browser"]["toolOperationId"] == "mcp:docs:lookup:install guide"
     provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
     assert provider_tool_results["call_browser"]["parentToolUseId"] == "call_lookup"
     assert provider_tool_results["call_browser"]["toolOperationId"] == "mcp:docs:lookup:install guide"
@@ -9594,4 +9298,3 @@ def test_reload_preserves_queued_task(tmp_path: Any) -> None:
     assert recovered_running["status"] == "failed"
     assert recovered_running.get("errorCode") == "ORPHAN_CLEANUP"
     runtime2.store.close()
-

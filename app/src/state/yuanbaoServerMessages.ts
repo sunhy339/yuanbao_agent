@@ -48,7 +48,79 @@ const LEGACY_SUPPRESSED_FLAT_MESSAGE_TYPES = new Set([
   "tool_use_complete",
 ]);
 
-const INTERNAL_APPROVAL_KINDS = new Set(["completion_review"]);
+const INTERNAL_APPROVAL_KINDS = new Set(["completion_review", "advisor_tool"]);
+
+function normalizedKind(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : "";
+}
+
+function isInternalApprovalKind(value: unknown): boolean {
+  return INTERNAL_APPROVAL_KINDS.has(normalizedKind(value));
+}
+
+function internalApprovalKindFromPayload(payload: unknown): string {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+  const record = payload as Record<string, unknown>;
+  for (const key of ["toolName", "kind", "approvalKind", "toolKind", "name"]) {
+    const candidate = normalizedKind(record[key]);
+    if (INTERNAL_APPROVAL_KINDS.has(candidate)) return candidate;
+  }
+  for (const key of ["request", "input", "metadata", "payload"]) {
+    const nested = internalApprovalKindFromPayload(record[key]);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+function looksLikeInternalDisplayText(value: string): boolean {
+  const text = value.trim();
+  if (!text) return true;
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  if (
+    lines.length >= 3 &&
+    /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|provider|rawJson|toolProgress|tool_progress|trace|uiReplayScope|visibility|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
+  ) {
+    return true;
+  }
+  if (!/^[{\[]/.test(text)) return false;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") return false;
+    const keys = Object.keys(parsed as Record<string, unknown>);
+    return keys.some((key) => [
+      "_chatCompat",
+      "context",
+      "currentTaskId",
+      "eventId",
+      "frames",
+      "messages",
+      "metadata",
+      "options",
+      "payload",
+      "progress",
+      "provider",
+      "providerRequest",
+      "providerResponse",
+      "questions",
+      "rawJson",
+      "requestId",
+      "sessionId",
+      "taskId",
+      "taskStatus",
+      "toolCallId",
+      "toolProgress",
+      "tool_progress",
+      "tool_results",
+      "trace",
+      "uiReplayScope",
+      "visibility",
+      "workspaceRoot",
+      "yuanbao",
+    ].includes(key));
+  } catch {
+    return true;
+  }
+}
 
 export function yuanbaoServerMessageFromEvent(event: AgentEventEnvelope): YuanbaoServerMessage | null {
   return event.yuanbao ?? event.hahaCc ?? null;
@@ -96,6 +168,30 @@ export function applyYuanbaoServerMessageToChat(
   }
 
   const payload = recordValue(event.payload);
+  const flatPayload = recordValue(message);
+  const flatString = (key: string): string | undefined => readString(flatPayload[key]) ?? readString(payload[key]);
+  const flatNumber = (key: string): number | undefined => readNumber(flatPayload[key]) ?? readNumber(payload[key]);
+  const flatStringArray = (key: string): string[] | undefined => readStringArray(flatPayload[key]) ?? readStringArray(payload[key]);
+  const flatPreviewRows = (key: string): Array<{ label: string; value: string }> | undefined =>
+    readPreviewRows(flatPayload[key]) ?? readPreviewRows(payload[key]);
+  const flatToolPresentation = () => ({
+    target: flatString("target"),
+    inputSummary: flatString("inputSummary"),
+    displayTitle: flatString("displayTitle"),
+    displaySummary: flatString("displaySummary"),
+    displayTarget: flatString("displayTarget"),
+    displayKind: flatString("displayKind"),
+    toolGroupId: flatString("toolGroupId"),
+    toolIndex: flatNumber("toolIndex"),
+    toolTotal: flatNumber("toolTotal"),
+    toolOperationId: flatString("toolOperationId"),
+    toolOperationLabel: flatString("toolOperationLabel"),
+    toolCategory: flatString("toolCategory"),
+    toolPhaseId: flatString("toolPhaseId"),
+    toolPhaseLabel: flatString("toolPhaseLabel"),
+    toolSemanticParentId: flatString("toolSemanticParentId"),
+    toolSemanticParentLabel: flatString("toolSemanticParentLabel"),
+  });
   const taskId = event.taskId;
   const now = event.ts;
   const closeThinking = (messages: ChatMessageView[]) =>
@@ -115,19 +211,8 @@ export function applyYuanbaoServerMessageToChat(
         messages: appendOrUpdateAssistantToolStartMessage(closeThinking(current), {
           toolUseId: message.toolUseId,
           toolName: message.toolName,
-          parentToolUseId: message.parentToolUseId ?? readString(payload.parentToolUseId),
-          target: readString(payload.target),
-          inputSummary: readString(payload.inputSummary),
-          toolGroupId: readString(payload.toolGroupId),
-          toolIndex: readNumber(payload.toolIndex),
-          toolTotal: readNumber(payload.toolTotal),
-          toolOperationId: readString(payload.toolOperationId),
-          toolOperationLabel: readString(payload.toolOperationLabel),
-          toolCategory: readString(payload.toolCategory),
-          toolPhaseId: readString(payload.toolPhaseId),
-          toolPhaseLabel: readString(payload.toolPhaseLabel),
-          toolSemanticParentId: readString(payload.toolSemanticParentId),
-          toolSemanticParentLabel: readString(payload.toolSemanticParentLabel),
+          parentToolUseId: message.parentToolUseId ?? flatString("parentToolUseId"),
+          ...flatToolPresentation(),
           sessionId: event.sessionId,
           taskId,
           now,
@@ -137,9 +222,11 @@ export function applyYuanbaoServerMessageToChat(
 
     case "content_delta": {
       let next = current;
-      if (typeof message.text === "string" && message.text) {
+      if (typeof message.text === "string" && message.text && !looksLikeInternalDisplayText(message.text)) {
         next = appendOrUpdateAssistantMessageDelta(next, {
-          messageId: readString(payload.messageId) || `assistant_${taskId}`,
+          messageId: flatString("messageId") || `assistant_${taskId}`,
+          contentBlockId: flatString("contentBlockId"),
+          blockIndex: flatNumber("blockIndex"),
           sessionId: event.sessionId,
           taskId,
           delta: message.text,
@@ -148,48 +235,26 @@ export function applyYuanbaoServerMessageToChat(
       }
       if (typeof message.toolInput === "string" && message.toolInput) {
         next = appendOrUpdateAssistantToolInputDelta(closeThinking(next), {
-          toolUseId: readString(payload.toolUseId) || readString(payload.toolCallId) || `pending_${taskId}`,
-          toolName: readString(payload.toolName),
-          parentToolUseId: readString(payload.parentToolUseId),
-          target: readString(payload.target),
-          inputSummary: readString(payload.inputSummary),
-          toolGroupId: readString(payload.toolGroupId),
-          toolIndex: readNumber(payload.toolIndex),
-          toolTotal: readNumber(payload.toolTotal),
-          toolOperationId: readString(payload.toolOperationId),
-          toolOperationLabel: readString(payload.toolOperationLabel),
-          toolCategory: readString(payload.toolCategory),
-          toolPhaseId: readString(payload.toolPhaseId),
-          toolPhaseLabel: readString(payload.toolPhaseLabel),
-          toolSemanticParentId: readString(payload.toolSemanticParentId),
-          toolSemanticParentLabel: readString(payload.toolSemanticParentLabel),
+          toolUseId: flatString("toolUseId") || flatString("toolCallId") || `pending_${taskId}`,
+          toolName: flatString("toolName"),
+          parentToolUseId: flatString("parentToolUseId"),
+          ...flatToolPresentation(),
           sessionId: event.sessionId,
           taskId,
           delta: message.toolInput,
           now,
         });
       }
-      if (typeof message.toolOutput === "string" && message.toolOutput) {
+      if (typeof message.toolOutput === "string" && message.toolOutput && !looksLikeInternalDisplayText(message.toolOutput)) {
         next = appendOrUpdateAssistantToolOutputDelta(closeThinking(next), {
-          toolUseId: readString(payload.toolUseId) || readString(payload.toolCallId) || `pending_${taskId}`,
-          toolName: readString(payload.toolName),
-          parentToolUseId: readString(payload.parentToolUseId),
-          target: readString(payload.target),
-          inputSummary: readString(payload.inputSummary),
-          toolGroupId: readString(payload.toolGroupId),
-          toolIndex: readNumber(payload.toolIndex),
-          toolTotal: readNumber(payload.toolTotal),
-          toolOperationId: readString(payload.toolOperationId),
-          toolOperationLabel: readString(payload.toolOperationLabel),
-          toolCategory: readString(payload.toolCategory),
-          toolPhaseId: readString(payload.toolPhaseId),
-          toolPhaseLabel: readString(payload.toolPhaseLabel),
-          toolSemanticParentId: readString(payload.toolSemanticParentId),
-          toolSemanticParentLabel: readString(payload.toolSemanticParentLabel),
+          toolUseId: flatString("toolUseId") || flatString("toolCallId") || `pending_${taskId}`,
+          toolName: flatString("toolName"),
+          parentToolUseId: flatString("parentToolUseId"),
+          ...flatToolPresentation(),
           sessionId: event.sessionId,
           taskId,
           delta: message.toolOutput,
-          stream: readString(payload.outputStream),
+          stream: flatString("outputStream"),
           now,
         });
       }
@@ -205,7 +270,7 @@ export function applyYuanbaoServerMessageToChat(
           eventId: options.stableThinkingEventId ? event.eventId : undefined,
           state: "thinking",
           text: message.text,
-          source: readString(payload.source),
+          source: flatString("source"),
           now,
         }),
       };
@@ -217,19 +282,8 @@ export function applyYuanbaoServerMessageToChat(
           toolUseId: message.toolUseId,
           toolName: message.toolName,
           input: message.input,
-          parentToolUseId: message.parentToolUseId ?? readString(payload.parentToolUseId),
-          target: readString(payload.target),
-          inputSummary: readString(payload.inputSummary),
-          toolGroupId: readString(payload.toolGroupId),
-          toolIndex: readNumber(payload.toolIndex),
-          toolTotal: readNumber(payload.toolTotal),
-          toolOperationId: readString(payload.toolOperationId),
-          toolOperationLabel: readString(payload.toolOperationLabel),
-          toolCategory: readString(payload.toolCategory),
-          toolPhaseId: readString(payload.toolPhaseId),
-          toolPhaseLabel: readString(payload.toolPhaseLabel),
-          toolSemanticParentId: readString(payload.toolSemanticParentId),
-          toolSemanticParentLabel: readString(payload.toolSemanticParentLabel),
+          parentToolUseId: message.parentToolUseId ?? flatString("parentToolUseId"),
+          ...flatToolPresentation(),
           sessionId: event.sessionId,
           taskId,
           now,
@@ -241,25 +295,14 @@ export function applyYuanbaoServerMessageToChat(
         handled: true,
         messages: appendAssistantToolResultMessage(closeThinking(current), {
           toolUseId: message.toolUseId,
-          toolName: readString(payload.toolName),
+          toolName: flatString("toolName"),
           content: message.content,
           isError: message.isError,
-          parentToolUseId: message.parentToolUseId ?? readString(payload.parentToolUseId),
-          target: readString(payload.target),
-          inputSummary: readString(payload.inputSummary),
-          resultSummary: readString(payload.resultSummary),
-          resultPreview: readPreviewRows(payload.resultPreview),
-          durationMs: readNumber(payload.durationMs),
-          toolGroupId: readString(payload.toolGroupId),
-          toolIndex: readNumber(payload.toolIndex),
-          toolTotal: readNumber(payload.toolTotal),
-          toolOperationId: readString(payload.toolOperationId),
-          toolOperationLabel: readString(payload.toolOperationLabel),
-          toolCategory: readString(payload.toolCategory),
-          toolPhaseId: readString(payload.toolPhaseId),
-          toolPhaseLabel: readString(payload.toolPhaseLabel),
-          toolSemanticParentId: readString(payload.toolSemanticParentId),
-          toolSemanticParentLabel: readString(payload.toolSemanticParentLabel),
+          parentToolUseId: message.parentToolUseId ?? flatString("parentToolUseId"),
+          resultSummary: flatString("resultSummary"),
+          resultPreview: flatPreviewRows("resultPreview"),
+          durationMs: flatNumber("durationMs"),
+          ...flatToolPresentation(),
           sessionId: event.sessionId,
           taskId,
           now,
@@ -267,29 +310,31 @@ export function applyYuanbaoServerMessageToChat(
       };
 
     case "permission_request": {
-      if (INTERNAL_APPROVAL_KINDS.has(message.toolName)) {
+      if (isInternalApprovalKind(message.toolName) || internalApprovalKindFromPayload(flatPayload) || internalApprovalKindFromPayload(payload)) {
         return { handled: true, messages: current };
       }
       const permissionPayload = {
         requestId: message.requestId,
         toolName: message.toolName,
+        toolUseId: message.toolUseId ?? flatString("toolUseId") ?? flatString("toolCallId"),
         input: message.input,
         description: message.description,
-        preview: readPreviewRows(payload.preview),
-        previewSections: Array.isArray(payload.previewSections) ? payload.previewSections : undefined,
-        filesChanged: readNumber(payload.filesChanged),
-        changedPaths: readStringArray(payload.changedPaths),
-        diffText: readString(payload.diffText),
+        preview: flatPreviewRows("preview"),
+        previewSections: Array.isArray(flatPayload.previewSections) ? flatPayload.previewSections : Array.isArray(payload.previewSections) ? payload.previewSections : undefined,
+        filesChanged: flatNumber("filesChanged"),
+        changedPaths: flatStringArray("changedPaths"),
+        diffText: flatString("diffText"),
+        ...flatToolPresentation(),
         sessionId: event.sessionId,
         taskId,
         now,
       };
-      if (payload.resolved === true) {
+      if (flatPayload.resolved === true || payload.resolved === true) {
         return {
           handled: true,
           messages: resolvePermissionRequestMessage(current, {
             ...permissionPayload,
-            decision: readString(payload.decision) || "approved",
+            decision: readString(flatPayload.decision) || readString(payload.decision) || "approved",
             createIfMissing: true,
           }),
         };
@@ -485,6 +530,7 @@ function appendTaskUpdateEvent(
   message: Extract<YuanbaoServerMessage, { type: "task_update" }>,
 ): ChatMessageView[] {
   const summary = message.progress || message.status;
+  const taskTitle = message.progress || message.status || "Task update";
   return appendSpecialEventMessage(current, {
     kind: "task_summary",
     sessionId: event.sessionId,
@@ -503,7 +549,7 @@ function appendTaskUpdateEvent(
       tasks: [
         {
           id: message.taskId,
-          title: message.progress || message.taskId,
+          title: taskTitle,
           status: message.status,
         },
       ],

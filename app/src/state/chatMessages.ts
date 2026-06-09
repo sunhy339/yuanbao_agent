@@ -46,6 +46,87 @@ function asAssistantTextMessage(message: ChatMessageView): ChatMessageView {
   };
 }
 
+function isAssistantContentBlockMessage(message: ChatMessageView): boolean {
+  return (
+    message.role === "assistant" &&
+    (typeof message.metadata?.contentBlockId === "string" ||
+      typeof message.metadata?.baseMessageId === "string")
+  );
+}
+
+function assistantContentBlockMetadata(
+  existing: Record<string, unknown> | undefined,
+  payload: {
+    baseMessageId?: string | null;
+    contentBlockId?: string | null;
+    blockIndex?: number | null;
+  },
+): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = { ...(existing ?? {}) };
+  if (payload.baseMessageId) {
+    metadata.baseMessageId = payload.baseMessageId;
+  }
+  if (payload.contentBlockId) {
+    metadata.contentBlockId = payload.contentBlockId;
+  }
+  if (typeof payload.blockIndex === "number" && Number.isFinite(payload.blockIndex)) {
+    metadata.blockIndex = payload.blockIndex;
+  }
+  return Object.keys(metadata).length ? metadata : undefined;
+}
+
+function hasAssistantContentBlocksForMessage(
+  messages: ChatMessageView[],
+  payload: {
+    sessionId: string;
+    taskId?: string | null;
+    messageId?: string | null;
+  },
+): boolean {
+  const messageId = payload.messageId?.trim();
+  return messages.some((message) => {
+    if (!isAssistantContentBlockMessage(message)) {
+      return false;
+    }
+    if (message.sessionId !== payload.sessionId) {
+      return false;
+    }
+    if (payload.taskId && message.taskId !== payload.taskId) {
+      return false;
+    }
+    return !messageId || message.metadata?.baseMessageId === messageId || message.id === messageId;
+  });
+}
+
+function withoutEmptyAssistantBaseMessage(
+  messages: ChatMessageView[],
+  payload: {
+    sessionId: string;
+    taskId?: string | null;
+    messageId?: string | null;
+  },
+): ChatMessageView[] {
+  const messageId = payload.messageId?.trim();
+  if (!messageId) {
+    return messages;
+  }
+  return messages.filter((message) => {
+    if (message.id !== messageId || message.role !== "assistant") {
+      return true;
+    }
+    if (message.sessionId !== payload.sessionId) {
+      return true;
+    }
+    if (payload.taskId && message.taskId !== payload.taskId) {
+      return true;
+    }
+    if (isAssistantContentBlockMessage(message)) {
+      return true;
+    }
+    return message.content.trim().length > 0;
+  });
+}
+
 export function messageRecordToChatMessage(record: MessageRecord): ChatMessageView | null {
   if (record.role !== "user" && record.role !== "assistant") {
     return null;
@@ -93,8 +174,30 @@ export function replaceSessionMessages(
       return allowedTaskIds.has(message.taskId);
     });
 
+  const segmentedBaseMessageIds = new Set<string>();
+  const segmentedTaskIds = new Set<string>();
+  for (const message of current) {
+    if (message.sessionId !== sessionId || !isAssistantContentBlockMessage(message)) {
+      continue;
+    }
+    const baseMessageId = message.metadata?.baseMessageId;
+    if (typeof baseMessageId === "string" && baseMessageId.trim()) {
+      segmentedBaseMessageIds.add(baseMessageId);
+    }
+    if (message.taskId) {
+      segmentedTaskIds.add(message.taskId);
+    }
+  }
+  const persistedMessagesForRender = persistedMessages.filter((message) => {
+    if (message.role !== "assistant") {
+      return true;
+    }
+    return !(segmentedBaseMessageIds.has(message.id) || segmentedTaskIds.has(message.taskId));
+  });
+
   // Single pass over current to split into other-session, live-streaming, and pending-local
   const otherSessionMessages: ChatMessageView[] = [];
+  const segmentedAssistantMessages: ChatMessageView[] = [];
   const liveStreamingMessages: ChatMessageView[] = [];
   const pendingLocalMessages: ChatMessageView[] = [];
   const ephemeralBlockMessages: ChatMessageView[] = [];
@@ -104,6 +207,8 @@ export function replaceSessionMessages(
       otherSessionMessages.push(message);
     } else if (excludedTaskIds?.has(message.taskId)) {
       continue;
+    } else if (isAssistantContentBlockMessage(message)) {
+      segmentedAssistantMessages.push(message);
     } else if (message.streaming) {
       liveStreamingMessages.push(message);
     } else if (isLocalPendingMessage(message)) {
@@ -120,9 +225,9 @@ export function replaceSessionMessages(
     }
   }
 
-  const persistedIds = new Set(persistedMessages.map((message) => message.id));
+  const persistedIds = new Set(persistedMessagesForRender.map((message) => message.id));
   const persistedClientMessageIds = new Set(
-    persistedMessages.map((message) => message.clientMessageId).filter((id): id is string => Boolean(id)),
+    persistedMessagesForRender.map((message) => message.clientMessageId).filter((id): id is string => Boolean(id)),
   );
   const dedupedPreservedOtherTaskMessages = preservedOtherTaskMessages.filter((message) => {
     if (persistedIds.has(message.id)) {
@@ -137,7 +242,7 @@ export function replaceSessionMessages(
     return !(message.clientMessageId && persistedClientMessageIds.has(message.clientMessageId));
   });
 
-  const maxPersistedTime = persistedMessages.reduce((max, msg) => Math.max(max, msg.createdAt), 0);
+  const maxPersistedTime = persistedMessagesForRender.reduce((max, msg) => Math.max(max, msg.createdAt), 0);
   const updatedLiveStreamingMessages = unmatchedLiveStreamingMessages.map((msg, index) => {
     const createdAt = Math.max(msg.createdAt, maxPersistedTime + 1 + index);
     return {
@@ -152,7 +257,7 @@ export function replaceSessionMessages(
   const unmatchedPendingLocalMessages: ChatMessageView[] = [];
 
   for (const local of pendingLocalMessages) {
-    const match = findPersistedMatch(persistedMessages, local, matchedPersistedIds);
+    const match = findPersistedMatch(persistedMessagesForRender, local, matchedPersistedIds);
     if (match) {
       matchedPersistedIds.add(match.id);
     } else {
@@ -163,7 +268,8 @@ export function replaceSessionMessages(
   return [
     ...otherSessionMessages,
     ...dedupedPreservedOtherTaskMessages,
-    ...persistedMessages,
+    ...persistedMessagesForRender,
+    ...segmentedAssistantMessages,
     ...ephemeralBlockMessages,
     ...unmatchedPendingLocalMessages,
     ...updatedLiveStreamingMessages,
@@ -266,6 +372,13 @@ interface ToolBatchMetadataPayload {
   durationMs?: number | null;
 }
 
+interface ToolPresentationPayload extends ToolBatchMetadataPayload {
+  displayTitle?: string | null;
+  displaySummary?: string | null;
+  displayTarget?: string | null;
+  displayKind?: string | null;
+}
+
 function toolBatchMetadataFromPayload(
   payload: ToolBatchMetadataPayload,
   current?: Record<string, unknown>,
@@ -324,6 +437,54 @@ function toolBatchMetadataFromPayload(
     metadata.durationMs = durationMs;
   }
   return metadata;
+}
+
+function toolPresentationMetadataFromPayload(
+  payload: ToolPresentationPayload,
+  current?: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata = toolBatchMetadataFromPayload(payload, current);
+  const displayTitle = payload.displayTitle ?? current?.displayTitle;
+  const displaySummary = payload.displaySummary ?? current?.displaySummary;
+  const displayTarget = payload.displayTarget ?? current?.displayTarget;
+  const displayKind = payload.displayKind ?? current?.displayKind;
+  if (displayTitle != null) {
+    metadata.displayTitle = displayTitle;
+  }
+  if (displaySummary != null) {
+    metadata.displaySummary = displaySummary;
+  }
+  if (displayTarget != null) {
+    metadata.displayTarget = displayTarget;
+  }
+  if (displayKind != null) {
+    metadata.displayKind = displayKind;
+  }
+  return metadata;
+}
+
+function compactDisplayText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function toolDisplayTitle(payload: ToolPresentationPayload, current?: Record<string, unknown>): string {
+  return compactDisplayText(payload.displayTitle) ||
+    compactDisplayText(current?.displayTitle) ||
+    compactDisplayText(payload.inputSummary) ||
+    compactDisplayText(current?.inputSummary) ||
+    compactDisplayText(payload.target) ||
+    compactDisplayText(current?.target) ||
+    compactDisplayText(payload.displayTarget) ||
+    compactDisplayText(current?.displayTarget);
+}
+
+function toolDisplaySummary(payload: ToolPresentationPayload, current?: Record<string, unknown>): string {
+  return compactDisplayText(payload.displaySummary) ||
+    compactDisplayText(current?.displaySummary) ||
+    compactDisplayText(payload.inputSummary) ||
+    compactDisplayText(current?.inputSummary) ||
+    compactDisplayText(payload.displayTitle) ||
+    compactDisplayText(current?.displayTitle);
 }
 
 function normalizePreviewRows(value: unknown): Array<{ label: string; value: string }> | undefined {
@@ -550,16 +711,19 @@ export function updateAssistantMessageByMessageId(
   options: {
     sessionId?: string | null;
     taskId?: string | null;
+    allowAttachFallback?: boolean;
   } = {},
 ): ChatMessageView[] {
   const exactIndex = current.findIndex((m) => m.id === messageId);
   const index =
     exactIndex >= 0
       ? exactIndex
-      : findAttachableAssistantMessageIndex(current, {
-          sessionId: options.sessionId ?? undefined,
-          taskId: options.taskId ?? undefined,
-        });
+      : options.allowAttachFallback === false
+        ? -1
+        : findAttachableAssistantMessageIndex(current, {
+            sessionId: options.sessionId ?? undefined,
+            taskId: options.taskId ?? undefined,
+          });
   if (index >= 0) {
     const next = [...current];
     next[index] = updater({
@@ -572,26 +736,57 @@ export function updateAssistantMessageByMessageId(
   return current;
 }
 
+export function assistantTextBlockMessageId(messageId: string, contentBlockId?: string | null, blockIndex?: number | null): string {
+  const normalizedBlockId = contentBlockId?.trim();
+  if (normalizedBlockId) {
+    return `assistant_text:${normalizedBlockId}`;
+  }
+  if (typeof blockIndex === "number" && Number.isFinite(blockIndex)) {
+    return `assistant_text:${messageId}:text:${blockIndex}`;
+  }
+  return messageId;
+}
+
 export function appendOrUpdateAssistantMessageDelta(
   current: ChatMessageView[],
   payload: {
     messageId: string;
+    contentBlockId?: string | null;
+    blockIndex?: number | null;
     sessionId: string;
     taskId?: string | null;
     delta: string;
     now: number;
   },
 ): ChatMessageView[] {
+  const hasBlockIdentity =
+    (typeof payload.contentBlockId === "string" && payload.contentBlockId.trim()) ||
+    (typeof payload.blockIndex === "number" && Number.isFinite(payload.blockIndex));
+  const targetMessageId = hasBlockIdentity
+    ? assistantTextBlockMessageId(payload.messageId, payload.contentBlockId, payload.blockIndex)
+    : payload.messageId;
+  const sourceMessages = hasBlockIdentity
+    ? withoutEmptyAssistantBaseMessage(current, {
+        sessionId: payload.sessionId,
+        taskId: payload.taskId,
+        messageId: payload.messageId,
+      })
+    : current;
   let updatedExisting = false;
   const updated = updateAssistantMessageByMessageId(
-    current,
-    payload.messageId,
+    sourceMessages,
+    targetMessageId,
     (msg) => {
       updatedExisting = true;
       const textMessage = asAssistantTextMessage(msg);
       return {
         ...textMessage,
         taskId: payload.taskId ?? msg.taskId,
+        metadata: assistantContentBlockMetadata(textMessage.metadata, {
+          baseMessageId: hasBlockIdentity ? payload.messageId : undefined,
+          contentBlockId: payload.contentBlockId,
+          blockIndex: payload.blockIndex,
+        }),
         content: msg.placeholder
           ? payload.delta.trimStart()
           : appendAssistantContentDelta(msg.content, payload.delta),
@@ -601,7 +796,7 @@ export function appendOrUpdateAssistantMessageDelta(
         status: "streaming",
       };
     },
-    { sessionId: payload.sessionId, taskId: payload.taskId },
+    { sessionId: payload.sessionId, taskId: payload.taskId, allowAttachFallback: !hasBlockIdentity },
   );
 
   if (updatedExisting) {
@@ -609,9 +804,9 @@ export function appendOrUpdateAssistantMessageDelta(
   }
 
   return [
-    ...current,
+    ...sourceMessages,
     {
-      id: payload.messageId,
+      id: targetMessageId,
       sessionId: payload.sessionId,
       taskId: payload.taskId ?? "pending",
       role: "assistant",
@@ -621,28 +816,21 @@ export function appendOrUpdateAssistantMessageDelta(
       streaming: true,
       placeholder: false,
       status: "streaming",
+      metadata: assistantContentBlockMetadata(undefined, {
+        baseMessageId: hasBlockIdentity ? payload.messageId : undefined,
+        contentBlockId: payload.contentBlockId,
+        blockIndex: payload.blockIndex,
+      }),
     },
   ];
 }
 
 export function appendOrUpdateAssistantToolInputDelta(
   current: ChatMessageView[],
-  payload: {
+  payload: ToolPresentationPayload & {
     toolUseId: string;
     toolName?: string | null;
     parentToolUseId?: string | null;
-    toolGroupId?: string | null;
-    toolIndex?: number | null;
-    toolTotal?: number | null;
-    toolOperationId?: string | null;
-    toolOperationLabel?: string | null;
-    toolCategory?: string | null;
-    toolPhaseId?: string | null;
-    toolPhaseLabel?: string | null;
-    toolSemanticParentId?: string | null;
-    toolSemanticParentLabel?: string | null;
-    target?: string | null;
-    inputSummary?: string | null;
     sessionId: string;
     taskId?: string | null;
     delta: string;
@@ -668,7 +856,7 @@ export function appendOrUpdateAssistantToolInputDelta(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
-        ...toolBatchMetadataFromPayload(payload, message.metadata),
+        ...toolPresentationMetadataFromPayload(payload, message.metadata),
       },
     };
     return next;
@@ -692,7 +880,7 @@ export function appendOrUpdateAssistantToolInputDelta(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
-        ...toolBatchMetadataFromPayload(payload),
+        ...toolPresentationMetadataFromPayload(payload),
       },
     },
   ];
@@ -741,22 +929,10 @@ function formatToolOutputText(output: unknown) {
 
 export function appendOrUpdateAssistantToolOutputDelta(
   current: ChatMessageView[],
-  payload: {
+  payload: ToolPresentationPayload & {
     toolUseId: string;
     toolName?: string | null;
     parentToolUseId?: string | null;
-    toolGroupId?: string | null;
-    toolIndex?: number | null;
-    toolTotal?: number | null;
-    toolOperationId?: string | null;
-    toolOperationLabel?: string | null;
-    toolCategory?: string | null;
-    toolPhaseId?: string | null;
-    toolPhaseLabel?: string | null;
-    toolSemanticParentId?: string | null;
-    toolSemanticParentLabel?: string | null;
-    target?: string | null;
-    inputSummary?: string | null;
     sessionId: string;
     taskId?: string | null;
     delta: string;
@@ -799,7 +975,7 @@ export function appendOrUpdateAssistantToolOutputDelta(
         kind: message.metadata?.kind === "tool_activity" ? "tool_activity" : "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
-        ...toolBatchMetadataFromPayload(payload, message.metadata),
+        ...toolPresentationMetadataFromPayload(payload, message.metadata),
         output,
         resultText,
       },
@@ -826,7 +1002,7 @@ export function appendOrUpdateAssistantToolOutputDelta(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
-        ...toolBatchMetadataFromPayload(payload),
+        ...toolPresentationMetadataFromPayload(payload),
         output,
         resultText: formatToolOutputText(output),
       },
@@ -836,22 +1012,10 @@ export function appendOrUpdateAssistantToolOutputDelta(
 
 export function appendOrUpdateAssistantToolStartMessage(
   current: ChatMessageView[],
-  payload: {
+  payload: ToolPresentationPayload & {
     toolUseId: string;
     toolName?: string | null;
     parentToolUseId?: string | null;
-    toolGroupId?: string | null;
-    toolIndex?: number | null;
-    toolTotal?: number | null;
-    toolOperationId?: string | null;
-    toolOperationLabel?: string | null;
-    toolCategory?: string | null;
-    toolPhaseId?: string | null;
-    toolPhaseLabel?: string | null;
-    toolSemanticParentId?: string | null;
-    toolSemanticParentLabel?: string | null;
-    target?: string | null;
-    inputSummary?: string | null;
     input?: unknown;
     sessionId: string;
     taskId?: string | null;
@@ -869,6 +1033,7 @@ export function appendOrUpdateAssistantToolStartMessage(
   );
   if (index >= 0) {
     const message = next[index];
+    const displayContent = toolDisplayTitle(payload, message.metadata);
     const terminal =
       message.status === "completed" ||
       message.status === "failed" ||
@@ -877,6 +1042,7 @@ export function appendOrUpdateAssistantToolStartMessage(
     next[index] = {
       ...message,
       taskId: payload.taskId ?? message.taskId,
+      content: displayContent || message.content,
       updatedAt: payload.now,
       streaming: terminal ? message.streaming : true,
       status: terminal ? message.status : "streaming",
@@ -886,13 +1052,15 @@ export function appendOrUpdateAssistantToolStartMessage(
         kind: message.metadata?.kind === "tool_activity" ? "tool_activity" : "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
-        ...toolBatchMetadataFromPayload(payload, message.metadata),
-        ...(inputText !== undefined ? { input: payload.input, inputText } : {}),
+        ...toolPresentationMetadataFromPayload(payload, message.metadata),
+        ...(inputText !== undefined ? { input: payload.input, rawInputText: inputText } : {}),
+        ...(displayContent ? { inputText: displayContent } : {}),
       },
     };
     return next;
   }
 
+  const displayContent = toolDisplayTitle(payload);
   return [
     ...next,
     {
@@ -900,7 +1068,7 @@ export function appendOrUpdateAssistantToolStartMessage(
       sessionId: payload.sessionId,
       taskId: payload.taskId ?? "pending",
       role: "assistant",
-      content: "",
+      content: displayContent,
       createdAt: payload.now,
       updatedAt: payload.now,
       streaming: true,
@@ -911,8 +1079,9 @@ export function appendOrUpdateAssistantToolStartMessage(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
-        ...toolBatchMetadataFromPayload(payload),
-        ...(inputText !== undefined ? { input: payload.input, inputText } : {}),
+        ...toolPresentationMetadataFromPayload(payload),
+        ...(inputText !== undefined ? { input: payload.input, rawInputText: inputText } : {}),
+        ...(displayContent ? { inputText: displayContent } : {}),
       },
     },
   ];
@@ -920,23 +1089,11 @@ export function appendOrUpdateAssistantToolStartMessage(
 
 export function completeAssistantToolUseMessage(
   current: ChatMessageView[],
-  payload: {
+  payload: ToolPresentationPayload & {
     toolUseId: string;
     toolName: string;
     input: unknown;
-    target?: string | null;
-    inputSummary?: string | null;
     parentToolUseId?: string | null;
-    toolGroupId?: string | null;
-    toolIndex?: number | null;
-    toolTotal?: number | null;
-    toolOperationId?: string | null;
-    toolOperationLabel?: string | null;
-    toolCategory?: string | null;
-    toolPhaseId?: string | null;
-    toolPhaseLabel?: string | null;
-    toolSemanticParentId?: string | null;
-    toolSemanticParentLabel?: string | null;
     sessionId: string;
     taskId?: string | null;
     now: number;
@@ -950,7 +1107,8 @@ export function completeAssistantToolUseMessage(
       message.id === messageId ||
       (message.metadata?.kind === "tool_activity" && message.metadata?.toolUseId === payload.toolUseId),
   );
-  const content = inputText || "{}";
+  const existingMetadata = index >= 0 ? next[index].metadata : undefined;
+  const content = toolDisplayTitle(payload, existingMetadata) || inputText || payload.toolName || "工具调用";
   if (index >= 0) {
     const message = next[index];
     const isActivity = message.metadata?.kind === "tool_activity";
@@ -970,9 +1128,10 @@ export function completeAssistantToolUseMessage(
               kind: isActivity ? "tool_activity" : "tool_use",
               toolUseId: payload.toolUseId,
               parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
-              ...toolBatchMetadataFromPayload(payload, message.metadata),
+              ...toolPresentationMetadataFromPayload(payload, message.metadata),
               input: payload.input,
               inputText: content,
+              rawInputText: inputText,
             },
           }
         : item,
@@ -997,9 +1156,10 @@ export function completeAssistantToolUseMessage(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
-        ...toolBatchMetadataFromPayload(payload),
+        ...toolPresentationMetadataFromPayload(payload),
         input: payload.input,
         inputText: content,
+        rawInputText: inputText,
       },
     },
   ];
@@ -1007,24 +1167,12 @@ export function completeAssistantToolUseMessage(
 
 export function appendAssistantToolResultMessage(
   current: ChatMessageView[],
-  payload: {
+  payload: ToolPresentationPayload & {
     toolUseId: string;
     toolName?: string | null;
     parentToolUseId?: string | null;
-    toolGroupId?: string | null;
-    toolIndex?: number | null;
-    toolTotal?: number | null;
-    toolOperationId?: string | null;
-    toolOperationLabel?: string | null;
-    toolCategory?: string | null;
-    toolPhaseId?: string | null;
-    toolPhaseLabel?: string | null;
-    toolSemanticParentId?: string | null;
-    toolSemanticParentLabel?: string | null;
     content: unknown;
     isError?: boolean;
-    target?: string | null;
-    inputSummary?: string | null;
     resultSummary?: string | null;
     resultPreview?: Array<{ label: string; value: string }> | null;
     durationMs?: number | null;
@@ -1036,7 +1184,6 @@ export function appendAssistantToolResultMessage(
   },
 ): ChatMessageView[] {
   const messageId = `tool_result:${payload.toolUseId}`;
-  const content = payload.resultSummary?.trim() || formatToolResultSummary(payload.content, payload.isError);
   const resultPreview = normalizePreviewRows(payload.resultPreview);
   const terminalStatus = payload.status ?? (payload.isError ? "failed" : "completed");
   const toolUseIndex = current.findIndex(
@@ -1047,16 +1194,20 @@ export function appendAssistantToolResultMessage(
   if (toolUseIndex >= 0) {
     const next = [...current];
     const message = next[toolUseIndex];
+    const content = compactDisplayText(payload.displaySummary) ||
+      compactDisplayText(payload.resultSummary) ||
+      formatToolResultSummary(payload.content, payload.isError);
     const inputContent =
       typeof message.metadata?.inputText === "string"
         ? message.metadata.inputText
         : message.content;
     const existingOutputText = formatToolOutputText(message.metadata?.output);
+    const visibleContent = payload.isError ? content || inputContent : inputContent || content;
     next[toolUseIndex] = {
       ...message,
       id: `tool_activity:${payload.toolUseId}`,
       taskId: payload.taskId ?? message.taskId,
-      content: inputContent || content,
+      content: visibleContent,
       updatedAt: payload.now,
       streaming: false,
       placeholder: false,
@@ -1067,7 +1218,7 @@ export function appendAssistantToolResultMessage(
         kind: "tool_activity",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
-        ...toolBatchMetadataFromPayload(payload, message.metadata),
+        ...toolPresentationMetadataFromPayload(payload, message.metadata),
         inputText: inputContent,
         resultText: existingOutputText ? `${existingOutputText}\n\n${content}` : content,
         target: payload.target ?? message.metadata?.target,
@@ -1084,6 +1235,13 @@ export function appendAssistantToolResultMessage(
     return next.filter((message, index) => index === toolUseIndex || message.id !== messageId);
   }
   const existingIndex = current.findIndex((message) => message.id === messageId);
+  const existingMetadata = existingIndex >= 0 ? current[existingIndex].metadata : undefined;
+  const resultText = compactDisplayText(payload.displaySummary) ||
+    compactDisplayText(payload.resultSummary) ||
+    formatToolResultSummary(payload.content, payload.isError);
+  const content = payload.isError
+    ? resultText || toolDisplaySummary(payload, existingMetadata)
+    : toolDisplaySummary(payload, existingMetadata) || resultText;
   const nextMessage: ChatMessageView = {
     id: messageId,
     sessionId: payload.sessionId,
@@ -1100,7 +1258,7 @@ export function appendAssistantToolResultMessage(
       kind: "tool_result",
       toolUseId: payload.toolUseId,
       parentToolUseId: payload.parentToolUseId ?? undefined,
-      ...toolBatchMetadataFromPayload(payload),
+      ...toolPresentationMetadataFromPayload(payload, existingMetadata),
       target: payload.target ?? undefined,
       inputSummary: payload.inputSummary ?? undefined,
       resultSummary: payload.resultSummary ?? undefined,
@@ -1254,8 +1412,10 @@ export function appendOrUpdateAssistantThinkingMessage(
   const content = payload.text && payload.text.trim() ? payload.text : chatStatusLabel(payload.state ?? undefined, payload.verb);
   const incomingTransient = isIncomingTransientThinking(payload, content);
   const stableEventId = payload.eventId?.trim() ?? "";
-  const eventMessageId = stableEventId ? `assistant_thinking:${stableEventId}` : "";
-  const existingEventIndex = stableEventId
+  const source = typeof payload.source === "string" ? payload.source.trim() : "";
+  const providerSummaryThinking = source === "provider_reasoning_summary" || source === "non_stream_thought_summary";
+  const eventMessageId = stableEventId && !providerSummaryThinking ? `assistant_thinking:${stableEventId}` : "";
+  const existingEventIndex = stableEventId && !providerSummaryThinking
     ? current.findIndex(
         (message) =>
           message.sessionId === payload.sessionId &&
@@ -1271,17 +1431,24 @@ export function appendOrUpdateAssistantThinkingMessage(
       ? existingEventIndex
       : latestThinkingIndex >= 0 &&
     latestThinkingIndex === latestTaskIndex &&
-    canUpdateThinkingSegment(current[latestThinkingIndex], payload, incomingTransient)
+    (providerSummaryThinking || canUpdateThinkingSegment(current[latestThinkingIndex], payload, incomingTransient))
       ? latestThinkingIndex
       : -1;
   const existing = existingIndex >= 0 ? current[existingIndex] : undefined;
   const messageId = existing?.id ?? (eventMessageId || assistantThinkingSegmentId(current, taskId));
+  const nextContent =
+    providerSummaryThinking &&
+    existing &&
+    existing.content.trim() &&
+    existing.content.trim() !== content.trim()
+      ? appendAssistantContentDelta(existing.content, `\n\n${content}`)
+      : content;
   const nextMessage: ChatMessageView = {
     id: messageId,
     sessionId: payload.sessionId,
     taskId,
     role: "assistant",
-    content,
+    content: nextContent,
     createdAt: existing ? existing.createdAt : payload.now,
     updatedAt: payload.now,
     streaming: true,
@@ -1307,6 +1474,7 @@ export function appendOrUpdateAssistantThinkingMessage(
     );
     const shouldAppendText =
       Boolean(payload.text?.trim()) &&
+      !providerSummaryThinking &&
       existing.metadata?.state === "thinking" &&
       payload.state === "thinking" &&
       !incomingTransient &&
@@ -1439,8 +1607,9 @@ export function closeAssistantThinkingForToolBoundary(
 
 export function appendOrUpdatePermissionRequestMessage(
   current: ChatMessageView[],
-  payload: {
+  payload: ToolPresentationPayload & {
     requestId: string;
+    toolUseId?: string | null;
     toolName?: string | null;
     input: unknown;
     description?: string | null;
@@ -1456,7 +1625,11 @@ export function appendOrUpdatePermissionRequestMessage(
 ): ChatMessageView[] {
   const messageId = `permission_request:${payload.requestId}`;
   const input = formatPermissionInputForChat(payload.toolName, payload.input);
-  const content = [payload.description?.trim(), input].filter(Boolean).join("\n\n");
+  const content = [
+    compactDisplayText(payload.displayTitle) || compactDisplayText(payload.description),
+    compactDisplayText(payload.displaySummary),
+    input,
+  ].filter(Boolean).join("\n\n");
   const existingIndex = current.findIndex((message) => message.id === messageId);
   const nextMessage: ChatMessageView = {
     id: messageId,
@@ -1472,8 +1645,10 @@ export function appendOrUpdatePermissionRequestMessage(
     metadata: {
       kind: "permission_request",
       requestId: payload.requestId,
+      toolUseId: payload.toolUseId ?? undefined,
       input: payload.input,
       approvalKind: payload.toolName ?? undefined,
+      ...toolPresentationMetadataFromPayload(payload),
       previewRows: payload.preview ?? undefined,
       previewSections: Array.isArray(payload.previewSections) ? payload.previewSections : undefined,
       filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
@@ -1492,9 +1667,10 @@ export function appendOrUpdatePermissionRequestMessage(
 
 export function resolvePermissionRequestMessage(
   current: ChatMessageView[],
-  payload: {
+  payload: ToolPresentationPayload & {
     requestId: string;
     decision: "approved" | "rejected" | string;
+    toolUseId?: string | null;
     input?: unknown;
     toolName?: string | null;
     preview?: Array<{ label: string; value: string }> | null;
@@ -1522,6 +1698,10 @@ export function resolvePermissionRequestMessage(
       return current;
     }
     const input = formatPermissionInputForChat(payload.toolName, payload.input);
+    const content = compactDisplayText(payload.displayTitle) ||
+      compactDisplayText(payload.displaySummary) ||
+      input ||
+      (payload.decision === "rejected" ? "此操作已被拒绝。" : "此操作已被允许。");
     return [
       ...current,
       {
@@ -1529,7 +1709,7 @@ export function resolvePermissionRequestMessage(
         sessionId: payload.sessionId,
         taskId: payload.taskId ?? "pending",
         role: "assistant",
-        content: input || (payload.decision === "rejected" ? "此操作已被拒绝。" : "此操作已被允许。"),
+        content,
         createdAt: payload.now,
         updatedAt: payload.now,
         streaming: false,
@@ -1539,8 +1719,10 @@ export function resolvePermissionRequestMessage(
         metadata: {
           kind: "permission_request",
           requestId: payload.requestId,
+          toolUseId: payload.toolUseId ?? undefined,
           decision: payload.decision,
           resolved: true,
+          ...toolPresentationMetadataFromPayload(payload),
           ...(payload.input !== undefined ? { input: payload.input } : {}),
           ...(payload.toolName ? { approvalKind: payload.toolName } : {}),
           ...(payload.preview ? { previewRows: payload.preview } : {}),
@@ -1562,8 +1744,10 @@ export function resolvePermissionRequestMessage(
       ...(message.metadata ?? {}),
       kind: "permission_request",
       requestId: payload.requestId,
+      toolUseId: payload.toolUseId ?? message.metadata?.toolUseId,
       decision: payload.decision,
       resolved: true,
+      ...toolPresentationMetadataFromPayload(payload, message.metadata),
       ...(payload.input !== undefined ? { input: payload.input } : {}),
       ...(payload.toolName ? { approvalKind: payload.toolName } : {}),
       ...(payload.preview ? { previewRows: payload.preview } : {}),
@@ -1780,6 +1964,27 @@ export function completeChatCompatMessage(
     now: number;
   },
 ): ChatMessageView[] {
+  if (hasAssistantContentBlocksForMessage(current, {
+    sessionId: payload.sessionId,
+    taskId: payload.taskId,
+    messageId: payload.messageId,
+  })) {
+    return current.map((message) =>
+      message.sessionId === payload.sessionId &&
+      message.role === "assistant" &&
+      isAssistantContentBlockMessage(message) &&
+      (!payload.taskId || message.taskId === payload.taskId) &&
+      (!payload.messageId || message.metadata?.baseMessageId === payload.messageId || message.id === payload.messageId)
+        ? {
+            ...message,
+            streaming: false,
+            placeholder: false,
+            status: message.status === "failed" ? message.status : ("completed" as const),
+            updatedAt: payload.now,
+          }
+        : message,
+    );
+  }
   const next = current.map((message) =>
     message.sessionId === payload.sessionId &&
     message.taskId === (payload.taskId ?? message.taskId) &&
@@ -1815,6 +2020,27 @@ export function appendOrUpdateAssistantMessageCompletion(
     now: number;
   },
 ): ChatMessageView[] {
+  if (hasAssistantContentBlocksForMessage(current, {
+    sessionId: payload.sessionId,
+    taskId: payload.taskId,
+    messageId: payload.messageId,
+  })) {
+    return current.map((message) =>
+      message.sessionId === payload.sessionId &&
+      message.role === "assistant" &&
+      isAssistantContentBlockMessage(message) &&
+      (!payload.taskId || message.taskId === payload.taskId) &&
+      (!payload.messageId || message.metadata?.baseMessageId === payload.messageId || message.id === payload.messageId)
+        ? {
+            ...message,
+            streaming: false,
+            placeholder: false,
+            status: message.status === "failed" ? message.status : ("completed" as const),
+            updatedAt: payload.now,
+          }
+        : message,
+    );
+  }
   const completedContent = payload.content ?? "";
   let updatedExisting = false;
   const updated = updateAssistantMessageByMessageId(
@@ -2186,11 +2412,151 @@ function formatChatBlockValue(value: unknown): string {
   if (typeof value === "string") {
     return value.trim();
   }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  const structuredSummary = summarizePublicChatObject(value);
+  if (structuredSummary) {
+    return structuredSummary;
+  }
   try {
     return JSON.stringify(value, null, 2);
   } catch {
     return String(value);
   }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function summarizePublicChatObject(value: unknown): string {
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => summarizePublicChatObject(item) || scalarPreview(item))
+      .filter(Boolean)
+      .slice(0, 4);
+    const suffix = value.length > items.length ? `，另有 ${value.length - items.length} 项` : "";
+    return items.length ? `${items.join("；")}${suffix}` : "";
+  }
+  if (!isPlainRecord(value)) {
+    return "";
+  }
+
+  const summary = readPublicRecordText(value, ["summary", "resultSummary", "message", "description"]);
+  const status = readPublicRecordText(value, ["status", "state", "approvalStatus"]);
+  const path = readPublicRecordText(value, ["path", "file", "target", "url"]);
+  const command = readPublicRecordText(value, ["command", "cmd"]);
+  const query = readPublicRecordText(value, ["query"]);
+  const changedPaths = readPublicRecordStringList(value, ["changedPaths", "paths", "files", "targets"]);
+  const filesChanged = readPublicRecordNumber(value, ["filesChanged", "fileCount"]);
+  const exitCode = readPublicRecordNumber(value, ["exitCode", "exit_code"]);
+  const durationMs = readPublicRecordNumber(value, ["durationMs", "duration_ms"]);
+  const contentChars =
+    readPublicRecordNumber(value, ["contentChars", "chars"]) ??
+    readOmittedChars(value.content) ??
+    readOmittedChars(value.patch);
+  const patchChars = readPublicRecordNumber(value, ["patchChars"]);
+  const preview = summarizePreviewRows(value.preview) || summarizePreviewRows(value.resultPreview);
+
+  const parts: string[] = [];
+  if (summary) parts.push(summary);
+  if (!summary && status) parts.push(status);
+  if (command && !summary?.includes(command)) parts.push(command);
+  if (query && !summary?.includes(query)) parts.push(`查询 ${query}`);
+  if (path && !summary?.includes(path)) parts.push(path);
+  if (changedPaths.length) {
+    const listed = changedPaths.slice(0, 3).join(", ");
+    const suffix = changedPaths.length > 3 ? ` +${changedPaths.length - 3}` : "";
+    parts.push(`涉及 ${listed}${suffix}`);
+  } else if (typeof filesChanged === "number") {
+    parts.push(`${filesChanged} 个文件`);
+  }
+  if (typeof contentChars === "number") parts.push(`内容 ${contentChars} 字符`);
+  if (typeof patchChars === "number") parts.push(`补丁 ${patchChars} 字符`);
+  if (typeof exitCode === "number") parts.push(`退出码 ${exitCode}`);
+  if (typeof durationMs === "number") parts.push(`${durationMs}ms`);
+  if (preview) parts.push(preview);
+
+  if (parts.length) {
+    return parts.filter(Boolean).slice(0, 6).join(" · ");
+  }
+
+  const simplePairs = Object.entries(value)
+    .filter(([key, item]) => !isInternalDisplayKey(key) && item !== null && item !== undefined && item !== "" && !isPlainRecord(item) && !Array.isArray(item))
+    .slice(0, 4)
+    .map(([key, item]) => `${key}: ${scalarPreview(item)}`)
+    .filter(Boolean);
+  return simplePairs.join(" · ");
+}
+
+function isInternalDisplayKey(key: string): boolean {
+  return /^(sessionId|taskId|eventId|workspaceRoot|originalWorkspaceRoot|requestJson|diffText|patchText|rawContent|providerRequest|authorization)$/i.test(key);
+}
+
+function readPublicRecordText(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
+
+function readPublicRecordNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function readPublicRecordStringList(record: Record<string, unknown>, keys: string[]): string[] {
+  const values: string[] = [];
+  const visit = (item: unknown, depth = 0) => {
+    if (depth > 2 || values.length >= 12) return;
+    if (typeof item === "string" && item.trim()) {
+      values.push(item.trim());
+      return;
+    }
+    if (Array.isArray(item)) {
+      item.forEach((entry) => visit(entry, depth + 1));
+      return;
+    }
+    if (isPlainRecord(item)) {
+      const direct = readPublicRecordText(item, ["path", "file", "name", "target", "url"]);
+      if (direct) values.push(direct);
+    }
+  };
+  keys.forEach((key) => visit(record[key]));
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function readOmittedChars(value: unknown): number | undefined {
+  if (!isPlainRecord(value) || value.omitted !== true) return undefined;
+  const chars = value.chars;
+  return typeof chars === "number" && Number.isFinite(chars) ? chars : undefined;
+}
+
+function summarizePreviewRows(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  const rows = value
+    .map((row) => {
+      if (!isPlainRecord(row)) return "";
+      const label = readPublicRecordText(row, ["label", "title", "name"]);
+      const rowValue = scalarPreview(row.value ?? row.summary ?? row.text);
+      return label && rowValue ? `${label}: ${rowValue}` : rowValue || label;
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  return rows.join(" · ");
+}
+
+function scalarPreview(value: unknown): string {
+  if (typeof value === "string") return value.trim().replace(/\s+/g, " ").slice(0, 160);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (isPlainRecord(value)) return summarizePublicChatObject(value);
+  return "";
 }
 
 function isPlanPermissionInput(value: unknown): value is Record<string, unknown> {

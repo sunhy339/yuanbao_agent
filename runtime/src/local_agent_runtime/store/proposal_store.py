@@ -345,7 +345,7 @@ class ProposalStoreMixin:
             "request": public_request,
             "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
             "changedPaths": changed_paths,
-            "diffText": _compact_approval_value(diff_text) if isinstance(diff_text, str) and diff_text else "",
+            "diffText": diff_text if isinstance(diff_text, str) and diff_text else "",
             "preview": _approval_preview(approval["kind"], request),
             "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
             "decision": approval["decision"],
@@ -506,7 +506,7 @@ class ProposalStoreMixin:
                 "request": public_request,
                 "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
                 "changedPaths": changed_paths,
-                "diffText": _compact_approval_value(diff_text) if isinstance(diff_text, str) and diff_text else "",
+                "diffText": diff_text if isinstance(diff_text, str) and diff_text else "",
                 "preview": _approval_preview(approval["kind"], request),
                 "previewSections": request.get("previewSections") if isinstance(request.get("previewSections"), list) else [],
             },
@@ -810,7 +810,7 @@ class ProposalStoreMixin:
         }
 
     VALID_PROPOSAL_KINDS = frozenset({
-        "intent_mode", "routing_strategy", "decomposition", "agent_profile", "model_policy",
+        "intent_mode", "decomposition", "agent_profile", "model_policy",
         "skill_policy", "tool_policy", "mcp_policy", "context_policy",
         "memory_policy", "artifact_contract", "risk_policy", "approval_policy",
         "test_strategy", "failure_recovery", "provider_preflight", "event_presentation",

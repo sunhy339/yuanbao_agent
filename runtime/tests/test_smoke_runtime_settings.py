@@ -22,7 +22,6 @@ def test_smoke_runtime_settings_can_shorten_child_timeout(monkeypatch) -> None:
     monkeypatch.setenv("YUANBAO_SMOKE_MAX_TASK_STEPS", "18")
     monkeypatch.setenv("YUANBAO_SMOKE_MAX_PARALLEL_SUBTASKS", "2")
     monkeypatch.setenv("YUANBAO_SMOKE_COMPACTION_THRESHOLD", "800")
-    monkeypatch.setenv("YUANBAO_SMOKE_ROUTING_TIMEOUT_SECONDS", "25")
     monkeypatch.setenv("YUANBAO_SMOKE_MAX_CONTEXT_TOKENS", "20000")
 
     settings = module.smoke_runtime_settings()
@@ -33,7 +32,7 @@ def test_smoke_runtime_settings_can_shorten_child_timeout(monkeypatch) -> None:
     assert settings["maxParallelSubtasks"] == 2
     assert settings["compactionThreshold"] == 800
     assert settings["maxContextTokens"] == 20000
-    assert settings["routingStrategyTimeoutSeconds"] == 25
+    assert "routingStrategyTimeoutSeconds" not in settings
 
 
 def test_build_runtime_applies_smoke_timeout_settings(tmp_path, monkeypatch) -> None:

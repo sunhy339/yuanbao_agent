@@ -10,7 +10,6 @@ from .orchestrator.service import Orchestrator
 from .policy.guard import PolicyGuard
 from .policy.permission_engine import PermissionEngine
 from .provider.adapter import ProviderAdapter
-from .router import MetaRouter
 from .rpc.server import JsonRpcServer
 from .services import CollaborationService, SubagentService
 from .services.hook_service import HookService
@@ -38,8 +37,6 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     collaboration = CollaborationService(store, event_bus)
     subagent_service = SubagentService(store, collaboration)
     provider = ProviderAdapter()
-    decision_advisor = None
-    meta_router = MetaRouter(provider=None, decision_advisor=None)
     memory_store = MemoryStore(store)
     memory_manager = MemoryManager(
         store=memory_store,
@@ -79,10 +76,8 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
-        meta_router=meta_router,
         memory_manager=memory_manager,
         hook_service=hook_service,
-        decision_advisor=decision_advisor,
         worktree_service=worktree_service,
         _skip_orphan_cleanup=os.environ.get("LOCAL_AGENT_CHILD_WORKER") == "1",
     )

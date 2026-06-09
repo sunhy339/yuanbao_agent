@@ -110,7 +110,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert canonical_created_event["payload"]["source"] == "collaboration"
     assert canonical_created_event["payload"]["taskKind"] == "collaboration_child"
     assert canonical_created_event["payload"]["title"] == "Publish collaboration events"
-    assert canonical_created_event["hahaCc"] == {
+    assert canonical_created_event["yuanbao"] == {
         "type": "task_update",
         "taskId": task["id"],
         "status": "queued",
@@ -120,7 +120,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert canonical_updated_event["payload"]["source"] == "collaboration"
     assert canonical_updated_event["payload"]["taskKind"] == "collaboration_child"
     assert canonical_updated_event["payload"]["workerId"] == worker["id"]
-    assert canonical_updated_event["hahaCc"] == {
+    assert canonical_updated_event["yuanbao"] == {
         "type": "task_update",
         "taskId": task["id"],
         "status": "claimed",
@@ -134,7 +134,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert created_event["payload"]["task"]["title"] == "Publish collaboration events"
     assert created_event["payload"]["team"]["teamName"] == session["id"]
     assert created_event["payload"]["team"]["tasks"][0]["id"] == task["id"]
-    assert created_event["hahaCc"] == {
+    assert created_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
         "members": [
@@ -155,7 +155,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert claimed_event["payload"]["worker"]["id"] == worker["id"]
     assert claimed_event["payload"]["worker"]["currentTaskId"] == task["id"]
     assert claimed_event["payload"]["team"]["teamName"] == session["id"]
-    assert claimed_event["hahaCc"] == {
+    assert claimed_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
         "members": [
@@ -176,7 +176,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert message_event["payload"]["message"]["taskId"] == task["id"]
     assert message_event["payload"]["message"]["payload"]["confidence"] == 0.95
     assert message_event["payload"]["team"]["teamName"] == session["id"]
-    assert message_event["hahaCc"] == {
+    assert message_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
         "members": [
@@ -195,7 +195,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert completed_event["payload"]["task"]["status"] == "completed"
     assert completed_event["payload"]["worker"]["status"] == "idle"
     assert completed_event["payload"]["team"]["teamName"] == session["id"]
-    assert completed_event["hahaCc"] == {
+    assert completed_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
         "members": [
@@ -222,10 +222,10 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert trace_events[0]["sessionId"] == session["id"]
     assert trace_events[0]["taskId"] == task["id"]
     assert {event["visibility"] for event in trace_events} == {"panel"}
-    assert trace_events[0]["hahaCc"] == canonical_created_event["hahaCc"]
-    assert trace_events[2]["hahaCc"] == canonical_updated_event["hahaCc"]
-    assert trace_events[-2]["hahaCc"]["type"] == "task_update"
-    assert trace_events[-2]["hahaCc"]["status"] == "completed"
+    assert trace_events[0]["yuanbao"] == canonical_created_event["yuanbao"]
+    assert trace_events[2]["yuanbao"] == canonical_updated_event["yuanbao"]
+    assert trace_events[-2]["yuanbao"]["type"] == "task_update"
+    assert trace_events[-2]["yuanbao"]["status"] == "completed"
 
     yuanbao_after = runtime_harness.call(
         "events.yuanbaoAfter",
@@ -233,16 +233,16 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     )["result"]["messages"]
     task_updates = [message for message in yuanbao_after if message.get("type") == "task_update"]
     assert task_updates[-3:] == [
-        canonical_created_event["hahaCc"],
-        canonical_updated_event["hahaCc"],
-        trace_events[-2]["hahaCc"],
+        canonical_created_event["yuanbao"],
+        canonical_updated_event["yuanbao"],
+        trace_events[-2]["yuanbao"],
     ]
     team_updates = [message for message in yuanbao_after if message.get("type") == "team_update"]
     assert team_updates[-4:] == [
-        created_event["hahaCc"],
-        claimed_event["hahaCc"],
-        message_event["hahaCc"],
-        completed_event["hahaCc"],
+        created_event["yuanbao"],
+        claimed_event["yuanbao"],
+        message_event["yuanbao"],
+        completed_event["yuanbao"],
     ]
 
     team_snapshot = runtime_harness.call("events.yuanbaoTeamSnapshot", {"sessionId": session["id"]})["result"]
@@ -250,11 +250,9 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
         "teamName": session["id"],
         "messages": [
             {"type": "team_created", "teamName": session["id"]},
-            completed_event["hahaCc"],
+            completed_event["yuanbao"],
         ],
     }
-    legacy_team_snapshot = runtime_harness.call("events.hahaCcTeamSnapshot", {"sessionId": session["id"]})["result"]
-    assert legacy_team_snapshot == team_snapshot
 
 
 def test_collaboration_visible_events_hide_internal_completion_evidence(runtime_harness: Any, tmp_path: Path) -> None:
@@ -355,7 +353,7 @@ def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtim
     worker_event = _event(runtime_harness, "collab.worker.upserted")
     assert worker_event["sessionId"] == session["id"]
     assert worker_event["taskId"] == session["id"]
-    assert worker_event["hahaCc"] == {
+    assert worker_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
         "members": [
@@ -407,7 +405,7 @@ def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtim
     failed_event = _event(runtime_harness, "collab.task.failed")
 
     assert heartbeat["currentTaskId"] == task["id"]
-    assert heartbeat_event["hahaCc"] == {
+    assert heartbeat_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
         "members": [
@@ -420,7 +418,7 @@ def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtim
         ],
     }
     assert failed["status"] == "failed"
-    assert failed_event["hahaCc"] == {
+    assert failed_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
         "members": [
@@ -435,10 +433,10 @@ def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtim
 
     session_events = runtime_harness.call("events.after", {"sessionId": session["id"], "afterSeq": 0})["result"]["events"]
     assert any(event["type"] == "collab.worker.upserted" for event in session_events)
-    assert any(event.get("yuanbao") == failed_event["hahaCc"] for event in session_events)
+    assert any(event.get("yuanbao") == failed_event["yuanbao"] for event in session_events)
 
 
-def test_session_update_emits_haha_cc_title_event(runtime_harness: Any, tmp_path: Path) -> None:
+def test_session_update_emits_yuanbao_title_event(runtime_harness: Any, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     workspace = _result(runtime_harness.call("workspace.open", {"path": str(workspace_root)}), "workspace")
@@ -464,7 +462,7 @@ def test_session_update_emits_haha_cc_title_event(runtime_harness: Any, tmp_path
     assert event["taskId"] == session["id"]
     assert event["payload"]["title"] == "new title"
     assert event["payload"]["changedFields"] == ["title"]
-    assert event["hahaCc"] == {
+    assert event["yuanbao"] == {
         "type": "session_title_updated",
         "sessionId": session["id"],
         "title": "new title",
@@ -472,7 +470,7 @@ def test_session_update_emits_haha_cc_title_event(runtime_harness: Any, tmp_path
 
     trace_events = runtime_harness.call("events.after", {"sessionId": session["id"], "afterSeq": 0})["result"]["events"]
     session_trace = [item for item in trace_events if item["type"] == "session.updated"]
-    assert session_trace[-1]["hahaCc"] == event["hahaCc"]
+    assert session_trace[-1]["yuanbao"] == event["yuanbao"]
 
 
 def test_session_create_emits_lifecycle_event_without_flat_chat_message(runtime_harness: Any, tmp_path: Path) -> None:

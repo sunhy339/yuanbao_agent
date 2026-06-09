@@ -58,7 +58,7 @@ function runtimeLaneRowSummary(item: RuntimeTimelineItem) {
   if (item.kind === "patch") {
     return compactText(item.summary || item.code || "已记录文件改动", 86);
   }
-  return compactText(item.summary || item.rawDetail || item.code || "需要关注的运行信号", 86);
+  return compactText(item.summary || getRuntimeKindLabel(item.kind), 86);
 }
 
 function uniqueNonEmptyStrings(values: Array<string | null | undefined>) {

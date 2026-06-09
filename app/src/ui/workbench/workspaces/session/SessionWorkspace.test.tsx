@@ -1000,13 +1000,14 @@ describe("SessionWorkspace", () => {
     const blocks = container.querySelectorAll(".message-tool-block");
     expect(blocks).toHaveLength(1);
     expect(screen.getAllByText("运行命令").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/命令：npm test → 状态：已完成/)).toBeInTheDocument();
+    expect(screen.getByText(/命令：npm test/)).toBeInTheDocument();
+    expect(screen.getByText(/状态：已完成/)).toBeInTheDocument();
     expect(screen.queryByText(/"command": "npm test"/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /运行命令/ }));
-    expect(screen.getByText("输入")).toBeInTheDocument();
-    expect(screen.getByText("结果")).toBeInTheDocument();
-    expect(screen.getByText(/"command": "npm test"/)).toBeInTheDocument();
+    expect(screen.queryByText("输入")).not.toBeInTheDocument();
+    expect(screen.queryByText("结果")).not.toBeInTheDocument();
+    expect(screen.queryByText(/"command": "npm test"/)).not.toBeInTheDocument();
   });
 
   it("prefers structured tool summaries for chat-compatible activity blocks", () => {
@@ -1035,7 +1036,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText(/查询：needle → found 2 match\(es\) for needle: src\/app\.ts/)).toBeInTheDocument();
+    expect(screen.getByText("needle")).toBeInTheDocument();
+    expect(screen.getByText(/found 2 match\(es\) for needle: src\/app\.ts/)).toBeInTheDocument();
     expect(screen.queryByText(/正在搜索文件/)).not.toBeInTheDocument();
   });
 
@@ -2199,7 +2201,7 @@ describe("SessionWorkspace", () => {
     }
   });
 
-  it("renders completion review evidence on approval cards", () => {
+  it("keeps completion review evidence out of chat approval cards", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -2233,15 +2235,12 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const evidence = screen.getByLabelText("Completion evidence");
-    expect(within(evidence).getByText("Code files changed without targeted verification.")).toBeInTheDocument();
-    expect(within(evidence).getAllByText("verified").length).toBeGreaterThan(0);
-    expect(within(evidence).getByText("files")).toBeInTheDocument();
-    expect(within(evidence).getByText("2")).toBeInTheDocument();
-    expect(within(evidence).getByText("Code/test changes need targeted test, build, or typecheck verification.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Completion evidence")).not.toBeInTheDocument();
+    expect(screen.queryByText("Code files changed without targeted verification.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Code/test changes need targeted test, build, or typecheck verification.")).not.toBeInTheDocument();
   });
 
-  it("surfaces completion gate evidence in the chat stream without exposing internal cockpit panels", () => {
+  it("keeps completion gate evidence out of the chat stream without exposing internal cockpit panels", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -2326,9 +2325,9 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
     expect(within(digest).getByText("2 项验证")).toBeInTheDocument();
     expect(screen.queryByText("needs_acceptance_review")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Readable artifact copy needs review.").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("failed: Static frontend asset reachable: index.html -> app.js").length).toBeGreaterThan(0);
-    expect(screen.getByText("Completion review approved by user.")).toBeInTheDocument();
+    expect(screen.queryByText("Readable artifact copy needs review.")).not.toBeInTheDocument();
+    expect(screen.queryByText("failed: Static frontend asset reachable: index.html -> app.js")).not.toBeInTheDocument();
+    expect(screen.queryByText("Completion review approved by user.")).not.toBeInTheDocument();
     expect(screen.queryByText("模型异常")).not.toBeInTheDocument();
     expect(screen.queryByText("Switched provider profile.")).not.toBeInTheDocument();
     expect(screen.queryByText("Review generated frontend acceptance evidence.")).not.toBeInTheDocument();

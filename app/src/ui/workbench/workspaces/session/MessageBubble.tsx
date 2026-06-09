@@ -76,6 +76,35 @@ function getMessageMetadataString(message: SessionWorkspaceMessage, key: string)
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
+function getMessagePreviewSummary(message: SessionWorkspaceMessage) {
+  const rows = message.metadata?.resultPreview;
+  if (!Array.isArray(rows)) return "";
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== "object") return "";
+      const record = row as Record<string, unknown>;
+      const label = typeof record.label === "string" ? record.label.trim() : "";
+      const value = typeof record.value === "string" ? record.value.trim() : "";
+      return label && value ? `${label}: ${value}` : "";
+    })
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" · ");
+}
+
+function isRawJsonLike(value?: string) {
+  const trimmed = value?.trim();
+  return Boolean(
+    trimmed &&
+      ((trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+        (trimmed.startsWith("[") && trimmed.endsWith("]"))),
+  );
+}
+
+function compactToolDisplayText(value: string, limit = 140) {
+  return value.replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
 function formatJsonValue(value: unknown) {
   if (typeof value === "string") {
     return value.trim();
@@ -142,8 +171,26 @@ function summarizeToolContent(content: string, kind: string) {
 }
 
 function summarizeToolActivity(message: SessionWorkspaceMessage, inputText: string, resultText: string) {
+  const displaySummary = getMessageMetadataString(message, "displaySummary");
   const resultSummary = getMessageMetadataString(message, "resultSummary");
-  return `${summarizeToolContent(inputText, "tool_use")}${resultSummary ? ` → ${resultSummary}` : resultText ? ` → ${summarizeToolContent(resultText, "tool_result")}` : ""}`;
+  const previewSummary = getMessagePreviewSummary(message);
+  const inputSummary = getMessageMetadataString(message, "inputSummary");
+  const target = getMessageMetadataString(message, "target");
+  const derivedInputSummary = inputText ? summarizeToolContent(inputText, "tool_use") : "";
+  const derivedResultSummary = resultText ? summarizeToolContent(resultText, "tool_result") : "";
+  if (displaySummary) return compactToolDisplayText(displaySummary);
+  if (resultSummary) return compactToolDisplayText(resultSummary);
+  if (previewSummary) return compactToolDisplayText(previewSummary);
+  if (inputSummary && inputSummary !== target) return compactToolDisplayText(inputSummary);
+  if (target && derivedResultSummary) return compactToolDisplayText(derivedResultSummary);
+  if (derivedInputSummary && derivedResultSummary && derivedInputSummary !== derivedResultSummary) {
+    return compactToolDisplayText(`${derivedInputSummary} - ${derivedResultSummary}`);
+  }
+  if (derivedInputSummary) return compactToolDisplayText(derivedInputSummary);
+  if (derivedResultSummary) return compactToolDisplayText(derivedResultSummary);
+  if (resultText && !isRawJsonLike(resultText)) return compactToolDisplayText(resultText);
+  if (inputText && !isRawJsonLike(inputText) && inputText !== target) return compactToolDisplayText(inputText);
+  return "";
 }
 
 function getToolTarget(value: unknown) {
@@ -206,11 +253,26 @@ function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
     () => parseToolInputRecord(message),
     [content, metadataInput, metadataInputText],
   );
-  const target = getToolTarget(inputRecord);
+  const metadataTarget = getMessageMetadataString(message, "displayTarget") || getMessageMetadataString(message, "target");
+  const inputSummary = getMessageMetadataString(message, "inputSummary");
+  const target = metadataTarget || getToolTarget(inputRecord);
   const summary = isActivity ? summarizeToolActivity(message, inputText, resultText) : summarizeToolContent(content, kind);
-  const toolLabel = formatToolNameLabel(message.toolName) || (isActivity ? "工具过程" : isResult ? "工具结果" : "工具调用");
+  const displayTitle = getMessageMetadataString(message, "displayTitle");
+  const toolLabel = displayTitle || formatToolNameLabel(message.toolName) || (isActivity ? "工具过程" : isResult ? "工具结果" : "工具调用");
   const statusLabel = getToolStatusLabel(message, isError, isActivity, isResult);
   const ToggleIcon = expanded ? ChevronDown : ChevronRight;
+  const showInputDetail = Boolean(
+    inputText &&
+      !isRawJsonLike(inputText) &&
+      inputText !== target &&
+      inputText !== inputSummary,
+  );
+  const showRawInputDetail = Boolean(
+    inputText &&
+      isRawJsonLike(inputText) &&
+      (isError || (!inputSummary && !target && !summary)),
+  );
+  const showResultDetail = Boolean(resultText && (!isRawJsonLike(resultText) || isError));
 
   return (
     <section className="message-tool-block" data-kind={kind} data-error={isError ? "true" : "false"}>
@@ -229,13 +291,13 @@ function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
       </button>
       {expanded && isActivity ? (
         <div className="message-tool-block-detail">
-          {inputText ? (
+          {showInputDetail || showRawInputDetail ? (
             <section>
               <span>输入</span>
               <pre>{inputText}</pre>
             </section>
           ) : null}
-          {resultText ? (
+          {showResultDetail ? (
             <section>
               <span>结果</span>
               <pre>{resultText}</pre>

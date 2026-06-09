@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from local_agent_runtime.policy.tool_policy_resolver import ToolPolicyResolver
-from local_agent_runtime.orchestrator.message_routing import MessageRoutingMixin
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import BUILTIN_TOOL_SCHEMAS
 
@@ -28,7 +27,7 @@ def test_root_continues_with_non_subagent_tools_after_task_result_by_default() -
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "react_standard"}},
+        context={"routing": {"mode": "model_first"}},
         tool_results=[{"name": "task", "result": {"status": "completed"}}],
         registered_tools=_tools("task", "read_file", "write_file", "run_command"),
     )
@@ -39,11 +38,11 @@ def test_root_continues_with_non_subagent_tools_after_task_result_by_default() -
     assert decision.role_snapshot["runtimeRole"] == "root"
 
 
-def test_plan_strategy_continues_with_non_subagent_tools_after_task_result_by_default() -> None:
+def test_legacy_plan_strategy_does_not_change_post_task_continuation_source() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "plan_swarm"}},
+        context={"routing": {"mode": "model_first"}},
         tool_results=[{"name": "task", "result": {"status": "completed"}}],
         registered_tools=_tools("task", "read_file", "write_file", "run_command"),
     )
@@ -52,7 +51,7 @@ def test_plan_strategy_continues_with_non_subagent_tools_after_task_result_by_de
     assert set(decision.allowed_tool_names) == {"read_file", "write_file", "run_command"}
     assert decision.denied_tool_names == ["task"]
     task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
-    assert task_detail["toolContinuationPolicy"]["source"] == "strategy_default_post_task_continuation"
+    assert task_detail["toolContinuationPolicy"]["source"] == "runtime_post_task_continuation"
     assert "parent may continue with non-task tools" in task_detail["reason"]
 
 
@@ -62,7 +61,7 @@ def test_cleanup_noise_profile_limits_root_tools() -> None:
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "react_standard",
+                "mode": "model_first",
                 "profile": {"toolPolicy": "cleanup_noise"},
             },
         },
@@ -83,19 +82,13 @@ def test_cleanup_noise_profile_limits_root_tools() -> None:
     assert set(decision.denied_tool_names) == {"read_file", "search_files", "write_file", "apply_patch"}
 
 
-def test_cleanup_goal_detector_matches_systemdrive_cleanup_request() -> None:
-    assert MessageRoutingMixin._goal_mentions_generated_local_cleanup(
-        "优化一下，systemdrive看看需要不需要，不需要删掉"
-    )
-
-
-def test_plan_strategy_explicit_disable_synthesizes_after_task_result() -> None:
+def test_explicit_continuation_disable_synthesizes_after_task_result() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "plan_swarm",
+                "mode": "model_first",
                 "toolContinuation": {"allowToolsAfterTaskResults": False},
             },
         },
@@ -108,18 +101,18 @@ def test_plan_strategy_explicit_disable_synthesizes_after_task_result() -> None:
     assert set(decision.denied_tool_names) == {"task", "read_file"}
 
 
-def test_advisor_continuation_can_allow_post_task_tools_for_standard_react() -> None:
+def test_explicit_model_continuation_can_allow_post_task_tools_for_standard_react() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "react_standard",
+                "mode": "model_first",
                 "toolContinuation": {
                     "allowToolsAfterTaskResults": True,
                     "allowMoreSubtasksAfterTaskResults": False,
                     "maxTaskToolCalls": 1,
-                    "source": "decision_advisor",
+                    "source": "model_tool_call",
                     "rationale": "Parent should inspect and integrate a delegated result before final synthesis.",
                 },
             },
@@ -132,7 +125,7 @@ def test_advisor_continuation_can_allow_post_task_tools_for_standard_react() -> 
     assert set(decision.allowed_tool_names) == {"read_file", "write_file", "run_command"}
     assert decision.denied_tool_names == ["task"]
     task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
-    assert task_detail["toolContinuationPolicy"]["source"] == "decision_advisor"
+    assert task_detail["toolContinuationPolicy"]["source"] == "model_tool_call"
     assert task_detail["toolContinuationPolicy"]["allowToolsAfterTaskResults"] is True
     assert "1/1" in task_detail["reason"]
 
@@ -143,7 +136,7 @@ def test_task_tool_budget_allows_bounded_follow_up_subtasks() -> None:
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "plan_swarm",
+                "mode": "model_first",
                 "toolContinuation": {
                     "allowToolsAfterTaskResults": True,
                     "maxTaskToolCalls": 2,
@@ -165,7 +158,7 @@ def test_task_tool_budget_blocks_after_limit() -> None:
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "plan_swarm",
+                "mode": "model_first",
                 "toolContinuation": {
                     "allowToolsAfterTaskResults": True,
                     "allowMoreSubtasksAfterTaskResults": True,
@@ -191,7 +184,7 @@ def test_agent_result_continues_with_non_subagent_tools_by_default() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "react_standard"}},
+        context={"routing": {"mode": "model_first"}},
         tool_results=[{"name": "agent", "result": {"status": "completed"}}],
         registered_tools=_tools("agent", "task", "read_file"),
     )
@@ -201,16 +194,16 @@ def test_agent_result_continues_with_non_subagent_tools_by_default() -> None:
     assert set(decision.denied_tool_names) == {"agent", "task"}
 
 
-def test_plan_strategy_exposes_agent_and_task_during_legacy_planning() -> None:
+def test_model_first_initial_phase_allows_model_to_choose_tools() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "plan_swarm", "legacyPlanExecution": True}},
+        context={"routing": {"mode": "model_first"}},
         tool_results=[],
         registered_tools=_tools("agent", "task", "read_file", "write_file"),
     )
 
-    assert decision.phase == "planning"
+    assert decision.phase == "investigation"
     assert {"agent", "task", "read_file"}.issubset(set(decision.allowed_tool_names))
     assert "write_file" in decision.allowed_tool_names
 
@@ -219,7 +212,7 @@ def test_model_tools_plan_strategy_stays_investigation_phase() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"}},
+        context={"routing": {"mode": "model_first"}},
         tool_results=[],
         registered_tools=_tools("agent", "task", "read_file", "write_file"),
     )
@@ -235,7 +228,7 @@ def test_agent_tool_budget_blocks_agent_and_task_after_limit() -> None:
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "plan_swarm",
+                "mode": "model_first",
                 "toolContinuation": {
                     "allowToolsAfterTaskResults": True,
                     "allowMoreSubtasksAfterTaskResults": True,
@@ -641,7 +634,7 @@ def test_default_root_turn_hides_plan_mode_tools_unless_explicit() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "react_standard"}},
+        context={"routing": {"mode": "model_first"}},
         tool_results=[],
         registered_tools=_tools("read_file", "ask_user_question", "enter_plan_mode", "exit_plan_mode"),
     )
@@ -651,7 +644,7 @@ def test_default_root_turn_hides_plan_mode_tools_unless_explicit() -> None:
 
     explicit = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "react_standard", "planModeToolsEnabled": True}},
+        context={"routing": {"mode": "model_first", "planModeToolsEnabled": True}},
         tool_results=[],
         registered_tools=_tools("read_file", "ask_user_question", "enter_plan_mode", "exit_plan_mode"),
     )
@@ -670,7 +663,7 @@ def test_read_only_user_constraint_hides_write_capable_tools() -> None:
         task={"id": "task_root", "role": "root"},
         context={
             "goal": "Create a next-step optimization plan. Do not modify files and do not run write commands.",
-            "routing": {"strategy": "react_standard"},
+            "routing": {"mode": "model_first"},
         },
         tool_results=[],
         registered_tools=_tools(
@@ -700,7 +693,7 @@ def test_read_only_user_constraint_can_explicitly_allow_user_question() -> None:
         task={"id": "task_root", "role": "root"},
         context={
             "goal": "Read-only analysis. Do not modify files.",
-            "routing": {"strategy": "react_standard", "requiresUserInput": True},
+            "routing": {"mode": "model_first", "requiresUserInput": True},
         },
         tool_results=[],
         registered_tools=_tools("read_file", "write_file", "ask_user_question"),
@@ -716,7 +709,7 @@ def test_read_only_user_constraint_can_come_from_main_workflow_preview() -> None
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "react_standard",
+                "mode": "model_first",
                 "mainWorkflow": {
                     "userTakeover": {
                         "latestUserMessagePreview": "只读分析当前项目，不要修改文件。",
@@ -738,7 +731,7 @@ def test_internal_routing_reasoning_does_not_create_read_only_constraint() -> No
         task={"id": "task_root", "role": "root"},
         context={
             "routing": {
-                "strategy": "react_standard",
+                "mode": "model_first",
                 "reasoning": "model-first-default: rule-match: keyword='read-only-doc-overrides-write:doc'",
             },
         },
@@ -756,7 +749,7 @@ def test_read_only_multi_agent_keeps_subagent_tools_without_write_tools() -> Non
         task={"id": "task_root", "role": "root"},
         context={
             "goal": "Use multiple agents for read-only analysis. Do not modify files.",
-            "routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
+            "routing": {"mode": "model_first"},
         },
         tool_results=[],
         registered_tools=_tools("agent", "task", "read_file", "write_file", "run_command", "ask_user_question"),
@@ -775,7 +768,7 @@ def test_local_read_only_child_guidance_does_not_hide_root_write_tools() -> None
                 "Build a browser audio tuner. You may use multiple agents for read-only "
                 "design/review if useful, but keep actual file edits in the main task."
             ),
-            "routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
+            "routing": {"mode": "model_first"},
         },
         tool_results=[],
         registered_tools=_tools(
@@ -800,7 +793,7 @@ def test_low_risk_defaulted_ask_user_question_is_not_reoffered_by_default() -> N
         task={"id": "task_root", "role": "root"},
         context={
             "goal": "Use multiple agents for read-only analysis. Do not modify files.",
-            "routing": {"strategy": "plan_swarm", "orchestrationMode": "model_tools"},
+            "routing": {"mode": "model_first"},
         },
         tool_results=[
             {
@@ -827,7 +820,7 @@ def test_explicit_user_input_requirement_reoffers_ask_user_question_after_defaul
         context={
             "goal": "Read-only analysis. Ask only if a blocking scope choice is missing.",
             "routing": {
-                "strategy": "react_standard",
+                "mode": "model_first",
                 "requiresUserInput": True,
             },
         },
@@ -854,7 +847,7 @@ def test_explicit_plan_mode_keeps_plan_tools_under_read_only_constraint() -> Non
         task={"id": "task_root", "role": "root"},
         context={
             "goal": "Inspect read-only context first, then request explicit plan approval before any edit.",
-            "routing": {"strategy": "react_standard", "planModeToolsEnabled": True},
+            "routing": {"mode": "model_first", "planModeToolsEnabled": True},
         },
         tool_results=[],
         registered_tools=_tools(

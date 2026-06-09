@@ -57,24 +57,23 @@ def test_haha_cc_message_keeps_only_server_message_fields() -> None:
     ) == {
         "type": "content_delta",
         "text": "hello",
-        "toolOutput": "stdout stays on the local envelope only",
-        "target": "npm test",
     }
 
 
 def test_haha_cc_message_rejects_incomplete_server_messages() -> None:
     assert to_haha_cc_server_message(_event("content_start", {"toolName": "read_file"})) is None
-    assert to_haha_cc_server_message(_event("content_delta", {"toolOutput": "stdout only"})) == {
-        "type": "content_delta",
-        "toolOutput": "stdout only",
-    }
+    assert to_haha_cc_server_message(_event("content_delta", {"toolOutput": "stdout only"})) is None
     assert (
         to_haha_cc_server_message(
             _event("permission_request", {"requestId": "approval_1", "toolName": "run_command"})
         )
         is None
     )
-    assert to_haha_cc_server_message(_event("status", {"state": "retrying_provider"})) is None
+    assert to_haha_cc_server_message(_event("status", {"state": "thinking", "verb": "Thinking"})) == {
+        "type": "status",
+        "state": "thinking",
+        "verb": "Thinking",
+    }
     assert (
         to_haha_cc_server_message(
             _event("computer_use_permission_request", {"request": {"action": "click"}})
@@ -127,10 +126,28 @@ def test_message_complete_usage_is_normalized_to_snake_case() -> None:
 
 
 def test_message_completed_raw_usage_is_normalized() -> None:
+    assert (
+        to_haha_cc_server_message(
+            _event(
+                "message.completed",
+                {
+                    "raw": {
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 5,
+                            "prompt_tokens_details": {"cached_tokens": 7},
+                        }
+                    }
+                },
+            )
+        )
+        is None
+    )
     message = to_haha_cc_server_message(
         _event(
             "message.completed",
             {
+                "_chatCompat": True,
                 "raw": {
                     "usage": {
                         "prompt_tokens": 10,
@@ -153,10 +170,28 @@ def test_message_completed_raw_usage_is_normalized() -> None:
 
 
 def test_message_complete_usage_normalizes_anthropic_cache_tokens() -> None:
+    assert (
+        to_haha_cc_server_message(
+            _event(
+                "message.completed",
+                {
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 12,
+                        "cache_read_input_tokens": 80,
+                        "cache_creation_input_tokens": 15,
+                        "budgetRemainingTokens": 9000,
+                    }
+                },
+            )
+        )
+        is None
+    )
     message = to_haha_cc_server_message(
         _event(
             "message.completed",
             {
+                "_chatCompat": True,
                 "usage": {
                     "input_tokens": 100,
                     "output_tokens": 12,
@@ -251,7 +286,7 @@ def test_task_and_session_events_map_to_haha_cc_names() -> None:
         "status": "queued",
         "progress": "Write docs",
     }
-    assert to_haha_cc_server_message(_event("task.routing.decided", {"status": "running", "goal": "Write docs"})) is None
+    assert to_haha_cc_server_message(_event("runtime.context.prepared", {"status": "running", "goal": "Write docs"})) is None
     assert to_haha_cc_server_message(_event("task.updated", {"status": "running", "goal": "Write docs"})) is None
     assert to_haha_cc_server_message(_event("session.updated", {"title": "New title", "changedFields": ["title"]})) == {
         "type": "session_title_updated",
@@ -442,12 +477,7 @@ def test_backend_assistant_progress_is_not_a_haha_cc_server_message() -> None:
 
 
 def test_tool_progress_events_map_to_haha_cc_task_progress_notifications() -> None:
-    assert to_haha_cc_server_message(_event("tool.output", {"toolName": "run_command", "chunk": "npm ok"})) == {
-        "type": "system_notification",
-        "subtype": "task_progress",
-        "message": "npm ok",
-        "data": {"toolName": "run_command", "chunk": "npm ok"},
-    }
+    assert to_haha_cc_server_message(_event("tool.output", {"toolName": "run_command", "chunk": "npm ok"})) is None
 
 
 def test_normalize_usage_falls_back_total_tokens_to_input() -> None:
@@ -464,7 +494,7 @@ def test_yuanbao_alias_matches_haha_cc_compat_message() -> None:
     assert normalize_yuanbao_usage({"total_tokens": 42}) == normalize_haha_cc_usage({"total_tokens": 42})
 
 
-def test_trace_list_and_events_after_include_haha_cc_message(tmp_path) -> None:
+def test_trace_list_and_events_after_include_single_flat_message(tmp_path) -> None:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -483,27 +513,24 @@ def test_trace_list_and_events_after_include_haha_cc_message(tmp_path) -> None:
     assert trace["yuanbao"] == {
         "type": "content_delta",
         "text": "hello",
-        "toolOutput": "kept only on local payload",
     }
-    assert trace["hahaCc"] == trace["yuanbao"]
+    assert "hahaCc" not in trace
     listed = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
     assert listed[0]["yuanbao"] == {
         "type": "content_delta",
         "text": "hello",
-        "toolOutput": "kept only on local payload",
     }
-    assert listed[0]["hahaCc"] == listed[0]["yuanbao"]
+    assert "hahaCc" not in listed[0]
     assert listed[0]["payload"]["toolOutput"] == "kept only on local payload"
     after = store.events_after(session["id"], 0)["events"]
     assert after[0]["yuanbao"] == {
         "type": "content_delta",
         "text": "hello",
-        "toolOutput": "kept only on local payload",
     }
-    assert after[0]["hahaCc"] == after[0]["yuanbao"]
+    assert "hahaCc" not in after[0]
 
 
-def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_path) -> None:
+def test_rpc_yuanbao_events_after_returns_flat_messages_and_last_sequence(tmp_path) -> None:
     from local_agent_runtime.event_bus import EventBus
     from local_agent_runtime.orchestrator.service import Orchestrator
     from local_agent_runtime.rpc.server import JsonRpcServer
@@ -551,7 +578,7 @@ def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_pa
             {
                 "jsonrpc": "2.0",
                 "id": "req_1",
-                "method": "events.hahaCcAfter",
+                "method": "events.yuanbaoAfter",
                 "params": {"sessionId": session["id"], "afterSeq": 0},
             }
         )
@@ -565,19 +592,6 @@ def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_pa
         "lastSeq": 3,
         "truncated": False,
     }
-
-    yuanbao_response = server.handle_line(
-        json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": "req_2",
-                "method": "events.yuanbaoAfter",
-                "params": {"sessionId": session["id"], "afterSeq": 0},
-            }
-        )
-    )
-    assert yuanbao_response["result"] == response["result"]
-
 
 def test_rpc_yuanbao_events_after_paginates_until_flat_messages_after_noisy_trace(tmp_path) -> None:
     from local_agent_runtime.event_bus import EventBus
@@ -725,6 +739,71 @@ def test_persisted_chat_content_delta_can_replay_when_realtime_flat_is_suppresse
     assert after[0]["yuanbao"] == {"type": "content_delta", "text": "hello"}
 
 
+def test_live_and_replay_use_same_flat_chat_boundary(tmp_path) -> None:
+    from local_agent_runtime.event_bus import EventBus
+
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="live replay")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="stream", plan=[])
+    event_bus = EventBus()
+    event_bus.subscribe(store.append_runtime_event)
+
+    live_payloads: list[dict] = []
+    event_bus.subscribe(lambda event: live_payloads.append(event_bus.as_payload(event)))
+
+    for event_type, payload in (
+        ("assistant.token", {"messageId": "msg_1", "delta": "raw token"}),
+        ("tool.progress", {"toolName": "read_file", "message": "internal progress"}),
+        ("content_start", {"blockType": "text", "messageId": "msg_1"}),
+        (
+            "message.delta",
+            {
+                "messageId": "msg_1",
+                "delta": "visible delta",
+                "_chatCompat": True,
+            },
+        ),
+        (
+            "message.completed",
+            {
+                "messageId": "msg_1",
+                "usage": {"inputTokens": 7, "outputTokens": 2},
+                "_chatCompat": True,
+                "_bridge": {"suppressRealtimeFlat": True, "persistTraceMirror": True},
+            },
+        ),
+    ):
+        event_bus.publish(
+            RuntimeEvent(
+                event_id=store.new_id("evt"),
+                session_id=session["id"],
+                task_id=task["id"],
+                type=event_type,
+                ts=store.now(),
+                payload=payload,
+                visibility="chat",
+            )
+        )
+
+    live_messages = [event["yuanbao"] for event in live_payloads if isinstance(event.get("yuanbao"), dict)]
+    replay_events = store.events_after(session["id"], 0)["events"]
+    replay_messages = [event["yuanbao"] for event in replay_events if isinstance(event.get("yuanbao"), dict)]
+
+    assert live_messages == [
+        {"type": "content_start", "blockType": "text"},
+        {"type": "content_delta", "text": "visible delta"},
+    ]
+    assert replay_messages == [
+        {"type": "content_start", "blockType": "text"},
+        {"type": "content_delta", "text": "visible delta"},
+        {"type": "message_complete", "usage": {"input_tokens": 7, "output_tokens": 2}},
+    ]
+    assert not any(event["type"] in {"assistant.token", "tool.progress"} and "yuanbao" in event for event in replay_events)
+
+
 def test_events_after_keeps_message_created_out_of_flat_history(tmp_path) -> None:
     from local_agent_runtime.event_bus import EventBus
     from local_agent_runtime.orchestrator.service import Orchestrator
@@ -788,7 +867,7 @@ def test_events_after_keeps_message_created_out_of_flat_history(tmp_path) -> Non
     }
 
 
-def test_trace_list_includes_haha_cc_error_message(tmp_path) -> None:
+def test_trace_list_includes_single_flat_error_message(tmp_path) -> None:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -809,4 +888,4 @@ def test_trace_list_includes_haha_cc_error_message(tmp_path) -> None:
         "message": "Provider failed",
         "code": "MODEL_PROVIDER_ERROR",
     }
-    assert trace["hahaCc"] == trace["yuanbao"]
+    assert "hahaCc" not in trace

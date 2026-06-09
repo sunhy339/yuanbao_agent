@@ -61,7 +61,6 @@ class EventBus:
         yuanbao = None if _suppresses_realtime_flat_message(event) else to_yuanbao_server_message(event)
         if yuanbao is not None:
             payload["yuanbao"] = yuanbao
-            payload["hahaCc"] = yuanbao
         return payload
 
 

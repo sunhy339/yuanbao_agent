@@ -12,7 +12,6 @@ import re
 from typing import Any
 
 from ..models import ProposalKind
-from ..router.types import ExecutionStrategy, Scenario
 from ..services.worker_environment import (
     KNOWN_CHILD_TOOLS,
     UNSAFE_CHILD_TOOLS,
@@ -25,7 +24,6 @@ from ..services.worker_environment import (
 
 REQUIRED_FIELDS_BY_KIND: dict[str, list[str]] = {
     "intent_mode": ["mode"],
-    "routing_strategy": ["strategy"],
     "decomposition": ["subtasks"],
     "agent_profile": ["name", "baseType", "mission"],
     "model_policy": ["model"],
@@ -282,10 +280,6 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "intent_mode":
         reasons.extend(validate_mode(payload))
         reasons.extend(validate_session_task_state(payload))
-
-    # Routing strategy validator
-    if kind == "routing_strategy":
-        reasons.extend(validate_routing_strategy(payload))
 
     # Model policy validator
     if kind == "model_policy":
@@ -545,14 +539,12 @@ def validate_budget_convergence(payload: dict[str, Any]) -> list[str]:
 
 
 def validate_provider_preflight(payload: dict[str, Any]) -> list[str]:
-    """Validate pre-provider-call advice while keeping runtime actions bounded."""
+    """Validate runtime-owned pre-provider-call actions."""
     reasons: list[str] = []
     valid_actions = {
         "proceed",
         "compact_context",
-        "propose_split",
         "ask_user",
-        "switch_provider",
         "abort",
     }
     action = payload.get("action")
@@ -561,100 +553,17 @@ def validate_provider_preflight(payload: dict[str, Any]) -> list[str]:
     risk_level = payload.get("riskLevel")
     if risk_level is not None and risk_level not in VALID_RISK_LEVELS:
         reasons.append(f"Invalid riskLevel: {risk_level!r}. Must be one of {sorted(VALID_RISK_LEVELS)}")
-    for field in ("reason", "contextStrategy", "fallbackProviderId", "userMessage"):
+    for field in ("reason", "contextStrategy", "userMessage"):
         value = payload.get(field)
         if value is not None and not isinstance(value, str):
             reasons.append(f"{field} must be a string when provided")
-    if action == "switch_provider":
-        fallback_provider_id = payload.get("fallbackProviderId")
-        if not isinstance(fallback_provider_id, str) or not fallback_provider_id.strip():
-            reasons.append("fallbackProviderId must be a non-empty string when action is switch_provider")
-    split = payload.get("splitRecommendation")
-    if split is not None and not isinstance(split, (str, dict, list)):
-        reasons.append("splitRecommendation must be a string, object, or list when provided")
-    if action == "propose_split":
-        if isinstance(split, dict):
-            split_subtasks = split.get("subtasks")
-        elif isinstance(split, list):
-            split_subtasks = split
-        else:
-            split_subtasks = payload.get("subtasks")
-        if not isinstance(split_subtasks, list):
-            reasons.append("splitRecommendation.subtasks or subtasks must be a list when action is propose_split")
-            return reasons
-        if len(split_subtasks) < 2:
-            reasons.append("splitRecommendation.subtasks must contain at least 2 subtasks")
-        if len(split_subtasks) > 10:
-            reasons.append("splitRecommendation.subtasks must contain at most 10 subtasks")
-        task_ids: set[str] = set()
-        for index, item in enumerate(split_subtasks):
-            if not isinstance(item, dict):
-                reasons.append(f"splitRecommendation.subtasks[{index}] must be an object")
-                continue
-            subtask_id = item.get("id") or item.get("taskId") or item.get("task_id")
-            title = item.get("title")
-            description = item.get("description") or item.get("prompt") or item.get("instructions")
-            if not isinstance(subtask_id, str) or not subtask_id.strip():
-                reasons.append(f"splitRecommendation.subtasks[{index}].id must be a non-empty string")
-            elif subtask_id in task_ids:
-                reasons.append(f"Duplicate split subtask id: {subtask_id!r}")
-            else:
-                task_ids.add(subtask_id)
-            if not isinstance(title, str) or not title.strip():
-                reasons.append(f"splitRecommendation.subtasks[{index}].title must be a non-empty string")
-            if not isinstance(description, str) or not description.strip():
-                reasons.append(f"splitRecommendation.subtasks[{index}].description must be a non-empty string")
-            dependencies = item.get("dependencies", [])
-            if dependencies is not None and not isinstance(dependencies, list):
-                reasons.append(f"splitRecommendation.subtasks[{index}].dependencies must be a list when provided")
-            agent_type = item.get("agentType") or item.get("agent_type")
-            normalized_agent_type = agent_type.strip().lower() if isinstance(agent_type, str) else agent_type
-            if normalized_agent_type is not None and normalized_agent_type not in {"planner", "worker", "reviewer", "summarizer"}:
-                reasons.append(f"splitRecommendation.subtasks[{index}].agentType is invalid: {agent_type!r}")
-        reasons.extend(validate_dependency_graph(split_subtasks))
-        reasons.extend(validate_write_scopes(split_subtasks))
-    return reasons
-
-
-def validate_routing_strategy(payload: dict[str, Any]) -> list[str]:
-    """Validate advisor routing proposals without owning semantic routing."""
-    reasons: list[str] = []
-    strategy = payload.get("strategy")
-    valid_strategies = {item.value for item in ExecutionStrategy}
-    if strategy is not None and strategy not in valid_strategies:
-        reasons.append(f"Invalid routing strategy: {strategy!r}")
-    scenario = payload.get("scenario")
-    valid_scenarios = {item.value for item in Scenario}
-    if scenario is not None and scenario not in valid_scenarios:
-        reasons.append(f"Invalid routing scenario: {scenario!r}")
-    continuation = payload.get("tool_continuation")
-    camel_continuation = payload.get("toolContinuation")
-    if continuation is not None and camel_continuation is not None:
-        reasons.append("Provide only one of tool_continuation or toolContinuation")
-    elif continuation is not None or camel_continuation is not None:
-        continuation = continuation if continuation is not None else camel_continuation
-        if not isinstance(continuation, dict):
-            reasons.append("tool_continuation must be an object when provided")
-        else:
-            bool_fields = (
-                "allow_tools_after_task_results",
-                "allowToolsAfterTaskResults",
-                "allow_more_subtasks_after_task_results",
-                "allowMoreSubtasksAfterTaskResults",
+    if "fallbackProviderId" in payload:
+        reasons.append("fallbackProviderId is no longer valid provider preflight output")
+    for removed_field in ("splitRecommendation", "subtasks"):
+        if removed_field in payload:
+            reasons.append(
+                f"{removed_field} is not valid provider preflight output; delegation must be requested with agent/task tools"
             )
-            for field in bool_fields:
-                value = continuation.get(field)
-                if value is not None and not isinstance(value, bool):
-                    reasons.append(f"tool_continuation.{field} must be a boolean when provided")
-            max_calls = continuation.get("max_task_tool_calls")
-            if max_calls is None:
-                max_calls = continuation.get("maxTaskToolCalls")
-            if max_calls is not None:
-                if not isinstance(max_calls, int) or isinstance(max_calls, bool) or max_calls <= 0 or max_calls > 20:
-                    reasons.append("tool_continuation.maxTaskToolCalls must be an integer from 1 to 20 when provided")
-            rationale = continuation.get("rationale")
-            if rationale is not None and not isinstance(rationale, str):
-                reasons.append("tool_continuation.rationale must be a string when provided")
     return reasons
 
 

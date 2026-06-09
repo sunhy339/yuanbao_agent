@@ -10,7 +10,6 @@ from local_agent_runtime.memory import MemoryManager, MemoryRetriever, MemorySto
 from local_agent_runtime.memory.types import MemoryKind
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.policy.guard import PolicyGuard
-from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.services.worker_runner import WorkerRunner
@@ -117,20 +116,6 @@ class LongRunScriptedProvider:
                 "validation, tests, and docs still in focus."
             )
         }
-
-
-class StaticLongRunRouter:
-    last_advice = None
-
-    def route(self, goal: str, context: dict[str, Any] | None = None) -> RoutingDecision:
-        return RoutingDecision(
-            scenario=Scenario.SWARM_TASK,
-            strategy=ExecutionStrategy.PLAN_SWARM,
-            confidence=0.99,
-            max_steps=10,
-            enable_planning=False,
-            reasoning="test fixture: long full-stack run with child agents and ReAct continuation",
-        )
 
 
 def _visible_context_text(context: dict[str, Any]) -> str:
@@ -264,7 +249,6 @@ def _make_runtime(tmp_path: Path, provider: LongRunScriptedProvider) -> SimpleNa
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
-        meta_router=StaticLongRunRouter(),
         memory_manager=memory_manager,
         _skip_orphan_cleanup=True,
     )

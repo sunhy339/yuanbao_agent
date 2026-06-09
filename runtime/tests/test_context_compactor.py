@@ -429,15 +429,13 @@ class TestCompact:
         assert len(result.handoff_summary["failedCommands"]) == 1
         assert len(result.handoff_summary["verification"]) == 1
         assert result.handoff_summary["failedCommands"][0]["command"].startswith("python -m pytest")
-        assert any(
-            item.get("adapterKind") == "browser_inspection_adapter"
-            for item in result.handoff_summary["pendingEvidence"]
-        )
+        assert result.handoff_summary["pendingEvidence"] == []
         assert result.handoff_summary["nextCommand"].startswith("Fix or rerun failed command")
         handoff_message = next(message for message in result.kept_messages if "Structured handoff" in message["content"])
         assert "Objective: Implement resumable compaction handoff" in handoff_message["content"]
         assert "Modified files:" in handoff_message["content"]
-        assert "Pending advisor evidence:" in handoff_message["content"]
+        assert "Pending advisor evidence:" not in handoff_message["content"]
+        assert "routing:" not in handoff_message["content"]
 
         row = self.store._conn.execute(
             "SELECT handoff_summary_json FROM compaction_records WHERE id = ?",

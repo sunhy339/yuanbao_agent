@@ -322,7 +322,7 @@ function summarizeJsonOutput(value?: string) {
 }
 
 export function runtimeSummary(item: RuntimeTimelineItem) {
-  const jsonSummary = summarizeJsonOutput(item.rawDetail || item.code);
+  const jsonSummary = summarizeJsonOutput(item.summary);
   const readableMeta = (item.meta ?? []).filter((meta) => !meta.trim().startsWith("{") && !meta.trim().startsWith("["));
   return compactText([jsonSummary || item.summary, ...readableMeta].filter(Boolean).join(" · "), 180);
 }

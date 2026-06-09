@@ -250,7 +250,7 @@ def _write_file_tool_call_response(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _routing_response() -> dict[str, Any]:
-    """Response consumed by MetaRouter._llm_route() for scenario classification."""
+    """Response fixture for legacy scenario-classification smoke data."""
     return _chat_response(
         {
             "role": "assistant",

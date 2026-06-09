@@ -740,6 +740,39 @@ describe("CleanSessionWorkspace", () => {
     ]);
   });
 
+  it("filters persisted internal approval and raw progress messages from clean transcript", () => {
+    const messages = [
+      {
+        id: "permission:review",
+        role: "assistant",
+        content: "internal completion review",
+        toolName: "completion_review",
+        metadata: { kind: "permission_request", requestId: "approval_review" },
+      },
+      {
+        id: "tool:advisor",
+        role: "assistant",
+        content: "advisor evidence",
+        toolName: "advisor_tool",
+        metadata: { kind: "tool_activity", toolName: "advisor_tool" },
+      },
+      {
+        id: "assistant:raw",
+        role: "assistant",
+        content: JSON.stringify({ taskId: "task_1", provider: "yuanbao", tool_progress: { status: "running" } }),
+      },
+      {
+        id: "assistant:final",
+        role: "assistant",
+        content: "Final answer.",
+      },
+    ] as const;
+
+    expect(filterCleanLowSignalMessages([...messages]).map((message) => message.id)).toEqual([
+      "assistant:final",
+    ]);
+  });
+
   it("keeps the legacy session detail strip out of the transcript", () => {
     render(
       <CleanSessionWorkspace

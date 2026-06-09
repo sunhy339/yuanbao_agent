@@ -95,6 +95,29 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             "changedPaths": changed_paths,
             "diffText": diff_text,
         }
+        for key in (
+            "toolUseId",
+            "parentToolUseId",
+            "toolGroupId",
+            "toolIndex",
+            "toolTotal",
+            "toolOperationId",
+            "toolOperationLabel",
+            "toolCategory",
+            "toolPhaseId",
+            "toolPhaseLabel",
+            "toolSemanticParentId",
+            "toolSemanticParentLabel",
+            "target",
+            "inputSummary",
+            "displayTitle",
+            "displaySummary",
+            "displayTarget",
+            "displayKind",
+        ):
+            value = params.get(key)
+            if value not in (None, "", [], {}):
+                request[key] = value
 
         approval = approval_by_id_or_none(store, approval_id)
         if approval is not None:

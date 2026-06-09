@@ -10,6 +10,11 @@
 > been closed or superseded by later main-flow work. Current status and remaining
 > remediation priorities live in
 > `docs/YUANBAO_AGENT_DOCS_CONSOLIDATED.md#2026-05-20-current-test-gate-and-remediation-queue`.
+>
+> 2026-06-09 update: any remaining language that treats MetaRouter,
+> DecisionAdvisor, advisor-led evidence, workspace evidence, or completion gates
+> as default product flow is superseded. Current default flow is model-first
+> ReAct with typed Yuanbao ServerMessage output and panel/trace-only internals.
 
 ## 0. Current Reconciliation - 2026-05-20
 

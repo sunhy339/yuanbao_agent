@@ -348,20 +348,6 @@ const LOW_SIGNAL_SPECIAL_EVENT_KINDS = new Set([
   "plan_update",
   "status",
 ]);
-const TERMINAL_EVENT_STATUSES = new Set([
-  "completed",
-  "complete",
-  "done",
-  "finished",
-  "succeeded",
-  "success",
-  "failed",
-  "failure",
-  "error",
-  "cancelled",
-  "canceled",
-  "rejected",
-]);
 const ATTENTION_EVENT_STATUSES = new Set([
   "blocked",
   "blocking",
@@ -519,30 +505,6 @@ function isLowSignalStreamingPlaceholder(message: SessionWorkspaceMessage) {
   );
 }
 
-function hasNonEmptyPlanList(value: unknown) {
-  return Array.isArray(value) && value.some((item) => {
-    if (item && typeof item === "object") return true;
-    return typeof item === "string" && Boolean(item.trim());
-  });
-}
-
-function hasStructuredPlanUpdatePayload(message: SessionWorkspaceMessage) {
-  const metadata = message.metadata;
-  if (!metadata || typeof metadata !== "object") return false;
-  if (hasNonEmptyPlanList(metadata.subtasks) || hasNonEmptyPlanList(metadata.tasks) || hasNonEmptyPlanList(metadata.plan)) {
-    return true;
-  }
-  for (const key of ["plan", "splitPlan", "executionPlan"]) {
-    const value = metadata[key];
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const record = value as Record<string, unknown>;
-    if (hasNonEmptyPlanList(record.subtasks) || hasNonEmptyPlanList(record.tasks) || hasNonEmptyPlanList(record.steps)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
   if (isLowSignalStreamingPlaceholder(message)) {
     return true;
@@ -561,9 +523,12 @@ function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
     return false;
   }
 
+  if (kind === "task_summary" || kind === "plan_update") {
+    return true;
+  }
+
   const status = messageLifecycleStatus(message);
   const text = messageSummaryText(message);
-  const hasTerminalStatus = TERMINAL_EVENT_STATUSES.has(status) || TERMINAL_TEXT_RE.test(text);
   const needsAttention = ATTENTION_EVENT_STATUSES.has(status);
   if (kind === "assistant_thinking") {
     return isLowSignalStreamingPlaceholder(message);
@@ -590,17 +555,6 @@ function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
 
   if (kind === "assistant_progress") {
     return isLowSignalSpecialText(text);
-  }
-
-  if (kind === "task_summary") {
-    return !hasTerminalStatus;
-  }
-
-  if (kind === "plan_update") {
-    if (hasStructuredPlanUpdatePayload(message)) {
-      return false;
-    }
-    return !hasTerminalStatus && (!ACTIONABLE_PLAN_RE.test(text) || isLowSignalSpecialText(text));
   }
 
   return false;

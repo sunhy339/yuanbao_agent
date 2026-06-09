@@ -99,7 +99,6 @@ export interface AgentEventEnvelope<TPayload = unknown> {
   payload: TPayload;
   visibility?: EventVisibility;
   yuanbao?: YuanbaoServerMessage;
-  hahaCc?: YuanbaoServerMessage;
 }
 
 export interface TaskUpdatedPayload {

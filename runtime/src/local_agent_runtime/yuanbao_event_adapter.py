@@ -32,7 +32,6 @@ _SYSTEM_NOTIFICATION_EVENT_TYPES = {
     "background_task",
     "session_state_changed",
     "task_started",
-    "task_summary",
 }
 
 _PROGRESS_NOTIFICATION_EVENT_TYPES = {
@@ -45,7 +44,6 @@ _TASK_PROGRESS_EVENT_TYPES = {
     "tool.progress",
     "tool.output",
     "command.output",
-    "task_summary",
 }
 
 _TASK_STARTED_STATUSES = {"queued", "starting", "started", "running", "active", "in_progress"}

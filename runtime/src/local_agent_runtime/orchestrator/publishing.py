@@ -90,7 +90,6 @@ _ROOT_CHAT_EVENT_TYPES = {
     "message.failed",
     "session_title_updated",
     "system_notification",
-    "task_summary",
 }
 
 _ROOT_CHAT_DERIVATION_EVENT_TYPES = {

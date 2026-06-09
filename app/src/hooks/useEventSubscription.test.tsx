@@ -171,7 +171,7 @@ describe("useEventSubscription", () => {
       type: "content_delta",
       text: "hello",
     }));
-    expect(traceSnapshots.at(-1)?.[0]?.hahaCc).toBeUndefined();
+    expect("hahaCc" in (traceSnapshots.at(-1)?.[0] ?? {})).toBe(false);
   });
 
   it("renders chat-compat message.delta as the canonical live text stream", async () => {
@@ -1205,6 +1205,60 @@ describe("useEventSubscription", () => {
 
     expect(screen.queryByText("Inspect current workflow")).toBeNull();
     expect(screen.queryByText(/rawJson/)).toBeNull();
+  });
+
+  it("keeps live flat task progress notifications out of the chat transcript", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_task_progress",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "system_notification",
+        ts: 10,
+        visibility: "chat",
+        payload: { summary: "Panel-only task progress" },
+        yuanbao: {
+          type: "system_notification",
+          subtype: "task_progress",
+          message: "Panel-only task progress",
+          data: { summary: "Panel-only task progress" },
+        },
+      });
+    });
+
+    expect(screen.queryByText("Panel-only task progress")).toBeNull();
+  });
+
+  it("keeps legacy live task and plan state events out of the chat transcript", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_legacy_task_summary",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "task_summary",
+        ts: 10,
+        visibility: "chat",
+        payload: { summary: "Legacy task summary should stay out" },
+      });
+      runtimeMocks.handler?.({
+        eventId: "evt_legacy_plan_update",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "plan_update",
+        ts: 11,
+        visibility: "chat",
+        payload: { summary: "Legacy plan update should stay out" },
+      });
+    });
+
+    expect(screen.queryByText("Legacy task summary should stay out")).toBeNull();
+    expect(screen.queryByText("Legacy plan update should stay out")).toBeNull();
   });
 
   it("drops pending and late chat output after task.cancelled", async () => {

@@ -3147,6 +3147,9 @@ export function CleanActivityItem({
   const message = item.message;
   const kind = messageKind(message);
   const wrap = (node: JSX.Element | null) => (node ? <div className="hc-activity" data-transcript-kind={transcriptKind}>{node}</div> : null);
+  if (kind === "task_summary" || kind === "plan_update") {
+    return null;
+  }
   if (kind === "assistant_thinking" || kind === "thinking" || (message.streaming && message.placeholder)) {
     return wrap(<CleanThinkingBlock message={message} />);
   }
@@ -3203,19 +3206,14 @@ export function CleanActivityItem({
       "compact_summary",
       "goal_event",
       "memory_event",
-      "plan_update",
       "slash_command",
       "status",
       "system",
-      "task_summary",
     ].includes(kind) ||
     message.role === "system" ||
     message.kind === "failure" ||
     message.status === "failed"
   ) {
-    if (kind === "plan_update" && readPlanLikeSubtasks(message).length) {
-      return wrap(<CleanPlanUpdateBlock message={message} />);
-    }
     if ((kind === "background_task" || kind === "agent_task_group") && readAgentGroupTasks(message).length) {
       return wrap(<CleanAgentTaskGroupBlock message={message} />);
     }

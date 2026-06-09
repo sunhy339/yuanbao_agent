@@ -520,7 +520,6 @@ export interface TraceEventRecord<TPayload = unknown> {
   visibility?: EventVisibility;
   uiReplayScope?: "chat" | "panel";
   yuanbao?: YuanbaoServerMessage;
-  hahaCc?: YuanbaoServerMessage;
 }
 
 export type ErrorSource = "task" | "command" | "patch" | "provider" | "tool";

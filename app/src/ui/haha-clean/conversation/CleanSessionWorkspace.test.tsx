@@ -663,7 +663,7 @@ describe("CleanSessionWorkspace", () => {
     expect(dedupeCleanMessages([...messages]).map((message) => message.id)).toEqual(["agent-group:live"]);
   });
 
-  it("keeps final summaries, actionable plans, and attention states visible", () => {
+  it("keeps attention states visible while filtering task and plan state from the main transcript", () => {
     const items: ConversationActivityItem[] = [
       {
         id: "message:task_summary:done",
@@ -703,13 +703,11 @@ describe("CleanSessionWorkspace", () => {
     const filtered = filterCleanLowSignalSpecialEvents(items);
 
     expect(filtered.map((item) => item.id)).toEqual([
-      "message:task_summary:done",
-      "message:plan_update:action",
       "message:status:blocked",
     ]);
   });
 
-  it("keeps structured plan updates visible for panel rendering", () => {
+  it("filters structured plan updates from main transcript messages", () => {
     const messages = [
       {
         id: "plan_update:structured",
@@ -735,9 +733,7 @@ describe("CleanSessionWorkspace", () => {
       },
     ] as const;
 
-    expect(filterCleanLowSignalMessages([...messages]).map((message) => message.id)).toEqual([
-      "plan_update:structured",
-    ]);
+    expect(filterCleanLowSignalMessages([...messages]).map((message) => message.id)).toEqual([]);
   });
 
   it("filters persisted internal approval and raw progress messages from clean transcript", () => {

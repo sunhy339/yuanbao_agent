@@ -789,6 +789,40 @@ describe("chat trace replay", () => {
     expect(visible).toHaveLength(0);
   });
 
+  it("keeps flat task progress notifications out of chat replay", () => {
+    const replayed = replayTraceEventsToChatMessages([], [
+      {
+        ...trace("evt_task_progress", "system_notification", {
+          summary: "Legacy task progress should stay in panel state",
+        }, 1, "chat"),
+        yuanbao: {
+          type: "system_notification",
+          subtype: "task_progress",
+          message: "Legacy task progress should stay in panel state",
+          data: {
+            summary: "Legacy task progress should stay in panel state",
+          },
+        },
+      },
+      {
+        ...trace("evt_task_started", "task_started", {
+          summary: "Legacy task started should stay in panel state",
+        }, 2, "chat"),
+        yuanbao: {
+          type: "system_notification",
+          subtype: "task_started",
+          message: "Legacy task started should stay in panel state",
+          data: {
+            summary: "Legacy task started should stay in panel state",
+          },
+        },
+      },
+    ]);
+
+    const visible = getVisibleChatMessages(replayed, "sess_1");
+    expect(visible).toHaveLength(0);
+  });
+
   it("hides child-worker trace events on session recovery unless they are explicitly chat-visible", () => {
     const replayed = replayTraceEventsToChatMessages(
       [],

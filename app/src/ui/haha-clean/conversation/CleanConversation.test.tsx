@@ -177,6 +177,51 @@ describe("CleanConversation", () => {
     expect(screen.queryByText(/"subtasks"/)).not.toBeInTheDocument();
   });
 
+  it("does not render plan or task state as main chat activity items", () => {
+    render(
+      <div>
+        <CleanActivityItem
+          item={{
+            id: "message:plan_update:raw",
+            kind: "message",
+            order: 1,
+            message: {
+              id: "plan_update:raw",
+              role: "assistant",
+              content: "Raw plan update should stay in the panel.",
+              metadata: {
+                kind: "plan_update",
+                summary: "Panel-only plan state",
+                subtasks: [{ id: "sub-0", title: "Inspect workflow" }],
+              },
+            },
+          }}
+        />
+        <CleanActivityItem
+          item={{
+            id: "message:task_summary:raw",
+            kind: "message",
+            order: 2,
+            message: {
+              id: "task_summary:raw",
+              role: "assistant",
+              content: "Raw task summary should stay in runtime state.",
+              metadata: {
+                kind: "task_summary",
+                summary: "Panel-only task state",
+              },
+            },
+          }}
+        />
+      </div>,
+    );
+
+    expect(screen.queryByText("Raw plan update should stay in the panel.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Panel-only plan state")).not.toBeInTheDocument();
+    expect(screen.queryByText("Raw task summary should stay in runtime state.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Panel-only task state")).not.toBeInTheDocument();
+  });
+
   it("folds child agent result summaries into their task rows without exposing raw task ids", async () => {
     const user = userEvent.setup();
     render(

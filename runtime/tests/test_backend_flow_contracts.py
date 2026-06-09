@@ -604,6 +604,32 @@ def test_late_tool_lifecycle_after_terminal_task_stays_trace_only(tmp_path: Path
     )
 
 
+def test_legacy_task_summary_event_is_not_default_chat_output(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="summarize legacy task",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(  # noqa: SLF001
+        session["id"],
+        task,
+        "task_summary",
+        {
+            "summary": "Legacy summary should stay diagnostic.",
+            "resultSummary": "done",
+        },
+    )
+
+    emitted = runtime.events[-1]
+    assert emitted["type"] == "task_summary"
+    assert emitted["visibility"] == "trace"
+    assert "yuanbao" not in emitted
+
+
 def test_tool_progress_and_output_chat_deltas_hide_internal_payload_text(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]))
     session = _open_session(runtime, tmp_path)

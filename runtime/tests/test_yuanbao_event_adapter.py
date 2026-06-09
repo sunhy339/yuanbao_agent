@@ -240,6 +240,30 @@ def test_yuanbao_adapter_maps_special_chat_events_to_system_notifications() -> N
         )
         is None
     )
+    assert (
+        to_yuanbao_server_message(
+            _event(
+                "task_summary",
+                {
+                    "summary": "Legacy task summary should not become chat output",
+                    "resultSummary": "done",
+                },
+            )
+        )
+        is None
+    )
+    assert (
+        to_haha_cc_server_message(
+            _event(
+                "task_summary",
+                {
+                    "summary": "Legacy task summary should not become chat output",
+                    "resultSummary": "done",
+                },
+            )
+        )
+        is None
+    )
     assert to_yuanbao_server_message(
         _event(
             "system_notification",

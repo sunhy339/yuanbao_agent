@@ -5,17 +5,23 @@
 
 ## 0. 阅读方式与事实基线
 
-这份文档的定位是“当前项目总导引 + 昨日文档校正版”。后续讨论架构、执行流、记忆、上下文、工具、MCP、多 agent、Autonomy、AgentSoul 时，优先以本文件为入口。
+这份文档的定位是“合并校正版 + 历史索引”。2026-06-09 之后，默认执行流和输出契约优先阅读：
+
+- `docs/haha-cc-alignment-flow-and-gap.md`
+- `docs/haha-cc-backend-feature-flow-code-map.md`
+- `docs/backend-agent-flow-output-matrix.md`
+
+当本文的 2026-05 记录与上述文档冲突时，以 2026-06-09 的 haha-cc 对齐口径为准。
 
 ### 0.1 总原则：LLM-first，硬边界托底
 
-后续主流程设计应优先让 LLM / DecisionAdvisor 参与语义判断，而不是把复杂场景写成固定规则。路由意图、任务是否该拆分、产物形态、验收证据、父任务是否继续用工具、恢复策略、是否接近完成等判断，都应尽量由 advisor 在上下文中给出可审计建议；runtime 负责校验、限权和落地。
+当前默认主流程是 model-first ReAct。用户消息先进入模型/provider loop，由模型通过文本和 tool calls 决定是否读文件、写文件、运行命令、进入显式 plan mode、创建任务或调用 agent/team 工具。runtime 负责上下文、权限、工具执行、预算、状态机、持久化、trace/panel 和 typed `ServerMessage` 投射。
 
-固定规则只适合做安全边界和客观事实判断：权限、审批、预算、状态机迁移、schema 校验、文件系统事实、命令/工具客观失败、密钥与危险操作保护、可复现的测试结果。规则可以作为 cheap candidate、fallback 或 guardrail，但不应在有可用 advisor proposal 时直接覆盖语义判断。
+固定规则只适合做安全边界和客观事实判断：权限、审批、预算、状态机迁移、schema 校验、文件系统事实、命令/工具客观失败、密钥与危险操作保护、可复现的测试结果。规则可以作为 `intentHints`、tool policy、fallback 或 guardrail，但不应抢占模型的默认工具流。
 
-验收与产物判断必须保持 domain-neutral。不要把“完成”写死成自动启动 server、浏览器 smoke、API probe 或某一种前端/后端形态；嵌入式、库函数、迁移脚本、设计方案、文档、数据处理、CLI、研究验证等任务都可能需要不同证据。正确做法是收集客观信号，把不确定的产物形态和证据需求交给 product-surface / completion advisor，再由 runtime 执行权限、审批和失败 gate。
+验收与产物判断必须保持 domain-neutral。不要把“完成”写死成自动启动 server、浏览器 smoke、API probe 或某一种前端/后端形态；嵌入式、库函数、迁移脚本、设计方案、文档、数据处理、CLI、研究验证等任务都可能需要不同证据。当前默认完成边界是模型/工具循环结束；completion/advisor/evidence 只能作为内部诊断、显式产品模式或失败分析，不能成为普通任务的默认 gate。
 
-LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动化不能直接执行，必须进入 PermissionEngine、approval gate、ToolPolicyResolver 和普通工具管线。关键 LLM proposal、runtime fallback、completion gate、provider recovery、evidence request 都要进入事件或 proposal audit，方便回放、解释和调试。
+LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动化不能直接执行，必须进入 PermissionEngine、approval gate、ToolPolicyResolver 和普通工具管线。后端只向主聊天发布 typed Yuanbao `ServerMessage`；router/advisor/provider diagnostics、completion evidence、raw JSON 只允许在 panel/trace/audit 中可观测。
 
 建议阅读顺序：
 
@@ -33,9 +39,9 @@ LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动�
 | 前端配置模型 | `shared/src/config.ts`, `app/src/lib/runtimeClient.ts` | 前后端都已有 `autonomy` 与 `agentSoul` 配置结构。 |
 | 上下文构建 | `runtime/src/local_agent_runtime/context/builder.py` | 会记录 `autonomy_profile`、`agent_soul_profile`、`prompt_layers`、预算统计。 |
 | 压缩判断 | `runtime/src/local_agent_runtime/context/compactor.py` | 三档渐进压缩：<50K 原样保留，50K-220K 截断工具输出，≥220K 完整 compact（primer/summary/recent）。 |
-| 路由决策 | `runtime/src/local_agent_runtime/router/meta_router.py` | 规则路由提供 cheap candidate/fallback；配置了 DecisionAdvisor 时默认让 LLM 参与语义路由，高置信规则也会作为 `rule_candidate` 给 advisor，必要时可用 `routingStrategyUseForHighConfidence=false` 退回低成本规则直走。 |
-| LLM 决策接口 | `runtime/src/local_agent_runtime/policy/decision_advisor.py` | 已注册 routing/context/decomposition/react/product-surface/completion/provider-preflight 等决策类型；主流程原则是 LLM 负责语义判断，runtime validator/PermissionEngine/硬 gate 负责安全边界和客观失败。 |
-| Proposal 审计 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 已有 `proposal_records` 表和 create/validate/apply/list 能力；routing/failure recovery/provider-preflight/product-surface/completion advisor 等关键 LLM 或 runtime decision 会落表审计。 |
+| 默认执行流 | `runtime/src/local_agent_runtime/orchestrator/*` | 2026-06-09 基线是 model-first ReAct；普通任务不经 `MetaRouter`、`DecisionAdvisor`、fixed planner 或 completion/evidence gate 预先决定工具流。 |
+| Historical routing/advisor | `runtime/src/local_agent_runtime/router/*`, `runtime/src/local_agent_runtime/policy/decision_advisor.py` | 仅作为兼容、显式实验、测试/developer shim 或失败诊断语境阅读；不要把它们描述成默认产品路径。 |
+| Proposal / trace 审计 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | proposal/decision/event 可用于审计和诊断，但 raw JSON、router/advisor/provider diagnostics 不进入主聊天。 |
 | 工具 registry | `runtime/src/local_agent_runtime/tools/registry.py` | 当前 13 个基础工具，再加 memory/scratchpad 共 17 个内置工具。 |
 | MCP | `runtime/src/local_agent_runtime/mcp/client.py` | 支持 `stdio`、`sse`、`streamable_http`，工具名按 `mcp__server__tool` 命名。 |
 
@@ -57,7 +63,7 @@ Yuanbao Agent 当前是一个桌面智能助手项目，核心由三层组成：
 
 1. 前端应用：`app/`，React 18 + TypeScript + Vite，负责会话、任务、审批、设置、运行状态和可视化。
 2. 桌面壳：`app/src-tauri/`，Tauri 2 + Rust，负责启动 Python runtime，并把前端请求转成 JSON-RPC。
-3. Python 运行时：`runtime/`，Python 3.11+，负责路由、上下文构建、ReAct 执行、工具调用、记忆、MCP、任务状态、日志与审计。
+3. Python 运行时：`runtime/`，Python 3.11+，负责上下文构建、model-first ReAct 执行、工具调用、权限、记忆、MCP、任务状态、日志与审计。
 
 基础链路：
 
@@ -66,9 +72,9 @@ Yuanbao Agent 当前是一个桌面智能助手项目，核心由三层组成：
   -> React UI
   -> Tauri invoke
   -> Python JSON-RPC over stdio
-  -> Orchestrator / MetaRouter / ContextBuilder / ReAct loop
+  -> Orchestrator / ContextBuilder / model-first ReAct loop
   -> 工具、MCP、Memory、SQLite Store
-  -> runtime event
+  -> typed Yuanbao ServerMessage + structured panel/trace event
   -> Tauri agent://event
   -> React UI 更新
 ```
@@ -81,15 +87,16 @@ flowchart LR
   UI --> T["Tauri 2 / Rust Shell"]
   T -->|JSON-RPC over stdio| R["Python Runtime"]
   R --> O["Orchestrator"]
-  O --> MR["MetaRouter"]
   O --> CB["ContextBuilder"]
   O --> RA["ReAct Loop"]
+  RA --> LLM["ProviderAdapter / LLM"]
   RA --> TG["ToolRegistry / Validator"]
   TG --> PG["PolicyGuard / Approval Gate"]
   PG --> BT["Built-in Tools"]
   PG --> MCP["MCP Tools"]
   O --> MEM["MemoryManager / MemoryStore"]
   O --> DB[("SQLite Store")]
+  O --> EV["YuanbaoEventAdapter / typed ServerMessage"]
   R -->|runtime event| T
   T -->|agent://event| UI
 ```
@@ -188,13 +195,14 @@ sequenceDiagram
 
 ## 5. Agent 执行流程
 
-默认请求从 `message.send` 进入，由 Orchestrator 创建/更新消息和任务，再经 MetaRouter 选择执行策略。
+默认请求从 `message.send` 进入，由 Orchestrator 创建/更新消息和任务，构建上下文后直接进入 model-first ReAct。模型通过文本和 tool calls 决定是否调用 read/write/run/plan/task/agent/team 等工具；后端只做权限、工具执行、状态持久化和 typed output projection。
 
 当前执行权边界是合理的：
 
-1. LLM 可以参与路由建议、任务规划、压缩判断、工具调用建议和最终回答生成。
+1. LLM / provider loop 是普通任务的默认业务决策入口。
 2. 真正执行工具前仍经过 runtime validator、policy guard、approval gate、预算限制和任务状态检查。
 3. LLM 不应直接越权写文件、执行命令、绕过审批或修改权限边界。
+4. `MetaRouter`、`DecisionAdvisor`、fixed planner、completion/evidence gate 是 historical / opt-in / diagnostic 能力，不是默认产品链路。
 
 ReAct 主循环可以理解为：
 
@@ -551,10 +559,10 @@ LLM 生成 profile 的流程：
 
 ```mermaid
 flowchart TD
-  U["用户任务"] --> R["MetaRouter 判断是否需要子任务/多 agent"]
-  R --> A{"需要动态 agent profile?"}
+  U["用户任务"] --> M["model-first ReAct / explicit agent tool"]
+  M --> A{"需要动态 agent profile?"}
   A -->|否| D["使用默认 runtime role/profile"]
-  A -->|是| L["DecisionAdvisor: agent_profile proposal"]
+  A -->|是| L["model/tool proposal or explicit profile config"]
   L --> V["Validator 校验 schema/scope/tool/risk"]
   V -->|通过| S["保存 proposal record + role snapshot"]
   V -->|拒绝| F["fallback 到 worker + read_only profile"]
@@ -818,18 +826,18 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 | Prompt layering | 已有基础 | context snapshot 中记录 prompt layers，AgentSoul 不覆盖 safety。 |
 | 结构化 memory | 已有基础 | SQLite memory 类型、scope、source、recall 能力存在。 |
 | 跨 session workspace memory | 部分接通 | memory 数据模型支持；实际召回质量还需要持续验证和调参。 |
-| LLM routing proposal | 已接入主路径 | MetaRouter 先生成规则候选，再默认让 DecisionAdvisor 做语义路由；规则候选作为 advisor 上下文和 fallback，真实 LLM 需要配置 provider。 |
+| 默认 routing | 当前基线已改为 model-first | 普通任务不经 MetaRouter/DecisionAdvisor 先选业务策略；规则只保留为 `intentHints`、tool policy 或 trace 诊断。 |
 | LLM 上下文压缩建议 | 已接通 | compactor 支持三档渐进压缩（<50K 原样/50K-220K 截断工具/≥220K 完整 compact），Tier 2 区域可让 LLM 判断是否需要完整压缩。 |
-| LLM 拆任务/并行建议 | 规划/部分基础 | DecisionAdvisor 有 `decomposition` 类型，DAG/worker 基础存在，但默认完整闭环还需补齐。 |
-| Proposal 审计 | 持续补齐 | proposal_records 已存在；routing_strategy、failure_recovery、provider_preflight、product_surface_decision、completion_decision 已写入并 validate，后续继续保证所有关键默认路径都写入 proposal record。 |
+| 拆任务/并行 | 显式/模型工具路径 | DAG/worker 基础存在，但普通任务不自动进入 fixed planner；只有显式模式或模型工具调用才展示 plan/team/agent 面板。 |
+| Proposal / trace 审计 | 诊断能力 | proposal_records 可记录失败恢复、provider preflight、显式 product-surface/completion 诊断等；这些记录默认不投射成聊天。 |
 | 通用 Hooks | 生命周期、P2 actions 与 Settings UI 已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发。`run_command`、`webhook`、`memory_write`、`auto_verification_suggestion`、`external_sync` 已走 PermissionEngine/审计记录；Settings UI 管理入口已完成。剩余主要是真实 provider + hook side effect 组合 smoke。 |
 
 状态总览图：
 
 ```mermaid
 flowchart LR
-  Done["已接通\nRPC / Events / ReAct / Tools / Basic Memory"] --> Partial["部分接通\nAutonomy / AgentSoul / LLM Routing / Proposal Audit"]
-  Partial --> Todo["待补齐\nMCP+Skills acceptance / Structured handoff / Runtime cockpit / Product gates"]
+  Done["已接通\nRPC / Events / ReAct / Tools / Basic Memory"] --> Partial["部分接通\nAutonomy / AgentSoul / Proposal Audit / Explicit Agent Tools"]
+  Partial --> Todo["待补齐\nMCP+Skills acceptance / Structured handoff / Runtime cockpit polish"]
 ```
 
 ## 13. 默认配置速查
@@ -864,20 +872,20 @@ Autonomy 默认层级：
 
 | 决策点 | 当前接入情况 | 应补齐的标准 |
 | --- | --- | --- |
-| intent mode | DecisionAdvisor 已定义 | 默认入口要记录 proposal 或明确 rule fallback。 |
-| routing strategy | MetaRouter 默认接 DecisionAdvisor | 规则候选进入 advisor 上下文；validator 通过后 LLM proposal 可覆盖规则，规则仍作为 fallback/overplanning guard。 |
-| context policy | DecisionAdvisor 已定义，ContextBuilder 有预算/层级 | 让 LLM 建议 include/drop/compact，但 hard budget 仍由 runtime 执行。 |
-| decomposition | DecisionAdvisor 已定义 | LLM 可建议是否拆任务、DAG、并行度；runtime 校验依赖、写入范围和预算。 |
-| react turn decision | DecisionAdvisor 已定义 | 每轮继续/停止/提问/审批建议应可记录，但 final authority 仍在 ReAct parser 与 runtime 状态机。 |
-| completion decision | DecisionAdvisor 已定义 | LLM 可判断是否完成；runtime 结合测试、文件状态、审批状态做最终落库。 |
+| intent mode | model-first 默认 | 普通入口不需要 advisor proposal；规则可记录为 `intentHints`/trace。 |
+| routing strategy | Historical / opt-in | `MetaRouter` 或 DecisionAdvisor routing 只用于兼容、测试、显式实验或诊断，不拥有默认业务流。 |
+| context policy | Runtime guard + optional diagnostic | hard budget 由 runtime 执行；LLM 建议不得触发默认额外前置路由。 |
+| decomposition | Explicit / model tool path | LLM 可以通过 task/agent/team/plan tools 表达拆分；runtime 校验依赖、写入范围和预算。 |
+| react turn decision | Provider loop | 每轮继续/停止主要由 provider response 和 ReAct parser 决定；后端只守状态机。 |
+| completion decision | Model/tool loop completion | 普通完成不经 completion advisor gate；completion/advisor evidence 只作显式模式、内部诊断或失败分析。 |
 | tool scope | validator/policy 已有 | LLM 只能建议工具集合，实际工具 allowlist 和审批由 runtime 控制。 |
 | memory recall | memory recall 已有基础 | LLM 可建议 recall focus；runtime 用 scope/relevance/budget 控制注入。 |
 
-LLM 决策闭环：
+Optional / historical advisor proposal loop：
 
 ```mermaid
 flowchart TD
-  A["需要决策的 runtime 节点"] --> B["DecisionAdvisor"]
+  A["显式实验/诊断节点"] --> B["DecisionAdvisor"]
   B --> C["LLM proposal"]
   C --> D["ProposalValidator"]
   D -->|accepted| E["写入 proposal_records"]
@@ -1096,9 +1104,9 @@ flowchart TD
 4. 相关单测、类型检查通过。
 5. 文档中的代码锚点同步更新。
 
-## 18. 2026-05-13 当前代码态扫描补记
+## 18. 2026-05-13 Historical 代码态扫描补记
 
-本节记录 2026-05-13 对当前工作区代码态的扫描结论，口径以实际代码、类型检查和聚焦测试为准，不只看提交记录。
+本节记录 2026-05-13 对当时工作区代码态的扫描结论，口径以当时实际代码、类型检查和聚焦测试为准。它不定义 2026-06-09 之后的默认执行流；凡是把 `DecisionAdvisor`、`MetaRouter` 或 completion gate 描述为默认路径的内容均按 historical 阅读。
 
 ### 当前已确认进展
 
@@ -1106,7 +1114,7 @@ flowchart TD
 | --- | --- | --- |
 | 前端入口拆分 | `App.tsx` 已从超大入口拆到约 500 行，入口大文件问题初步缓解。 | `app/src/App.tsx`, `app/src/hooks/*`, `app/src/ui/workbench/workspaces/WorkspaceRouter.tsx` |
 | Skills 设置入口 | Skills 页面已支持导入 JSON/ZIP、导入文件夹、打开 skills 目录。 | `app/src/ui/workbench/workspaces/skills/SkillsWorkspace.tsx`, `app/src-tauri/src/lib.rs` |
-| LLM 决策闭环 | 默认 routing、completion、context policy、decomposition、ReAct turn 等路径已有 `DecisionAdvisor`/`agent.decision` 接入迹象。 | `runtime/src/local_agent_runtime/main.py`, `runtime/src/local_agent_runtime/policy/decision_advisor.py`, `runtime/src/local_agent_runtime/router/meta_router.py` |
+| LLM 决策闭环 | Historical：当时默认 routing、completion、context policy、decomposition、ReAct turn 等路径已有 `DecisionAdvisor`/`agent.decision` 接入迹象；当前普通产品路径已改为 model-first ReAct。 | `runtime/src/local_agent_runtime/main.py`, `runtime/src/local_agent_runtime/policy/decision_advisor.py`, `runtime/src/local_agent_runtime/router/meta_router.py` |
 | Hooks/Worktree | `HookService`、`HookStoreMixin`、`WorktreeService`、worktree RPC/hook points 已存在并通过聚焦测试。 | `runtime/src/local_agent_runtime/services/hook_service.py`, `runtime/src/local_agent_runtime/services/worktree_service.py`, `runtime/src/local_agent_runtime/store/repositories/hook_repository.py` |
 | PermissionEngine | 统一权限评估器已出现，核心工具和 web/subagent 等路径已有接入。 | `runtime/src/local_agent_runtime/policy/permission_engine.py`, `runtime/src/local_agent_runtime/tools/*` |
 
@@ -1118,7 +1126,7 @@ flowchart TD
 - `python -m pytest -q -p no:cacheprovider --basetemp D:\py\yuanbao_agent\runtime\pytest_tmp runtime/tests/test_worktree_isolation.py runtime/tests/test_runtime_hooks.py runtime/tests/test_permission_engine.py runtime/tests/test_permission_integration.py` 通过，89 passed。
 - 注意：Windows 默认 pytest temp 目录 `C:\Users\ADMIN\AppData\Local\Temp\pytest-of-ADMIN` 当前权限异常；运行后端测试时应指定 workspace 内 `--basetemp`，否则会出现 setup 阶段 PermissionError，不能视为业务失败。
 
-### 当前必须注意的问题
+### 当时必须注意的问题（historical）
 
 | 优先级 | 问题 | 影响 | 建议 |
 | --- | --- | --- | --- |
@@ -1214,17 +1222,19 @@ flowchart TD
 | `npm.cmd test -- SettingsWorkspace.test.tsx` in `app/` | 14 passed |
 | `npx.cmd tsc --noEmit` in `app/` | passed |
 
-### 2026-05-14 补充进展：Completion Evidence
+### 2026-05-14 Historical 补充进展：Completion Evidence
+
+Historical note: this section records the May completion-gate experiment. In the current default flow, `_complete_task` may persist completion evidence for panel/trace diagnostics, but ordinary tasks must not create `completion_review` approvals, advisor approvals, workspace evidence waits, or `agent.decision.completion` chat-visible review flows.
 
 | 任务 | 状态 | 说明 |
 | --- | --- | --- |
 | Completion / Stop 判断强化第一阶段 | Done | `_complete_task` 会构建 `completionEvidence`，汇总 acceptance criteria、changed files、commands、verification、patches 和 tool results，并写入 `structuredResult.completionEvidence` 与 `agent.decision.completion` 事件。验证通过时标记 `evidenceLevel=verified`；只有自然语言总结时标记 `summary_only/unverified`，为后续硬 gate 留出明确输入。 |
-| Completion / Stop 硬 gate 第一层 | Done | 明确写入/调试/测试/文档类任务、validate 任务、active worktree 任务，或已有 changedFiles/commands/verification 的任务，如果最终只有 `summary_only` 证据，不再直接 `completed`；runtime 会创建 `completion_review` approval，把任务停在 `waiting_approval`。用户批准后才强制完成，拒绝则 `failed/COMPLETION_REVIEW_REJECTED`。 |
-| Completion / Stop 硬 gate 第二层 | Done | `failed_verification` 证据现在会直接阻止完成并落到 `failed/COMPLETION_EVIDENCE_INSUFFICIENT`；写入型任务如果已有 changed files、patch 或 write_file/apply_patch 变更证据但没有 passed verification，会进入 `completion_review`，`completionGate.status=needs_verification`。普通 command-only 任务不会被误判为需要验证。 |
-| Completion / Stop 硬 gate 第三层 | Done | `completionEvidence.acceptance` 现在支持结构化验收项状态：`acceptance`、`acceptanceResults`、`acceptanceCriteriaResults` 或 `criteriaResults` 可以来自 task、validation 或 tool result。写入型任务如果显式验收证据报告 failed/unsupported，或只覆盖部分 acceptance criteria，会进入 `completion_review`，`completionGate.status=needs_acceptance_review`；没有显式逐项结果时不会用自然语言 summary 猜测。 |
-| Completion / Stop 硬 gate 第四层 | Done | `completionEvidence.toolResults` 现在会标记 failed tool result，并把最后仍未被同工具后续成功结果覆盖的失败写入 `unresolvedToolFailures`。写入型任务如果存在 unresolved tool failures，会进入 `completion_review`，`completionGate.status=needs_tool_review`；失败后修复成功的 patch/command 链路不会被误拦。 |
-| Completion / Stop 硬 gate 第五层 | Done | `completionEvidence.testsRun` 现在纳入证据计数；代码/测试类文件发生变更时，如果 passing verification 只有 `git_status/git_diff` 这类结构检查、没有 pytest/npm test/cargo check/typecheck/build 等目标验证信号，会进入 `completion_review`，`completionGate.status=needs_verification`。文档类改动不会被这条规则误拦。 |
-| Completion Review 证据展示 / 审计 | Done | 桌面端 approval card 现在会展示 `completion_review` 的 gate status、evidence level、status、指标计数和 acceptance/tool/verification issue 摘要；事件折叠层会把 `completionEvidence` 透传到会话 runtime activity。后端 `completionEvidence.audit` 会汇总本任务 approval/review 结论、approval counts、completion review conclusion，并把这些客观事实传给 `completion_decision` advisor、proposal source 和 `agent.decision.completion` 事件。 |
+| Completion / Stop 硬 gate 第一层 | Historical | 当时写入/调试/测试/文档类任务可能创建 `completion_review` approval 并停在 `waiting_approval`；当前默认路径不再这样做。 |
+| Completion / Stop 硬 gate 第二层 | Historical | 当时缺少 passed verification 可能进入 `completion_review` / `completionGate.status=needs_verification`；当前 evidence 只作结构化诊断，真实失败由 tool/model/runtime 错误路径表达。 |
+| Completion / Stop 硬 gate 第三层 | Historical | 当时 acceptance 缺项可能进入 `completion_review`；当前普通任务不创建 completion review approval。 |
+| Completion / Stop 硬 gate 第四层 | Historical | 当时 unresolved tool failures 可能进入 `completion_review`；当前工具失败应回填模型为 `tool_result` 或进入任务失败/trace。 |
+| Completion / Stop 硬 gate 第五层 | Historical | 当时代码/测试变更缺少目标验证可能进入 `completion_review`；当前只记录 objective signals 和必要诊断，不作为默认 gate。 |
+| Completion Review 证据展示 / 审计 | Historical / panel-only | completion evidence 可继续作为 panel/trace 摘要存在，但不能作为聊天权限卡或默认完成审查流。 |
 
 验证结果：
 
@@ -1240,7 +1250,7 @@ flowchart TD
 | `npm.cmd test -- viewComputations.test.ts SessionWorkspace.test.tsx` in `app/` | 43 passed |
 | `npm.cmd run typecheck` in `app/` | passed |
 
-剩余边界：当前硬 gate 已覆盖明确写入型/验证型任务的 `summary_only`、失败验证、有工作区变更证据但缺少 passed verification、结构化 acceptance criteria failed/缺项、unresolved tool failures、以及代码/测试文件变更但缺少目标验证的情况；基础 `completion_review` 证据摘要已经进入 UI，reviewer/approval 结论已经进入 `completionEvidence.audit`、completion advisor 输入和 proposal/trace 审计。后续重点是继续细化更具体的语言/框架测试匹配规则，以及把这份 audit 做成更清晰的 cockpit drill-down。
+Historical remaining boundary at the time: these completion gates were the May implementation direction. They are superseded for the normal product path by the 2026-06-09 rule: ordinary completion is model/tool loop finalization; completion evidence is diagnostic panel/trace data only.
 
 ### 2026-05-14 Provider API format 扩展收尾
 
@@ -1293,17 +1303,17 @@ flowchart TD
 | `npm.cmd test -- SettingsWorkspace.test.tsx SessionWorkspace.test.tsx` in `app/` | 56 passed |
 | `cargo check` in `app/src-tauri` | passed |
 
-### 当前剩余非大文件任务
+### Historical 剩余非大文件任务
 
 | 优先级 | 任务 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
-| P0/P1 | Completion / Stop 判断强化 | 硬 gate 第一/二/三/四/五层已完成：写入/验证型 `summary_only` 会进入 `completion_review`；失败验证会直接失败；有工作区变更证据但缺少 passed verification 会进入 `needs_verification`；结构化 acceptance failed/缺项会进入 `needs_acceptance_review`；unresolved tool failures 会进入 `needs_tool_review`；代码/测试文件变更如果只有结构性 git 检查也会进入 `needs_verification`；completion review 证据展示和 `completionEvidence.audit` approval/review 审计已接入。 | 下一步继续细化语言/框架测试匹配规则，并把 audit 做成前端 drill-down。 |
+| P0/P1 | Completion / Stop 判断强化 | Historical：当时 hard gate / `completion_review` 是推进方向；当前默认路径不再创建 completion review approval 或 completion gate。 | 只保留 completion evidence 的 panel/trace 诊断价值。 |
 | P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate、merge 前验证命令、reviewer gate、approval summary、dirty merge/cleanup 保护、多 agent worktree strategy 摘要已完成；会话页 Worktree 面板展示 verification/review/approval/agent strategy。真实 git 多 child worktree 回归已覆盖 root/child 策略、独立 child worktree、verification、approval 和 merge conflict 失败上下文。 | 后续只剩可选的真实 LLM 并行多 agent smoke 与 conflict UI 打磨。 |
 | P1 | Hooks 生命周期补齐 | before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已接线；hook `run_command`、`webhook`、`memory_write`、`auto_verification_suggestion`、`external_sync` side effect/dispatch 已纳入 PermissionEngine 与执行审计；Settings UI 已接入 hook 列表、新建/编辑/删除、启用开关、action/condition/authority/retry 配置、P2 action 字段和执行记录查看。 | 下一步只剩带真实 provider key 的 release-gate live run，以及按需补更多外部系统模板。 |
 | P1 | Dynamic Agent Profile 设置页 | Done：backend store/RPC、shared 类型、validate/previewTools、Tauri bridge、Settings UI profile 管理全部接通。 | 后续只剩真实 provider/profile 组合 smoke 与易用性打磨。 |
 | P1 | Real LLM smoke 固化 | Done：新增 `runtime/tests/test_real_llm_smoke.py`，默认跳过；设置 `YUANBAO_REAL_LLM_SMOKE=1` 后用环境变量中的 provider key/base URL/model/apiFormat 做最小真实 chat smoke。 | 后续可在手工发布 gate 中按需启用，并补真实 provider + hook side effect 组合 smoke。 |
 
-### 当前重点
+### Historical 当时重点
 
 下一阶段最值得先做的是 **Completion / Stop 判断强化**。原因是 ToolPolicyResolver 已经能避免 synthesis 轮继续乱拿工具，provider 链路也更稳；接下来要保证任务什么时候“真的完成”有硬依据，否则 agent 仍可能出现自然语言说完成但工作区状态未满足验收项的问题。
 
@@ -1550,9 +1560,9 @@ Open risks:
 | Generated artifact can pass tests while being rough for users. | Product-surface advisor and objective artifact checks are implemented; remaining mitigation is richer domain signal discovery plus advisor-selected real evidence proof when appropriate. |
 | Windows shell/path quirks create false failures. | Continue command compatibility hardening for quoting, explicit executables, temp dirs, and local runtime paths. |
 
-### 2026-05-17 Current Completion And Remaining Task Scan
+### 2026-05-17 Historical Completion And Remaining Task Scan
 
-This scan reconciles older P0/P1 notes with the later completion records. When an older section and a later status disagree, this section should be treated as the current planning snapshot.
+Historical note: this scan reconciled older P0/P1 notes with the 2026-05 completion records. It is no longer the current default-flow contract. If it describes `MetaRouter`, `DecisionAdvisor`, completion review, advisor evidence, workspace evidence, or product acceptance gates as the ordinary path, read that language as historical and superseded by the 2026-06-09 model-first ReAct baseline.
 
 Completed or effectively closed:
 
@@ -1562,30 +1572,30 @@ Completed or effectively closed:
 | Permission Policy V2 Lite | Done | PermissionEngine presets, config normalization, tool integrations, blocked-tool pipeline, and focused tests are recorded as closed. |
 | Provider API format alignment | Done | `openai-responses` and `anthropic-messages` are implemented and no longer just planned settings values. |
 | Real provider base URL/env handling | Done | Bare OpenAI-compatible base URLs normalize to `/v1/chat/completions`; explicit provider env no longer loses to stored mock defaults. |
-| DecisionAdvisor JSON extraction baseline | Done for current baseline | Markdown fences, surrounding text, top-level `proposal`, and reasoning/explanation fallback are handled; remaining work is provider-specific robustness, not the original blocker. |
-| ToolPolicyResolver + Dynamic Agent Profile core | Done | Provider turns use unified tool policy decisions; role snapshots and policy explanations are captured; profile CRUD/settings and preview tools are wired. Routing advisor proposals can now carry `tool_continuation`, so post-child-result tool exposure is an explicit/advisor-readable policy first, with old strategy-based behavior only as a compatibility fallback. |
+| DecisionAdvisor JSON extraction baseline | Historical diagnostic capability | Markdown fences, surrounding text, top-level `proposal`, and reasoning/explanation fallback were handled for advisor experiments; this does not make DecisionAdvisor part of the default turn path. |
+| ToolPolicyResolver + Dynamic Agent Profile core | Done | Provider turns use unified tool policy decisions; role snapshots and policy explanations are captured; profile CRUD/settings and preview tools are wired. Historical routing-advisor `tool_continuation` details remain explicit/diagnostic only; default tool flow is still model-first. |
 | Skill/MCP policy resolver merge | Done at policy layer | Resolver supports skill strict whitelist / inherit MCP and MCP server/tool allowlist, denylist, and disabled modes. Remaining work is real end-to-end MCP/Skills task coverage. |
-| Completion / Stop hard gates + audit | Done through current hard-gate layers | Summary-only, failed verification, missing verification, acceptance failures, unresolved tool failures, and weak structural-only validation for code/test changes are gated. Completion audit now includes task approvals, review conclusions, approval counts, completion advisor proposal linkage, and passes that audit into `completion_decision` advisor/proposal/trace records. Framework/language verification matching now stays a conservative objective observation: when there is already a passing verification signal, a high-confidence completion advisor can explicitly mark a domain-specific verification gap as sufficient via `verification_sufficient` / `verification_assessment`; runtime records `verificationRequirements.advisorResolution` instead of hard-coding one test family as universally required. |
-| Completion review UI baseline | Done | Approval cards and runtime activity can show completion evidence, gate status, metrics, and issue summaries. |
+| Completion / Stop hard gates + audit | Historical / superseded for default flow | These May hard-gate layers are no longer the ordinary completion path. Completion evidence may remain as panel/trace diagnostics; normal tasks must not create completion-review approvals or advisor gates. |
+| Completion review UI baseline | Historical / panel-only | Completion evidence summaries can be shown in runtime panels/trace, but not as default approval cards or chat-visible review gates. |
 | Worktree write isolation | Done through current planned closure | Write tasks auto-bind worktrees; tools run in worktree cwd; merge approval, verification, reviewer summary, dirty protection, cleanup protection, and UI panel are wired. |
 | Hooks lifecycle and Settings UI | Done | Task/tool/provider/compaction/context/worktree hooks and Settings management are wired; `run_command` side effects pass through PermissionEngine. |
 | Real LLM smoke baseline | Done | Real LLM smoke is default-skipped and environment-gated; GLM full-coverage and heavy follow-up smokes passed in recorded runs. |
 | Long-running subagent workflow hardening | Done in latest runtime commit | `ff8aa40` records broader runtime workflow coverage, command compatibility support, child worker/orphan cleanup coverage, code search tests, policy guard tests, and long-run plan documentation. |
 | Pytest temporary directory hygiene | Done | `.pytest-*/` is ignored so focused/long-run temp directories do not pollute git status. |
-| Main workflow state baseline + phase 2/3 execution | Done in current follow-up | Each foreground, background, and queued task now persists `routing.mainWorkflow` with intent confidence, automation controls, convergence policy, budgets, workspace/git snapshot, and initial user takeover state. Stop/cancel, pause, continue, wrap-up, and target-change supplements are routed through bounded lifecycle/convergence paths. ReAct now records step/context budget pressure in `mainWorkflow.budget.dimensions`, emits `task.budget.pressure`, and only treats hard `maxTaskSteps` exhaustion as partial completion/review. Exhaustion asks `DecisionAdvisor` for `budget_convergence`, persists the proposal, emits `agent.decision.budget_convergence`, and records resumable handoff options without auto-continuing past the hard budget. |
-| LLM-first semantic routing/advisory | Done in current follow-up | MetaRouter now treats rules as cheap candidates/fallback and defaults to DecisionAdvisor semantic routing when available, including high-confidence rule matches. Routing advisor proposals may include generic `tool_continuation` policy for whether the parent should keep using tools after child task results; runtime then applies deterministic task budgets, permissions, and child-tool guards. Completion evidence asks a product-surface advisor to classify artifact shape and request whatever evidence fits the task domain before the completion advisor judges done-ness. High-confidence advisor judgments can route to completion review while objective failures remain under deterministic guardrails. Routing, product-surface, and completion advisor proposals are persisted in `proposal_records` for audit/replay. |
+| Main workflow state baseline + phase 2/3 execution | Historical snapshot | The bounded lifecycle/budget pieces remain useful context, but `DecisionAdvisor` budget convergence is not a default pre/post turn gate. Keep such records diagnostic or explicit-mode only. |
+| LLM-first semantic routing/advisory | Historical / superseded | This row described a May advisor-routing direction. Current default flow does not use MetaRouter/DecisionAdvisor semantic routing, product-surface advisor, or completion advisor as ordinary gates. |
 | Structured compaction handoff | Done in current follow-up | Context compaction now emits and persists `handoffSummary` with objective, current step, completed work, modified files, failed commands, failed tools, verification status, decisions, risks, next action, and recent context. The structured handoff is injected into the compacted system summary and exposed through `context.budget` / `autonomy.report` for recovery UI and follow-up turns. |
 | MCP + Skills main-flow acceptance | Done in current follow-up | ContextBuilder now exposes built-in tools plus live ToolRegistry/MCP schemas to provider turns. Main-flow acceptance tests route through a skill with `inherit_mcp`, call an MCP tool, compact after the tool result, verify the MCP result plus skill decision survive in `handoffSummary`, and verify failed MCP tools become structured `failedTools` with `failureKind`, `recoveryHint`, and recovery next action. If routing/advisor selects a missing skill, ContextBuilder records `skillFallback`, runtime emits `skill.fallback`, task routing preserves the fallback reason, and missing skills are not counted as real skill usage. |
-| Tool/MCP failure recovery advisor | Done in current follow-up | Failed tools now build shared structured failure facts (`failureKind`, `recoveryHint`) at execution time, not only during compaction. Runtime calls `DecisionAdvisor` with `tool_recovery` context so unavailable MCP servers, partial responses, permission denials, timeouts, and generic tool failures can get advisor-selected actions such as `refresh_mcp_tools`, `retry_narrower`, `request_permission`, `use_partial_evidence`, `fallback_tool`, `ask_user`, `skip_with_risk`, or `abort`. Selected actions are recorded as `agent.decision.tool_recovery`, persisted as `tool_recovery` proposal records, and attached to tool result / handoff as `recoveryDecision`. Safe executable follow-ups now create explicit `advisor_tool` approvals: MCP refresh recovery resumes through `mcp_tools_refresh`, and fallback tools are routed through normal ToolPolicyResolver / PermissionEngine / approval gates before execution. |
-| Product acceptance artifact gate | Done in current follow-up | Completion evidence now checks changed readable artifacts (`html/md/txt/css/js/jsx/ts/tsx/vue/svelte`) for visible mojibake/replacement-character tokens, validates local CSS/JS/image/route references from changed HTML, verifies changed HTML has visible route content, and runs `node --check` for reachable local scripts. `/api/...` references are collected as non-blocking objective observations rather than local-backend hard gates, because the correct evidence may be a proxy, external service, mock, embedded integration, design review, or other domain-specific proof. Changed-surface observations now classify objective path/content signals such as CLI entrypoints, persistence/migration files, tests, docs, UI/client artifacts, manifests, API routes/references, and data/config files; these feed product-surface advisor context without becoming fixed gates. Product-shape signals that require semantic judgment flow through the LLM product-surface advisor as generic `evidence_requests` / `verification_intents`, then feed completion advisory instead of being hard-coded as automatic failure. Advisor-requested evidence is now emitted as the generic `agent.evidence.requested` event, copied into completion review requests, and exposed through the `on_evidence_requested` hook event so follow-up automation can stay domain-neutral. Failed objective product-quality evidence still routes write-oriented completion into `completion_review`. |
-| Provider failure recovery advisor | Done in current follow-up | Provider failures are still classified by observable facts. No-partial timeout/network/rate-limit/server failures surface a runtime gate (`runtimeGate.reason`) instead of calling the same provider-backed advisor or auto-retrying at runtime; oversized context can receive a bounded runtime compact retry; stream failures only expose advisor/fallback recovery when partial output already exists. Adapter-level stream retry is limited to failures before the first emitted event. Provider preflight records request facts before the provider call and can auto-apply safe context compaction, validated bounded splitting, or a guarded turn-scoped switch to a configured available provider profile when explicitly warranted. Runtime recovery records are persisted in `proposal_records`; provider traces include `provider.failure.recovery_decision`, `runtimeGate`, retry metadata, provider switch metadata, and completed turns retain `failureRecovery` when recovery happened before success. |
+| Tool/MCP failure recovery advisor | Historical / diagnostic | Structured failure facts are useful, but advisor-selected recovery and `advisor_tool` approval records must not become default chat permission cards or hidden tool-flow owners. |
+| Product acceptance artifact gate | Historical / diagnostic | Objective artifact observations may remain panel/trace evidence. Product-surface/completion advisor requests and completion-review routing are not default ordinary-task gates. |
+| Provider failure recovery advisor | Historical / diagnostic | Provider failures should surface as typed errors/status plus trace facts; advisor/fallback recovery is explicit or diagnostic, not a default preflight gate for normal turns. |
 | Hook P2 actions + live smoke gate | Done in current follow-up | Runtime hooks now support `webhook`, `memory_write`, `auto_verification_suggestion`, and `external_sync` with PermissionEngine/audit handling; Settings UI can configure those actions. `on_evidence_requested` is available for LLM-advised evidence follow-up without adding fixed task/domain taxonomies. An env-gated real provider smoke verifies provider-turn hooks plus memory/verification side effects when credentials are available. |
 | Multi-agent worktree strategy validation | Done in current follow-up | Real git regression covers root/child strategy reporting, isolated child worktrees, merge verification/approval, and child merge conflict failure context. |
-| Frontend runtime cockpit phase 1 + phase 2 baseline | Done in current follow-up | Session workspace now shows a compact runtime cockpit above the conversation stream. It summarizes task phase, completion gate, pending approval, changed files, commands, verification ratio, failed signals, first acceptance issue, and context budget without exposing raw context preview content. Phase 2 baseline adds expandable drill-downs for acceptance audit, provider recovery/preflight signals, MCP/Skills recovery signals, memory/context pressure, workspace status, and handoff actions. Paused resumable tasks can now expose refresh/resume controls that call the existing task lifecycle instead of inventing a new UI-only state. |
+| Frontend runtime cockpit phase 1 + phase 2 baseline | Historical UI snapshot | Runtime panels may summarize task phase, approvals, changed files, commands, verification, context, and diagnostics. They should not present completion gate/advisor evidence as default chat flow. |
 
-### Hardcoded decision audit and first remediation
+### Historical hardcoded decision audit and first remediation
 
-Principle for this pass: LLM/DecisionAdvisor should own semantic judgments such as artifact shape, evidence needs, routing, continuation, and recovery strategy. Runtime code may keep deterministic guards for permissions, budgets, state transitions, schema validation, filesystem facts, objective command failures, and other safety boundaries.
+Historical principle for this pass: LLM/DecisionAdvisor was explored for semantic judgments such as artifact shape, evidence needs, routing, continuation, and recovery strategy. Current default-flow principle is narrower: the provider/model-first ReAct loop owns ordinary tool flow; advisor/completion/evidence records are optional diagnostics or explicit product-mode mechanics, not default gates.
 
 | Decision point | Audit result | Current status |
 | --- | --- | --- |
@@ -1631,10 +1641,10 @@ Still open / next implementation queue:
 | P1/P2 | Memory recall quality tuning | Continue validating cross-session workspace memory recall quality, deduplication, and injection budget behavior under long tasks. |
 | P2 | Minimal smoke gate split | Keep only a fast daily safety smoke and a manual/release long stress smoke; do not let smoke structure distract from main workflow hardening. |
 
-Current priority order:
+Historical priority order from this snapshot:
 
-1. Main workflow closure: backend baseline is now the primary closed path. Routing/advisor, tool policy, provider turns, tool/MCP recovery, worktree isolation, completion gates, evidence executor, user takeover, budget convergence, and child partial handoff/continuation are runtime-backed and auditable. Next work should be bug fixes from real flow testing or optional deepening, not another hard-coded product-shape probe.
-2. Advisor-led evidence executor: baseline state machine is done. Blocking advisor-suggested commands and non-command tool suggestions turn into explicit advisor evidence approvals with executor ids, completion evidence/audit records, `agent.evidence.executor.updated` state transitions, and approval-resume execution, even when the underlying capability is configured as `allow`; policy `deny` still prevents execution. Multi-step `suggestedCommands` / `suggestedTools` are normalized into independent evidence requests, so advisor-led proof chains no longer need fixed runtime probes. README/docs quality and changed artifact surface observations now contribute advisory objective signals without hard-coding completion gates. Remaining work is wiring richer real evidence execution adapters and UI controls when available, while keeping the evidence shape advisor-led rather than taxonomy-coded.
+1. Main workflow closure: useful runtime infrastructure exists, but routing/advisor, completion gates, and evidence executor language here is historical unless explicitly opted in. Current ordinary tasks complete through model/tool loop finalization.
+2. Evidence executor / completion audit: treat these as internal diagnostics or explicit modes. They must not create chat permission cards, workspace evidence waits, or raw JSON panels for normal chat/read/write/doc turns.
 3. Provider recovery phase 2 baseline: provider preflight facts/advisor audit, safe compaction, executable bounded task splitting, guarded turn-scoped provider profile switching, and baseline provider health/ranking are done. Runtime still enforces retry budgets, partial-output gates, profile availability, permissions, approvals, DAG validation, and safety; candidate-provider ranking / health-history scoring is intentionally deferred while the flow is kept to one primary LLM/model.
 4. MCP + Skills fallback polish: advisor-requested MCP evidence tools now pass through ToolPolicyResolver and explicit approval; missing skill fallback is explicit in context/events/routing; failed MCP/tool handoff includes structured `failureKind`, `recoveryHint`, and advisor-selected `recoveryDecision`. Safe recovery follow-ups for MCP refresh and fallback tools now create explicit approval-resume actions through the normal pipeline. Remaining work is broader real MCP fallback coverage and UX affordances for choosing/confirming alternate skills/tools.
 5. Release-grade smoke coverage, broader real MCP/Skills fallback coverage, and optional UI polish.

@@ -49,6 +49,7 @@ const LEGACY_SUPPRESSED_FLAT_MESSAGE_TYPES = new Set([
 ]);
 
 const INTERNAL_APPROVAL_KINDS = new Set(["completion_review", "advisor_tool"]);
+const PANEL_ONLY_SYSTEM_NOTIFICATION_SUBTYPES = new Set(["task_progress", "task_started"]);
 
 function normalizedKind(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : "";
@@ -437,6 +438,9 @@ export function applyYuanbaoServerMessageToChat(
       };
 
     case "system_notification":
+      if (PANEL_ONLY_SYSTEM_NOTIFICATION_SUBTYPES.has(message.subtype)) {
+        return { handled: true, messages: current };
+      }
       return {
         handled: true,
         messages: appendSpecialEventMessage(current, {
@@ -528,7 +532,6 @@ function systemNotificationKind(subtype: string): string {
   if (subtype === "compact_summary") return "compact_summary";
   if (subtype === "goal_event") return "goal_event";
   if (subtype === "memory_saved") return "memory_event";
-  if (subtype === "task_progress" || subtype === "task_started") return "task_summary";
   return "system";
 }
 

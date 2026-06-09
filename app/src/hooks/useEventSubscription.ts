@@ -1164,8 +1164,6 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             "memory_event",
             "background_task",
             "agent_task_group",
-            "task_summary",
-            "plan_update",
             "ask_user_question",
             "computer_use_permission_request",
             "computer_use_permission",

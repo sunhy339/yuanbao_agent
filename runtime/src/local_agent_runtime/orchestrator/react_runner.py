@@ -938,25 +938,6 @@ class ReactRunnerMixin:
                     "turn_id": provider_turn["id"],
                 },
             )
-            explicit_thought_summary = (
-                response.get("thought_summary")
-                if isinstance(response.get("thought_summary"), str)
-                else response.get("thoughtSummary")
-                if isinstance(response.get("thoughtSummary"), str)
-                else None
-            )
-            if explicit_thought_summary and response.get("_response_transport") != "stream":
-                self._publish(
-                    session_id=session_id,
-                    task=task,
-                    event_type="thinking",
-                    payload={
-                        "text": explicit_thought_summary,
-                        "messageId": task.get("activeAssistantMessageId"),
-                        "source": "non_stream_thought_summary",
-                        "step": steps + 1,
-                    },
-                )
             if parsed["status"] == "fallback":
                 return parsed
 

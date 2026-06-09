@@ -82,9 +82,8 @@ class ReactToolHelpersMixin:
             preview = stdout.splitlines()[0] if stdout else stderr.splitlines()[0] if stderr else "no output"
             return f"Command failed with status {status} and exit code {exit_code}; first output: {preview[:120]}."
         if tool_name == "task":
-            child_task_id = result.get("childTaskId") or result.get("task", {}).get("id") or "unknown child task"
             summary = (result.get("summary") or result.get("result", {}).get("summary") or "Child task failed.").strip()
-            return f"Child task {child_task_id} failed: {summary}"
+            return f"Child task failed: {summary}"
         if tool_name == "apply_patch":
             if result.get("status") == "validation_failed":
                 summary = (result.get("summary") or "Patch validation failed.").strip()

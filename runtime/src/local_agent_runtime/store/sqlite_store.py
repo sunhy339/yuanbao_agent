@@ -23,12 +23,7 @@ from .session_store import SessionStoreMixin
 from .task_store import TaskStoreMixin
 from ._schema import SchemaBootstrapMixin
 from ..models import RuntimeEvent
-from ..yuanbao_event_adapter import to_yuanbao_server_message
-
-
-def _suppresses_flat_bridge(payload: dict[str, Any]) -> bool:
-    bridge = payload.get("_bridge")
-    return isinstance(bridge, dict) and bridge.get("suppressChatReplay") is True
+from ..yuanbao_event_adapter import should_emit_yuanbao_server_message, to_yuanbao_server_message
 
 
 class _LockedCursor:
@@ -497,23 +492,18 @@ class SQLiteStore(
             "sequence": row["sequence"],
             "visibility": row.get("visibility", "chat"),
         }
-        if (
-            record["visibility"] != "trace"
-            and isinstance(payload, dict)
-            and not _suppresses_flat_bridge(payload)
-        ):
-            yuanbao = to_yuanbao_server_message(
-                RuntimeEvent(
-                    event_id=str(row["id"]),
-                    session_id=str(row["session_id"]),
-                    task_id=str(row["task_id"]),
-                    type=str(row["type"]),
-                    ts=int(row["created_at"]),
-                    payload=payload,
-                    seq=int(row["sequence"]),
-                    visibility=row.get("visibility", "chat"),
-                )
-            )
+        runtime_event = RuntimeEvent(
+            event_id=str(row["id"]),
+            session_id=str(row["session_id"]),
+            task_id=str(row["task_id"]),
+            type=str(row["type"]),
+            ts=int(row["created_at"]),
+            payload=payload,
+            seq=int(row["sequence"]),
+            visibility=row.get("visibility", "chat"),
+        )
+        if should_emit_yuanbao_server_message(runtime_event, mode="replay"):
+            yuanbao = to_yuanbao_server_message(runtime_event)
             if yuanbao is not None:
                 record["yuanbao"] = yuanbao
         return record

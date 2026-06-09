@@ -132,12 +132,12 @@ class TestEventVisibilityInference:
     def test_collab_completed_is_panel(self):
         assert self._invoke("collab.completed") == "panel"
 
-    # Root task: everything else is chat
-    def test_task_started_root_is_chat(self):
-        assert self._invoke("task.started", role="root") == "chat"
+    # Root task lifecycle: panel, not chat text.
+    def test_task_started_root_is_panel(self):
+        assert self._invoke("task.started", role="root") == "panel"
 
-    def test_task_completed_root_is_chat(self):
-        assert self._invoke("task.completed", role="root") == "chat"
+    def test_task_completed_root_is_panel(self):
+        assert self._invoke("task.completed", role="root") == "panel"
 
     # Non-root task: task. and message. → panel, others → trace
     def test_task_started_worker_is_panel(self):
@@ -367,19 +367,6 @@ class TestEventBusVisibility:
 
         lines = [json.loads(line) for line in writer.getvalue().splitlines()]
         assert lines == [
-            {
-                "kind": "event",
-                "payload": {
-                    "eventId": "evt_1",
-                    "sessionId": "sess_1",
-                    "taskId": "task_1",
-                    "type": "content_delta",
-                    "ts": 1,
-                    "payload": {"text": "hello"},
-                    "visibility": "chat",
-                    "yuanbao": {"type": "content_delta", "text": "hello"},
-                },
-            },
             {
                 "kind": "yuanbao_message",
                 "payload": {"type": "content_delta", "text": "hello"},

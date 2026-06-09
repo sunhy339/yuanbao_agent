@@ -5,6 +5,41 @@ import userEvent from "@testing-library/user-event";
 import { CleanSpecialEventBlock, CleanToolMessageBlock } from "./CleanConversation";
 
 describe("CleanConversation parity", () => {
+  it("renders tool display fields without exposing raw argument JSON", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-read",
+          role: "assistant",
+          content: "read src/app.ts",
+          toolName: "read_file",
+          status: "completed",
+          metadata: {
+            kind: "tool_use",
+            displayTitle: "Read file",
+            displaySummary: "Read app shell",
+            displayTarget: "src/app.ts",
+            inputText: "read src/app.ts",
+            rawInputText: JSON.stringify({ path: "src/app.ts", workspaceRoot: "D:/py/yuanbao_agent" }),
+            input: { path: "src/app.ts", workspaceRoot: "D:/py/yuanbao_agent" },
+            resultSummary: "Read app shell summary",
+            resultPreview: [{ label: "File", value: "src/app.ts" }],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Read file/ })).toBeInTheDocument();
+    expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+    expect(screen.queryByText(/workspaceRoot/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Read file/ }));
+    expect(screen.getByText("File")).toBeInTheDocument();
+    expect(screen.queryByText(/workspaceRoot/)).not.toBeInTheDocument();
+  });
+
   it("keeps ask-user tool rows readable without raw option JSON", () => {
     render(
       <CleanToolMessageBlock

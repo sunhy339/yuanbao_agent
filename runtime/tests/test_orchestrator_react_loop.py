@@ -790,7 +790,7 @@ def test_provider_turn_uses_status_without_synthetic_assistant_progress(tmp_path
     assert any(event["payload"].get("state") == "thinking" for event in status_events)
 
 
-def test_react_turn_bridges_explicit_thought_summary_to_thinking(tmp_path: Any) -> None:
+def test_react_turn_records_explicit_thought_summary_as_trace_not_synthetic_thinking(tmp_path: Any) -> None:
     provider = ScriptedProvider([
         {
             "thought_summary": "先确认相关文件，再读取目标实现。",
@@ -829,11 +829,11 @@ def test_react_turn_bridges_explicit_thought_summary_to_thinking(tmp_path: Any) 
 
     assert task["status"] in {"completed", "waiting_approval"}
     thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
-    assert thinking_events
-    assert thinking_events[0]["payload"]["text"] == "先确认相关文件，再读取目标实现。"
-    assert thinking_events[0]["payload"]["source"] == "non_stream_thought_summary"
-    assert thinking_events[0]["payload"]["messageId"]
-    assert thinking_events[0]["visibility"] == "chat"
+    assert thinking_events == []
+    decision_events = [event for event in runtime.events if event["type"] == "agent.decision.react_turn"]
+    assert decision_events
+    assert decision_events[0]["payload"]["thought_summary"] == "先确认相关文件，再读取目标实现。"
+    assert decision_events[0]["visibility"] == "trace"
     assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
     assert any(
         event["type"] == "tool_use_complete"

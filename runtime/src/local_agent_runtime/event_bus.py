@@ -5,7 +5,7 @@ import threading
 from typing import Any
 
 from .models import RuntimeEvent
-from .yuanbao_event_adapter import to_yuanbao_server_message
+from .yuanbao_event_adapter import should_emit_yuanbao_server_message, to_yuanbao_server_message
 
 EventSink = Callable[[RuntimeEvent], None]
 
@@ -58,17 +58,7 @@ class EventBus:
             "payload": event.payload,
             "visibility": event.visibility,
         }
-        yuanbao = None if _suppresses_realtime_flat_message(event) else to_yuanbao_server_message(event)
+        yuanbao = to_yuanbao_server_message(event) if should_emit_yuanbao_server_message(event, mode="live") else None
         if yuanbao is not None:
             payload["yuanbao"] = yuanbao
         return payload
-
-
-def _suppresses_realtime_flat_message(event: RuntimeEvent) -> bool:
-    if event.visibility == "trace":
-        return True
-    event_payload = event.payload if isinstance(event.payload, dict) else {}
-    if event.type == "message.completed" and event_payload.get("_chatCompat") is True:
-        return True
-    bridge = event_payload.get("_bridge")
-    return isinstance(bridge, dict) and bridge.get("suppressRealtimeFlat") is True

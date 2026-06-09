@@ -48,12 +48,17 @@ _TOOL_VISIBLE_SNIPPET_LIMIT = 600
 SUBAGENT_TOOL_NAMES = {"agent", "task"}
 _SUBAGENT_INTERNAL_RESULT_KEYS = {
     "acceptanceCriteria",
+    "childTaskId",
     "completionEvidence",
     "completionGate",
     "completionReview",
+    "id",
     "providerRequest",
     "raw",
     "requestJson",
+    "senderWorkerId",
+    "taskId",
+    "workerId",
     "tool_policy_decision",
     "workspaceRoot",
     "workspace_root",
@@ -302,7 +307,7 @@ def _public_tool_arguments(arguments: Any, tool_name: str = "") -> Any:
 
 def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     public: dict[str, Any] = {}
-    for key in ("status", "summary", "resultSummary", "childTaskId", "workerId", "planningMode"):
+    for key in ("status", "summary", "resultSummary", "planningMode"):
         value = result.get(key)
         if value in (None, "", [], {}):
             continue
@@ -313,10 +318,8 @@ def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         public["approval"] = {
             key: value
             for key, value in {
-                "id": approval.get("id"),
                 "kind": approval.get("kind"),
                 "decision": approval.get("decision"),
-                "createdAt": approval.get("createdAt"),
             }.items()
             if value not in (None, "", [])
         }
@@ -333,7 +336,7 @@ def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(worker, dict):
         public["worker"] = {
             key: _compact_snippet(worker.get(key))
-            for key in ("id", "name", "role", "status")
+            for key in ("name", "role", "status")
             if worker.get(key) not in (None, "", [], {})
         }
 
@@ -341,7 +344,7 @@ def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(task, dict):
         public["task"] = {
             key: _compact_snippet(task.get(key))
-            for key in ("id", "title", "status", "description")
+            for key in ("title", "status", "description")
             if task.get(key) not in (None, "", [], {})
         }
 
@@ -349,7 +352,7 @@ def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(message, dict):
         public_message = {
             key: _compact_snippet(message.get(key))
-            for key in ("id", "kind", "body", "taskId", "senderWorkerId")
+            for key in ("kind", "body")
             if message.get(key) not in (None, "", [], {})
         }
         if public_message:
@@ -932,7 +935,7 @@ def _tool_result_preview(tool_name: str, result: dict[str, Any] | None, target: 
             row for row in (
                 _preview_row("状态", result.get("status") or "completed"),
                 _preview_row("摘要", result.get("summary") or result.get("resultSummary") or ""),
-                _preview_row("子任务", result.get("childTaskId") or result.get("taskId") or ""),
+                _preview_row("类型", result.get("agentType") or result.get("role") or result.get("planningMode") or ""),
             ) if row
         )
     elif tool_name == "computer_use":
@@ -1475,7 +1478,7 @@ def _task_dispatch_steps(arguments: dict[str, Any], result: dict[str, Any]) -> l
     )
     status = str(result.get("status") or "completed")
     child_id = str(result.get("childTaskId") or result.get("taskId") or "").strip()
-    summary = _compact_text(result.get("summary") or result.get("resultSummary") or child_id or status, 180)
+    summary = _compact_text(result.get("summary") or result.get("resultSummary") or status, 180)
     steps = [
         {"label": "prepare", "status": "completed", "summary": title},
         {"label": "dispatch", "status": "completed" if status == "completed" else status, "summary": summary},

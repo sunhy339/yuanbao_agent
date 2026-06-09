@@ -161,10 +161,9 @@ def test_yuanbao_output_frames_keep_flat_messages_in_sync() -> None:
     frames = to_yuanbao_output_frames(payload)
 
     assert frames == [
-        {"kind": "event", "payload": payload},
         {"kind": "yuanbao_message", "payload": {"type": "content_delta", "text": "hello"}},
     ]
-    assert "eventId" not in frames[1]["payload"]
+    assert "eventId" not in frames[0]["payload"]
 
 
 def test_yuanbao_output_frames_fall_back_to_legacy_haha_cc_payload() -> None:
@@ -176,7 +175,7 @@ def test_yuanbao_output_frames_fall_back_to_legacy_haha_cc_payload() -> None:
     }
 
     assert yuanbao_message_from_event_payload(payload) == {"type": "thinking", "text": "plan"}
-    assert to_yuanbao_output_frames(payload)[1:] == [
+    assert to_yuanbao_output_frames(payload) == [
         {"kind": "yuanbao_message", "payload": {"type": "thinking", "text": "plan"}},
     ]
 
@@ -427,7 +426,8 @@ def test_runtime_work_waiting_is_task_update_not_permission_request() -> None:
 
     assert message == {
         "type": "task_update",
-        "taskId": "task_1",
+        "taskId": "finish-cleanup",
+        "taskLabel": "Finish cleanup",
         "status": "running",
         "progress": "Completion is waiting for runtime work to settle.",
     }
@@ -488,17 +488,17 @@ def test_yuanbao_adapter_maps_collaboration_snapshot_to_stable_team_update() -> 
         "type": "team_update",
         "teamName": "sess_1",
         "members": [
-            {
-                "agentId": "worker_1",
-                "role": "writer",
-                "status": "completed",
-                "currentTask": "Docs finished.",
-            },
-            {
-                "agentId": "worker_2",
-                "role": "reviewer",
-                "status": "running",
-                "currentTask": "Review docs",
+                {
+                    "agentId": "writer",
+                    "role": "writer",
+                    "status": "completed",
+                    "currentTask": "Docs finished.",
+                },
+                {
+                    "agentId": "reviewer",
+                    "role": "reviewer",
+                    "status": "running",
+                    "currentTask": "Review docs",
             },
         ],
     }
@@ -530,11 +530,11 @@ def test_yuanbao_adapter_keeps_team_lifecycle_distinct_from_task_timeline() -> N
         "type": "team_update",
         "teamName": "sess_1",
         "members": [
-            {
-                "agentId": "child_1",
-                "role": "explorer",
-                "status": "running",
-                "currentTask": "Inspect repo",
+                {
+                    "agentId": "explorer",
+                    "role": "explorer",
+                    "status": "running",
+                    "currentTask": "Inspect repo",
             }
         ],
     }

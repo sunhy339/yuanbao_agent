@@ -122,7 +122,7 @@ class TestEventCompatAssistantToken:
         assert delta_event["visibility"] == "chat"
         assert delta_event["payload"]["messageId"] == "msg_42"
         assert delta_event["yuanbao"] == {"type": "content_delta", "text": "hello"}
-        assert delta_event["hahaCc"] == {"type": "content_delta", "text": "hello"}
+        assert "hahaCc" not in delta_event
         assert "suppressRealtimeFlat" not in delta_event["payload"].get("_bridge", {})
         assert "suppressChatReplay" not in delta_event["payload"].get("_bridge", {})
 
@@ -487,9 +487,9 @@ class TestEventCompatAssistantToken:
         tool_use = next(e for e in collected if e.type == "tool_use_complete")
         assert tool_use.payload["toolUseId"] == "tc_1"
         assert tool_use.payload["parentToolUseId"] == "tc_parent"
-        assert "toolGroupId" not in tool_use.payload
-        assert "toolIndex" not in tool_use.payload
-        assert "toolTotal" not in tool_use.payload
+        assert tool_use.payload["toolGroupId"] == "tgrp_1"
+        assert tool_use.payload["toolIndex"] == 1
+        assert tool_use.payload["toolTotal"] == 3
         assert tool_use.payload["toolCategory"] == "verification"
         assert tool_use.payload["toolPhaseId"] == "verification"
         assert tool_use.payload["toolPhaseLabel"] == "验证"
@@ -499,9 +499,9 @@ class TestEventCompatAssistantToken:
         tool_result = next(e for e in collected if e.type == "tool_result")
         assert tool_result.payload["toolUseId"] == "tc_1"
         assert tool_result.payload["parentToolUseId"] == "tc_parent"
-        assert "toolGroupId" not in tool_result.payload
-        assert "toolIndex" not in tool_result.payload
-        assert "toolTotal" not in tool_result.payload
+        assert tool_result.payload["toolGroupId"] == "tgrp_1"
+        assert tool_result.payload["toolIndex"] == 1
+        assert tool_result.payload["toolTotal"] == 3
         assert tool_result.payload["toolCategory"] == "verification"
         assert tool_result.payload["toolPhaseLabel"] == "验证"
         assert tool_result.payload["toolSemanticParentId"] == "phase:verification"
@@ -536,8 +536,8 @@ class TestEventCompatAssistantToken:
         assert tool_started.payload["arguments"]["path"] == "README.md"
         assert tool_started.payload["arguments"]["mode"] == "overwrite"
         assert tool_started.payload["arguments"]["content"] == large_content
-        assert tool_use.payload["input"]["content"]["omitted"] is True
-        assert tool_use.payload["input"]["content"]["chars"] == len(large_content)
+        assert "content" not in tool_use.payload["input"]
+        assert tool_use.payload["input"]["contentChars"] == len(large_content)
         assert large_content not in json.dumps(tool_use.payload, ensure_ascii=False)
 
     def test_tool_use_complete_hides_runtime_bound_arguments(self, tmp_path: Any) -> None:
@@ -615,7 +615,9 @@ class TestEventCompatAssistantToken:
         raw_completed = next(event for event in collected if event.type == "tool.completed")
         chat_result = next(event for event in collected if event.type == "tool_result")
         assert raw_completed.payload["result"]["workspaceRoot"] == str(tmp_path)
-        assert chat_result.payload["content"]["branch"] == "main"
+        assert chat_result.payload["content"]["status"] == "completed"
+        assert chat_result.payload["content"]["summary"]
+        assert isinstance(chat_result.payload["content"].get("preview"), list)
         encoded = json.dumps(chat_result.payload, ensure_ascii=False)
         for key in (
             "workspaceRoot",
@@ -771,9 +773,9 @@ class TestEventCompatAssistantToken:
             assert tool_result.payload["toolUseId"] == tool_use_id
             assert "content" in tool_result.payload
             assert tool_result.payload["isError"] is False
-            assert "toolGroupId" not in tool_result.payload
-            assert "toolIndex" not in tool_result.payload
-            assert "toolTotal" not in tool_result.payload
+            assert tool_result.payload["toolGroupId"] == "group_1"
+            assert tool_result.payload["toolIndex"] == _arguments["toolIndex"]
+            assert tool_result.payload["toolTotal"] == _arguments["toolTotal"]
             assert tool_result.payload["toolCategory"]
             assert tool_result.payload["toolPhaseId"]
             assert tool_result.payload["toolPhaseLabel"]
@@ -797,6 +799,14 @@ class TestEventCompatAssistantToken:
             and event.payload.get("outputStream") == "result_preview"
             for event in collected
         )
+        task_tool_result = next(
+            event for event in collected
+            if event.type == "tool_result" and event.payload.get("toolUseId") == "call_task"
+        )
+        encoded_task_tool_result = json.dumps(task_tool_result.payload, ensure_ascii=False)
+        assert "Reviewed the patch." in encoded_task_tool_result
+        for internal_key in ("childTaskId", "workerId", "senderWorkerId"):
+            assert internal_key not in encoded_task_tool_result
 
     def test_large_tool_results_are_slimmed_for_model_and_frontend(self, tmp_path: Any) -> None:
         """Large results keep raw execution data but expose compact model/chat content."""
@@ -841,9 +851,9 @@ class TestEventCompatAssistantToken:
             if event.type == "tool_result" and event.payload.get("toolUseId") == "call_read"
         )
         assert raw_completed.payload["result"]["content"] == large_content
-        assert chat_result.payload["content"]["truncated"] is True
-        assert chat_result.payload["content"]["content"]["head"].startswith("HEAD")
-        assert chat_result.payload["content"]["content"]["tail"].endswith("TAIL")
+        assert chat_result.payload["content"]["status"] == "completed"
+        assert chat_result.payload["content"]["summary"]
+        assert chat_result.payload["content"]["target"] == "big.log"
         assert large_content not in json.dumps(chat_result.payload, ensure_ascii=False)
 
     def test_large_command_output_is_slimmed_for_chat_delta(self, tmp_path: Any) -> None:
@@ -905,9 +915,8 @@ class TestEventCompatAssistantToken:
         assert raw_command_output.payload["chunk"] == large_stdout
         assert large_stdout not in chat_delta.payload["toolOutput"]
         assert "full output is stored in the command log" in chat_delta.payload["toolOutput"]
-        assert chat_result.payload["content"]["truncated"] is True
-        assert chat_result.payload["content"]["stdout"]["head"].startswith("start")
-        assert chat_result.payload["content"]["stdout"]["tail"].endswith("end")
+        assert chat_result.payload["content"]["status"] == "completed"
+        assert chat_result.payload["content"]["command"] == "fake big output"
         encoded_visible = json.dumps(chat_result.payload["content"], ensure_ascii=False)
         assert "fullResultRef" not in encoded_visible
         assert "rawResultStored" not in encoded_visible
@@ -934,7 +943,6 @@ class TestEventCompatAssistantToken:
         assert status_events[0].payload["verb"] == "model"
         assert status_events[0].payload["step"] == 2
         assert status_events[0].visibility == "chat"
-        assert "_bridge" not in status_events[0].payload
         assert runtime.event_bus.as_payload(status_events[0])["yuanbao"] == {
             "type": "status",
             "state": "thinking",
@@ -1065,7 +1073,8 @@ class TestEventCompatAssistantToken:
         assert failed_flat["message.failed"]["type"] == "error"
         assert failed_flat["task.failed"] == {
             "type": "task_update",
-            "taskId": "t_failed",
+            "taskId": "g",
+            "taskLabel": "g",
             "status": "failed",
             "progress": "failed",
         }

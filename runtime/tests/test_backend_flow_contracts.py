@@ -34,6 +34,36 @@ class ScriptedProvider:
             raise AssertionError("Provider called more times than scripted")
         return self._responses.pop(0)
 
+    def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        response = self.generate(prompt, context)
+        thought_summary = response.get("thought_summary") or response.get("thoughtSummary")
+        if isinstance(thought_summary, str) and thought_summary:
+            yield {
+                "type": "thinking_delta",
+                "delta": thought_summary,
+                "source": "provider_reasoning_summary",
+            }
+        raw_message = response.get("message")
+        if isinstance(raw_message, dict):
+            content = raw_message.get("content") or response.get("final") or ""
+            tool_calls = raw_message.get("tool_calls") or response.get("tool_calls") or []
+        else:
+            content = response.get("final") or raw_message or ""
+            tool_calls = response.get("tool_calls") or []
+        if isinstance(content, str) and content:
+            yield {"type": "content_delta", "delta": content}
+        finish_reason = response.get("finish_reason") or ("tool_calls" if tool_calls else "stop")
+        yield {"type": "finish_reason", "finish_reason": finish_reason}
+        yield {
+            "type": "final",
+            "response": {
+                **response,
+                "message": {"content": content, "tool_calls": tool_calls},
+                "finish_reason": finish_reason,
+                "raw": response.get("raw", {}),
+            },
+        }
+
 
 class CancellingStreamProvider:
     def __init__(self) -> None:
@@ -300,8 +330,9 @@ def test_subagent_visible_tool_result_hides_internal_completion_evidence() -> No
 
     encoded = json.dumps(visible, ensure_ascii=False)
     assert visible["status"] == "completed"
-    assert visible["childTaskId"] == "ctask_child"
     assert visible["message"]["body"] == "Child analysis finished."
+    assert "ctask_child" not in encoded
+    assert "agent_worker" not in encoded
     assert "completionEvidence" not in encoded
     assert "completionGate" not in encoded
     assert "completionReview" not in encoded
@@ -407,6 +438,7 @@ def test_provider_thinking_surrounds_tool_cycle_in_haha_order(tmp_path: Path) ->
             },
         },
     )
+    runtime.store.update_config({"config": {"provider": {"streamingEnabled": True}}})
     session = _open_session(runtime, tmp_path)
 
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "find needle"})
@@ -467,6 +499,7 @@ def test_chat_compat_tool_frames_persist_for_session_replay(tmp_path: Path) -> N
             },
         },
     )
+    runtime.store.update_config({"config": {"provider": {"streamingEnabled": True}}})
     session = _open_session(runtime, tmp_path)
 
     response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "read the note"})
@@ -1425,7 +1458,10 @@ def test_tool_presentation_fields_flow_through_flat_tool_and_permission_events(t
         assert event["payload"]["displayTarget"] == "index.html"
         assert event["payload"]["displayKind"] == "write"
     assert flat_permission["payload"]["toolUseId"] == "call_write"
-    assert "content" not in json.dumps(flat_permission["payload"]["input"], ensure_ascii=False)
+    assert "contentChars" in flat_permission["payload"]["input"]
+    assert "content" not in {
+        key for key in flat_permission["payload"]["input"]
+    }
 
 
 def test_computer_use_permission_request_strips_internal_request_fields(tmp_path: Path) -> None:

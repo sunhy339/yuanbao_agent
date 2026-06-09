@@ -89,9 +89,10 @@ def test_subagent_dispatch_records_child_collaboration_trace(tmp_path: Path) -> 
         ]
         assert trace_types[-3:] == ["task.updated", "collab.task.completed", "collab.message.sent"]
         assert trace_events[0]["sessionId"] == session["id"]
-        assert trace_events[0]["hahaCc"] == {
+        assert trace_events[0]["yuanbao"] == {
             "type": "task_update",
-            "taskId": child_task["id"],
+            "taskId": "inspect-runtime-gaps",
+            "taskLabel": "Inspect runtime gaps",
             "status": "queued",
             "progress": "Inspect runtime gaps",
         }

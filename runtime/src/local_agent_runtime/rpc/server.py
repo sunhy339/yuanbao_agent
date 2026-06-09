@@ -45,9 +45,9 @@ def _entry_to_dict(entry: Any) -> dict[str, Any]:
 class JsonRpcServer:
     """Thin JSON-RPC 2.0 server over stdio.
 
-    Responses and events share stdout as JSON lines. RPC responses carry the
-    normal JSON-RPC envelope; event lines are wrapped as
-    ``{"kind": "event", "payload": ...}``.
+    Responses and Yuanbao-compatible event frames share stdout as JSON lines.
+    RPC responses carry the normal JSON-RPC envelope; event lines expose flat
+    ``{"kind": "yuanbao_message", "payload": ...}`` frames.
     """
 
     def __init__(

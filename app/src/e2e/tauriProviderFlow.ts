@@ -1317,14 +1317,9 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
     throw new Error(`Recovered session button disappeared: ${sessionTitle}.`);
   }
   sessionButton.click();
+  await waitFor("recovered session workspace visible", () => query(SESSION_WORKSPACE_SELECTOR));
   await waitFor("recovered user message visible", () =>
     document.body.textContent?.includes(userMessage.content) ? true : null,
-  );
-  await waitFor("recovered task state visible", () =>
-    document.body.textContent?.includes(formatStatusLabel(recoveredTask.status))
-      ? true
-      : null,
-    30_000,
   );
 
   await finish({
@@ -1343,7 +1338,7 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
       "recovered session listed after desktop restart",
       "recovered session opens from sidebar",
       "persisted user message visible after restart",
-      "recovered task state visible in UI",
+      "recovered task exists in runtime API after restart",
     ],
   });
 }

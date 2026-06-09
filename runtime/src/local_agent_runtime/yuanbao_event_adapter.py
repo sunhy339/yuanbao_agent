@@ -158,7 +158,7 @@ _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
     "team_update": {"type", "teamName", "members"},
     "team_created": {"type", "teamName"},
     "team_deleted": {"type", "teamName"},
-    "task_update": {"type", "taskId", "status", "progress"},
+    "task_update": {"type", "taskId", "taskLabel", "status", "progress"},
     "session_title_updated": {"type", "sessionId", "title"},
 }
 
@@ -231,6 +231,29 @@ def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
     return _server_message_shape(message) if message is not None else None
 
 
+def should_emit_yuanbao_server_message(event: RuntimeEvent, *, mode: str = "live") -> bool:
+    """Return whether a runtime event should project to a flat chat ServerMessage.
+
+    Live websocket delivery and replay/history loading must share the same
+    boundary. The only intended difference is the explicit bridge suppression
+    flag used for each mode.
+    """
+
+    if event.visibility == "trace":
+        return False
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    bridge = payload.get("_bridge")
+    bridge_payload = bridge if isinstance(bridge, dict) else {}
+    normalized_mode = str(mode or "live").strip().lower()
+    if normalized_mode == "live":
+        if event.type == "message.completed" and payload.get("_chatCompat") is True:
+            return False
+        return bridge_payload.get("suppressRealtimeFlat") is not True
+    if normalized_mode == "replay":
+        return bridge_payload.get("suppressChatReplay") is not True
+    return bridge_payload.get("suppressRealtimeFlat") is not True
+
+
 def yuanbao_message_from_event_payload(payload: Any) -> dict[str, Any] | None:
     """Extract the flat ServerMessage from a runtime event envelope payload."""
 
@@ -245,12 +268,7 @@ def yuanbao_message_from_event_payload(payload: Any) -> dict[str, Any] | None:
 def to_yuanbao_output_frames(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Return stdout/adapter frames for one runtime event envelope payload."""
 
-    frames: list[dict[str, Any]] = [
-        {
-            "kind": "event",
-            "payload": payload,
-        }
-    ]
+    frames: list[dict[str, Any]] = []
     yuanbao = yuanbao_message_from_event_payload(payload)
     if yuanbao is not None:
         frames.append(
@@ -447,10 +465,17 @@ def _error_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[str, An
 def _task_update_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[str, Any]:
     if not _should_emit_task_update(event, payload):
         return {}
-    task_id = payload.get("taskId") or event.task_id
     status = payload.get("status")
     if not status:
         status = event.type.removeprefix("task.")
+    task_label = _string_value(
+        payload.get("displayTitle"),
+        payload.get("title"),
+        payload.get("goal"),
+        payload.get("currentStep"),
+        payload.get("summary"),
+        payload.get("resultSummary"),
+    )
     progress = (
         payload.get("currentStep")
         or payload.get("detail")
@@ -461,12 +486,29 @@ def _task_update_message(event: RuntimeEvent, payload: dict[str, Any]) -> dict[s
     )
     message: dict[str, Any] = {
         "type": "task_update",
-        "taskId": task_id,
+        "taskId": _public_task_key(payload, event),
         "status": str(status),
     }
+    if task_label:
+        message["taskLabel"] = _truncate_text(task_label, 160)
     if progress:
         message["progress"] = _truncate_text(str(progress), 500)
     return message
+
+
+def _public_task_key(payload: dict[str, Any], event: RuntimeEvent) -> str:
+    label = _string_value(
+        payload.get("displayTitle"),
+        payload.get("title"),
+        payload.get("goal"),
+        payload.get("currentStep"),
+        payload.get("summary"),
+        payload.get("resultSummary"),
+    )
+    if label:
+        return _stable_public_id(label)
+    status = _string_value(payload.get("status"), event.type.removeprefix("task."))
+    return _stable_public_id(f"task:{status or 'update'}")
 
 
 def _should_emit_task_update(event: RuntimeEvent, payload: dict[str, Any]) -> bool:
@@ -647,12 +689,14 @@ def _team_member_from_task(
     message: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-    worker_id = _string_value(
-        task.get("assignedWorkerId"),
-        task.get("workerId"),
-        worker.get("id") if isinstance(worker, dict) else None,
-        worker.get("workerId") if isinstance(worker, dict) else None,
-        task.get("id"),
+    agent_id = _string_value(
+        worker.get("name") if isinstance(worker, dict) else None,
+        worker.get("role") if isinstance(worker, dict) else None,
+        metadata.get("agentName"),
+        metadata.get("agentType"),
+        task.get("agentName"),
+        task.get("title"),
+        task.get("role"),
     )
     role = _string_value(
         worker.get("role") if isinstance(worker, dict) else None,
@@ -662,10 +706,10 @@ def _team_member_from_task(
         task.get("role"),
         "worker",
     )
-    if not worker_id or not role:
+    if not agent_id or not role:
         return None
     member: dict[str, Any] = {
-        "agentId": worker_id,
+        "agentId": agent_id,
         "role": role,
         "status": _team_status(task.get("status")),
     }
@@ -677,11 +721,11 @@ def _team_member_from_task(
 
 def _team_member_from_worker(worker: dict[str, Any]) -> dict[str, Any] | None:
     member = {
-        "agentId": str(worker.get("id") or worker.get("workerId") or worker.get("name") or "worker"),
+        "agentId": str(worker.get("name") or worker.get("role") or worker.get("agentType") or "worker"),
         "role": str(worker.get("role") or worker.get("agentType") or "worker"),
         "status": _team_status(worker.get("status")),
     }
-    current_task = worker.get("currentTask") or worker.get("currentTaskId")
+    current_task = worker.get("currentTask")
     if current_task is not None:
         member["currentTask"] = str(current_task)
     return _team_member_shape(member)
@@ -689,16 +733,16 @@ def _team_member_from_worker(worker: dict[str, Any]) -> dict[str, Any] | None:
 
 def _team_member_from_message(message: dict[str, Any]) -> dict[str, Any] | None:
     return _team_member_shape({
-        "agentId": str(message.get("senderWorkerId") or message.get("senderId") or "worker"),
+        "agentId": str(message.get("senderName") or message.get("senderRole") or message.get("role") or "worker"),
         "role": str(message.get("senderRole") or message.get("role") or message.get("kind") or "worker"),
         "status": "running",
-        "currentTask": message.get("body") or message.get("taskId") or message.get("id"),
+        "currentTask": message.get("body"),
     })
 
 
 def _team_member_from_budget(payload: dict[str, Any], budget: dict[str, Any]) -> dict[str, Any] | None:
     return _team_member_shape({
-        "agentId": str(budget.get("workerId") or budget.get("agentId") or "worker"),
+        "agentId": str(budget.get("agentName") or budget.get("role") or budget.get("agentType") or "worker"),
         "role": str(budget.get("role") or budget.get("agentType") or "worker"),
         "status": "running",
         "currentTask": f"{payload.get('dimension') or 'budget'} budget consumed {payload.get('consumed') or 0}",
@@ -722,11 +766,11 @@ def _task_current_task(task: dict[str, Any], *, message: dict[str, Any] | None =
         message_text = _string_value(error.get("message"), error.get("summary"), error.get("detail"))
         if message_text:
             return message_text
-    return _string_value(task.get("title"), task.get("description"), task.get("id"))
+    return _string_value(task.get("title"), task.get("description"))
 
 
 def _team_member_shape(member: dict[str, Any]) -> dict[str, Any] | None:
-    agent_id = _string_value(member.get("agentId"), member.get("agent_id"), member.get("id"))
+    agent_id = _string_value(member.get("agentId"), member.get("agent_id"))
     role = _string_value(member.get("role"), member.get("agentType"), member.get("name"))
     if not agent_id or not role:
         return None
@@ -1029,3 +1073,20 @@ def _string_value(*values: Any) -> str:
             if text:
                 return text
     return ""
+
+
+def _stable_public_id(value: str) -> str:
+    normalized = " ".join(str(value or "").strip().split()).lower()
+    if not normalized:
+        return "task"
+    chars: list[str] = []
+    previous_dash = False
+    for char in normalized:
+        if char.isalnum():
+            chars.append(char)
+            previous_dash = False
+        elif not previous_dash:
+            chars.append("-")
+            previous_dash = True
+    public_id = "".join(chars).strip("-")
+    return public_id[:80] or "task"

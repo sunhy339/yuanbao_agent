@@ -112,7 +112,8 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert canonical_created_event["payload"]["title"] == "Publish collaboration events"
     assert canonical_created_event["yuanbao"] == {
         "type": "task_update",
-        "taskId": task["id"],
+        "taskId": "publish-collaboration-events",
+        "taskLabel": "Publish collaboration events",
         "status": "queued",
         "progress": "Publish collaboration events",
     }
@@ -122,7 +123,8 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert canonical_updated_event["payload"]["workerId"] == worker["id"]
     assert canonical_updated_event["yuanbao"] == {
         "type": "task_update",
-        "taskId": task["id"],
+        "taskId": "publish-collaboration-events",
+        "taskLabel": "Publish collaboration events",
         "status": "claimed",
         "progress": "Publish collaboration events",
     }
@@ -139,7 +141,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
         "teamName": session["id"],
         "members": [
             {
-                "agentId": task["id"],
+                "agentId": "Publish collaboration events",
                 "role": "worker",
                 "status": "running",
                 "currentTask": "Publish collaboration events",
@@ -160,7 +162,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
         "teamName": session["id"],
         "members": [
             {
-                "agentId": worker["id"],
+                "agentId": "Event Worker",
                 "role": "worker",
                 "status": "running",
                 "currentTask": "Publish collaboration events",
@@ -181,7 +183,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
         "teamName": session["id"],
         "members": [
             {
-                "agentId": worker["id"],
+                "agentId": "Event Worker",
                 "role": "worker",
                 "status": "running",
                 "currentTask": "Collaboration event emitted.",
@@ -200,7 +202,7 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
         "teamName": session["id"],
         "members": [
             {
-                "agentId": worker["id"],
+                "agentId": "Event Worker",
                 "role": "worker",
                 "status": "completed",
                 "currentTask": "Task completed.",
@@ -358,7 +360,7 @@ def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtim
         "teamName": session["id"],
         "members": [
             {
-                "agentId": worker["id"],
+                "agentId": "Failure Worker",
                 "role": "reviewer",
                 "status": "idle",
             }
@@ -410,7 +412,7 @@ def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtim
         "teamName": session["id"],
         "members": [
             {
-                "agentId": worker["id"],
+                "agentId": "Failure Worker",
                 "role": "reviewer",
                 "status": "running",
                 "currentTask": "Review risky migration",
@@ -423,7 +425,7 @@ def test_collaboration_worker_heartbeat_and_failed_task_emit_team_updates(runtim
         "teamName": session["id"],
         "members": [
             {
-                "agentId": worker["id"],
+                "agentId": "Failure Worker",
                 "role": "reviewer",
                 "status": "error",
                 "currentTask": "Validation failed.",

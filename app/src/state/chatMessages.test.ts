@@ -315,7 +315,8 @@ describe("chatMessages", () => {
       "",
       "Then inspect the result.",
     ]);
-    expect(taskMessages[1].metadata?.inputText).toBe("查询 README");
+    expect(taskMessages[1].metadata?.inputText).toBeUndefined();
+    expect(taskMessages[1].metadata?.rawInputText).toBe("查询 README");
   });
 
   it("clears transient status thinking but keeps provider thinking as a completed transcript segment", () => {
@@ -1836,11 +1837,12 @@ describe("chatMessages", () => {
         id: "tool_use:tc_1",
         streaming: true,
         toolName: "read_file",
-        metadata: {
+        metadata: expect.objectContaining({
           kind: "tool_use",
           toolUseId: "tc_1",
           target: "src/index.ts",
           inputSummary: "read src/index.ts",
+          inputText: "read src/index.ts",
           parentToolUseId: "parent_1",
           toolGroupId: "tgrp_1",
           toolIndex: 1,
@@ -1852,7 +1854,7 @@ describe("chatMessages", () => {
           toolPhaseLabel: "读取上下文",
           toolSemanticParentId: "phase:context_read",
           toolSemanticParentLabel: "读取上下文",
-        },
+        }),
       }),
     ]);
 
@@ -1895,7 +1897,7 @@ describe("chatMessages", () => {
         toolPhaseLabel: "读取上下文",
         toolSemanticParentId: "phase:context_read",
         toolSemanticParentLabel: "读取上下文",
-        inputText: "src/index.ts",
+        inputText: "read src/index.ts",
       },
     });
   });
@@ -1922,7 +1924,8 @@ describe("chatMessages", () => {
         target: "src/app.ts",
         inputSummary: "read src/app.ts",
         input: { path: "src/app.ts" },
-        inputText: "src/app.ts",
+        inputText: "read src/app.ts",
+        rawInputText: "src/app.ts",
       },
     });
   });

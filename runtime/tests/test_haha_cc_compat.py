@@ -261,7 +261,8 @@ def test_failed_events_map_to_haha_cc_error_and_task_update_messages() -> None:
         )
     ) == {
         "type": "task_update",
-        "taskId": "task_1",
+        "taskId": "run-cleanup",
+        "taskLabel": "Run cleanup",
         "status": "failed",
         "progress": "Task failed after approval was rejected.",
     }
@@ -282,7 +283,8 @@ def test_task_and_session_events_map_to_haha_cc_names() -> None:
         )
     ) == {
         "type": "task_update",
-        "taskId": "task_1",
+        "taskId": "write-docs",
+        "taskLabel": "Write docs",
         "status": "queued",
         "progress": "Write docs",
     }
@@ -338,11 +340,11 @@ def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
         "type": "team_update",
         "teamName": "sess_1",
         "members": [
-            {
-                "agentId": "worker_1",
-                "role": "reviewer",
-                "status": "running",
-                "currentTask": "Review patch",
+                {
+                    "agentId": "reviewer",
+                    "role": "reviewer",
+                    "status": "running",
+                    "currentTask": "Review patch",
             }
         ],
     }
@@ -363,11 +365,11 @@ def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
         "type": "team_update",
         "teamName": "sess_1",
         "members": [
-            {
-                "agentId": "child_1",
-                "role": "explorer",
-                "status": "running",
-                "currentTask": "Inspect workspace",
+                {
+                    "agentId": "explorer",
+                    "role": "explorer",
+                    "status": "running",
+                    "currentTask": "Inspect workspace",
             }
         ],
     }
@@ -396,11 +398,11 @@ def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
         "type": "team_update",
         "teamName": "sess_1",
         "members": [
-            {
-                "agentId": "worker_1",
-                "role": "explorer",
-                "status": "completed",
-                "currentTask": "Done",
+                {
+                    "agentId": "explorer",
+                    "role": "explorer",
+                    "status": "completed",
+                    "currentTask": "Done",
             }
         ],
     }
@@ -414,7 +416,7 @@ def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
         "teamName": "default",
         "members": [
             {
-                "agentId": "worker_1",
+                "agentId": "coder",
                 "role": "coder",
                 "status": "running",
                 "currentTask": "tokens budget consumed 50",

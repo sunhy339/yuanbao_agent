@@ -100,20 +100,20 @@ _ROOT_CHAT_DERIVATION_EVENT_TYPES = {
     "approval.resolved",
     "assistant.token",
     "message.delta",
-    "task.cancelled",
-    "task.completed",
-    "task.failed",
-    "task.updated",
 }
 
 _ROOT_PANEL_EVENT_TYPES = {
     "goal_event",
     "memory_event",
+    "task.cancelled",
+    "task.completed",
     "task.created",
+    "task.failed",
     "task.orphaned",
     "task.queued",
     "task.runtime_work_waiting",
     "task.started",
+    "task.updated",
 }
 
 _ROOT_PANEL_EVENT_PREFIXES = (
@@ -607,7 +607,18 @@ class PublishingMixin:
     @classmethod
     def _public_file_change_request_input(cls, kind: str, request: dict[str, Any]) -> dict[str, Any]:
         safe: dict[str, Any] = {}
-        for key in ("path", "summary", "filesChanged", "changedPaths", "overwrite", "create_dirs", "dry_run"):
+        for key in (
+            "path",
+            "summary",
+            "filesChanged",
+            "changedPaths",
+            "overwrite",
+            "create_dirs",
+            "dry_run",
+            "mode",
+            "contentChars",
+            "patchChars",
+        ):
             value = request.get(key)
             if value in (None, "", [], {}):
                 continue
@@ -616,6 +627,10 @@ class PublishingMixin:
         content = request.get("content")
         if isinstance(content, str):
             safe["contentChars"] = len(content)
+        elif isinstance(content, dict):
+            chars = content.get("chars")
+            if content.get("omitted") is True and isinstance(chars, int):
+                safe["contentChars"] = chars
         files = request.get("files")
         if isinstance(files, list) and files:
             public_files: list[dict[str, Any]] = []
@@ -629,6 +644,10 @@ class PublishingMixin:
                 file_content = item.get("content")
                 if isinstance(file_content, str):
                     public_file["contentChars"] = len(file_content)
+                elif isinstance(file_content, dict):
+                    chars = file_content.get("chars")
+                    if file_content.get("omitted") is True and isinstance(chars, int):
+                        public_file["contentChars"] = chars
                 if public_file:
                     public_files.append(public_file)
             if public_files:
@@ -637,6 +656,10 @@ class PublishingMixin:
             patch_text = request.get("patchText") or request.get("patch") or request.get("diffText")
             if isinstance(patch_text, str):
                 safe["patchChars"] = len(patch_text)
+            elif isinstance(patch_text, dict):
+                chars = patch_text.get("chars")
+                if patch_text.get("omitted") is True and isinstance(chars, int):
+                    safe["patchChars"] = chars
         return safe
 
     @classmethod
@@ -661,6 +684,41 @@ class PublishingMixin:
         background_job = request.get("backgroundJob")
         if background_job not in (None, "", [], {}):
             safe["backgroundJob"] = cls._sanitize_visible_payload_value("backgroundJob", background_job)
+        return safe
+
+    @classmethod
+    def _public_subagent_request_input(cls, request: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {}
+        for key in (
+            "title",
+            "description",
+            "prompt",
+            "role",
+            "agentType",
+            "agent_type",
+            "subagent_type",
+            "priority",
+            "summary",
+        ):
+            value = request.get(key)
+            if value in (None, "", [], {}):
+                continue
+            public_key = {
+                "agent_type": "agentType",
+                "subagent_type": "agentType",
+            }.get(key, key)
+            if public_key in safe:
+                continue
+            safe[public_key] = cls._sanitize_visible_payload_value(public_key, value)
+        budget = request.get("budget")
+        if isinstance(budget, dict):
+            safe_budget: dict[str, Any] = {}
+            for key in ("maxTokens", "maxToolCalls", "timeoutMs"):
+                value = budget.get(key)
+                if value not in (None, "", [], {}):
+                    safe_budget[key] = value
+            if safe_budget:
+                safe["budget"] = safe_budget
         return safe
 
     @classmethod
@@ -769,6 +827,8 @@ class PublishingMixin:
         normalized_tool_name = str(tool_name or "").strip()
         if normalized_tool_name == "exit_plan_mode":
             return cls._public_plan_request_input(arguments)
+        if normalized_tool_name in {"agent", "task"}:
+            return cls._public_subagent_request_input(arguments)
         if normalized_tool_name in {"write_file", "apply_patch"}:
             return cls._public_file_change_request_input(normalized_tool_name, arguments)
         if normalized_tool_name == "run_command":
@@ -2328,6 +2388,14 @@ class PublishingMixin:
             event_type=event_type,
             payload=visible_payload if effective_visibility in {"chat", "panel"} else raw_payload,
         )
+        if event_type in {"task.completed", "task.failed", "task.cancelled"}:
+            self._publish_chat_status(
+                session_id=session_id,
+                task=task,
+                state="idle",
+                payload=visible_payload if isinstance(visible_payload, dict) else payload,
+                visibility="chat",
+            )
         token_delta_payload: dict[str, Any] | None = None
         if event_type == "assistant.token":
             visible_payload = dict(visible_payload)

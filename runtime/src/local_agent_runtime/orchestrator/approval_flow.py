@@ -230,6 +230,7 @@ class ApprovalFlowMixin:
                         "taskStatus": task.get("status"),
                     },
                 ),
+                visibility="trace",
             )
             return {"approval": approval, "task": task, "ignored": True}
         if approval["decision"] == "approved":

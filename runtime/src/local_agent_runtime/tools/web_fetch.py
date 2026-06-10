@@ -33,8 +33,11 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
             if decision.decision == "deny":
                 return {
                     "status": "blocked",
+                    "toolName": "web_fetch",
                     "error": decision.reason,
                     "url": url,
+                    "contentSource": "web",
+                    "contentTrust": "untrusted",
                 }
             if decision.decision == "approval_required":
                 task_id = str(params.get("taskId") or params.get("task_id") or "").strip()
@@ -47,8 +50,11 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
                 )
                 return {
                     "status": "approval_required",
+                    "toolName": "web_fetch",
                     "approval": approval,
                     "url": url,
+                    "contentSource": "web",
+                    "contentTrust": "untrusted",
                 }
 
         method = str(params.get("method", "GET")).upper()
@@ -85,10 +91,13 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
                 pass
             return {
                 "status": "http_error",
+                "toolName": "web_fetch",
                 "statusCode": exc.code,
                 "url": url,
                 "error": f"HTTP {exc.code}: {exc.reason}",
                 "body": error_body,
+                "contentSource": "web",
+                "contentTrust": "untrusted",
                 "steps": [
                     _step("request", "completed", f"{method} {url}"),
                     _step("response", "blocked", f"HTTP {exc.code}: {exc.reason}"),
@@ -97,8 +106,11 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
         except urllib.error.URLError as exc:
             return {
                 "status": "network_error",
+                "toolName": "web_fetch",
                 "url": url,
                 "error": str(exc.reason),
+                "contentSource": "web",
+                "contentTrust": "untrusted",
                 "steps": [
                     _step("request", "blocked", f"{method} {url}"),
                     _step("network", "blocked", str(exc.reason)),

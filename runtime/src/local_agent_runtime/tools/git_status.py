@@ -30,6 +30,8 @@ def build_git_status_tool(policy_guard: Any, store: Any, subagent_service: Any |
         ]
         if steps[-1]["summary"] == "not git":
             return {
+                "status": "ok",
+                "toolName": "git_status",
                 "workspaceRoot": to_relative_path(workspace_root, workspace_root),
                 "cwd": relative_cwd,
                 "isGitRepository": False,
@@ -69,6 +71,8 @@ def build_git_status_tool(policy_guard: Any, store: Any, subagent_service: Any |
                 changes.append(entry)
 
         return {
+            "status": "ok",
+            "toolName": "git_status",
             "workspaceRoot": to_relative_path(workspace_root, workspace_root),
             "cwd": relative_cwd,
             "isGitRepository": True,

@@ -133,11 +133,15 @@ def build_notebook_tool(
         if action == "list_cells":
             steps.append(_step("list", "completed", f"{len(cells)} cell(s)"))
             return {
+                "status": "ok",
+                "toolName": "notebook",
                 "path": relative_path,
                 "action": action,
                 "kernel": nb.get("metadata", {}).get("kernelspec", {}).get("display_name", "unknown"),
                 "totalCells": len(cells),
                 "cells": [_cell_summary(i, c) for i, c in enumerate(cells)],
+                "contentSource": "workspace_notebook",
+                "contentTrust": "trusted",
                 "steps": steps,
             }
 
@@ -150,6 +154,8 @@ def build_notebook_tool(
             outputs = cell.get("outputs", [])
             steps.append(_step("read_cell", "completed", f"cell {cell_index} {cell.get('cell_type', 'unknown')}"))
             return {
+                "status": "ok",
+                "toolName": "notebook",
                 "path": relative_path,
                 "action": action,
                 "index": cell_index,
@@ -157,6 +163,8 @@ def build_notebook_tool(
                 "source": source,
                 "outputs": outputs,
                 "executionCount": cell.get("execution_count"),
+                "contentSource": "workspace_notebook",
+                "contentTrust": "trusted",
                 "steps": steps,
             }
 
@@ -197,6 +205,7 @@ def build_notebook_tool(
                 if approval.get("decision") != "approved":
                     return {
                         "status": "approval_required",
+                        "toolName": "notebook",
                         "approval": approval,
                         "path": relative_path,
                         "action": action,
@@ -223,6 +232,7 @@ def build_notebook_tool(
                 if decision.decision == "deny":
                     return {
                         "status": "blocked",
+                        "toolName": "notebook",
                         "error": decision.reason,
                         "path": relative_path,
                         "action": action,
@@ -242,6 +252,7 @@ def build_notebook_tool(
                     )
                     return {
                         "status": "approval_required",
+                        "toolName": "notebook",
                         "approval": approval,
                         "path": relative_path,
                         "action": action,
@@ -262,6 +273,7 @@ def build_notebook_tool(
                 )
                 return {
                     "status": "approval_required",
+                    "toolName": "notebook",
                     "approval": approval,
                     "path": relative_path,
                     "action": action,
@@ -276,12 +288,16 @@ def build_notebook_tool(
             exec_result = _execute_cell(source, timeout=timeout)
             steps.append(_step("execute", "completed", f"exit {exec_result.get('exitCode')}"))
             return {
+                "status": "ok",
+                "toolName": "notebook",
                 "path": relative_path,
                 "action": action,
                 "index": cell_index,
                 "cellType": cell.get("cell_type", "unknown"),
                 "source": source,
                 "executionResult": exec_result,
+                "contentSource": "workspace_notebook",
+                "contentTrust": "trusted",
                 "steps": steps,
             }
 

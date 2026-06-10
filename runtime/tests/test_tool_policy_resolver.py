@@ -186,12 +186,37 @@ def test_agent_result_continues_with_non_subagent_tools_by_default() -> None:
         task={"id": "task_root", "role": "root"},
         context={"routing": {"mode": "model_first"}},
         tool_results=[{"name": "agent", "result": {"status": "completed"}}],
-        registered_tools=_tools("agent", "task", "read_file"),
+        registered_tools=_tools("agent", "task", "send_message", "read_file"),
     )
 
     assert decision.phase == "post_task_continuation"
-    assert decision.allowed_tool_names == ["read_file"]
+    assert decision.allowed_tool_names == ["send_message", "read_file"]
     assert set(decision.denied_tool_names) == {"agent", "task"}
+
+
+def test_send_message_is_hidden_until_child_result_continuation() -> None:
+    resolver = ToolPolicyResolver()
+    initial = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"mode": "model_first"}},
+        tool_results=[],
+        registered_tools=_tools("agent", "task", "send_message", "read_file"),
+    )
+
+    assert initial.phase == "investigation"
+    assert "send_message" not in initial.allowed_tool_names
+    assert "send_message" in initial.denied_tool_names
+
+    continuation = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"mode": "model_first"}},
+        tool_results=[{"name": "task", "result": {"status": "completed"}}],
+        registered_tools=_tools("agent", "task", "send_message", "read_file"),
+    )
+
+    assert continuation.phase == "post_task_continuation"
+    assert "send_message" in continuation.allowed_tool_names
+    assert {"agent", "task"}.issubset(set(continuation.denied_tool_names))
 
 
 def test_model_first_initial_phase_allows_model_to_choose_tools() -> None:

@@ -29,6 +29,7 @@ def build_scratchpad_write_tool(scratchpad: Any) -> dict[str, Any]:
         steps.append(_step("store", "completed", f"{entry.key} ({entry.id})"))
         return {
             "status": "ok",
+            "toolName": "scratchpad.write",
             "id": entry.id,
             "key": entry.key,
             "steps": steps,
@@ -55,10 +56,11 @@ def build_scratchpad_read_tool(scratchpad: Any) -> dict[str, Any]:
         entry = scratchpad.read(session_id=session_id, key=key)
         if entry is None:
             steps.append(_step("lookup", "completed", "not found"))
-            return {"status": "not_found", "key": key, "steps": steps}
+            return {"status": "not_found", "toolName": "scratchpad.read", "key": key, "steps": steps}
         steps.append(_step("lookup", "completed", f"{entry.key} ({entry.id})"))
         return {
             "status": "ok",
+            "toolName": "scratchpad.read",
             "id": entry.id,
             "key": entry.key,
             "value": entry.value,

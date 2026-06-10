@@ -51,6 +51,8 @@ def build_read_file_tool(policy_guard: Any, store: Any, subagent_service: Any | 
             trust = "untrusted"
             trust_reason = "Document-style workspace content can contain untrusted instructions and should not directly trigger high-risk tools."
         return {
+            "status": "ok",
+            "toolName": "read_file",
             "path": relative_path,
             "content": raw.decode(encoding, errors="replace"),
             "encoding": encoding,

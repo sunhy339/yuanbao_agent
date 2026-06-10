@@ -90,6 +90,7 @@ def build_skill_tool(
             result = subagent_service.dispatch(child_params)
             return {
                 "status": "forked",
+                "toolName": "skill",
                 "skillId": skill_id,
                 "skillName": preset.name,
                 "mode": "fork",
@@ -108,6 +109,7 @@ def build_skill_tool(
 
         return {
             "status": "inline",
+            "toolName": "skill",
             "skillId": preset.id,
             "skillName": preset.name,
             "description": preset.description,
@@ -156,6 +158,7 @@ def build_discover_skills_tool(
 
         return {
             "status": "ok",
+            "toolName": "discover_skills",
             "skills": items,
             "count": len(items),
         }

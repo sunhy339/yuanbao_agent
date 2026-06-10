@@ -124,6 +124,7 @@ def build_enter_plan_mode_tool(*_: Any, **__: Any) -> dict[str, Any]:
         reason = _text(params.get("reason") or params.get("summary"), limit=500, default="Plan mode requested.")
         return {
             "status": "plan_mode_entered",
+            "toolName": "enter_plan_mode",
             "summary": reason,
             "reason": reason,
             "instructions": "Use read-only tools to inspect context, then call exit_plan_mode with the proposed plan.",
@@ -154,6 +155,7 @@ def build_exit_plan_mode_tool(policy_guard: Any, store: Any, *_: Any, **__: Any)
             if decision == "approved":
                 return {
                     "status": "plan_approved",
+                    "toolName": "exit_plan_mode",
                     "summary": "Plan approved by the user.",
                     "approvalId": approval["id"],
                     "plan": plan,
@@ -161,12 +163,14 @@ def build_exit_plan_mode_tool(policy_guard: Any, store: Any, *_: Any, **__: Any)
             if decision == "rejected":
                 return {
                     "status": "plan_rejected",
+                    "toolName": "exit_plan_mode",
                     "summary": "Plan rejected by the user.",
                     "approvalId": approval["id"],
                     "plan": plan,
                 }
             return {
                 "status": "approval_required",
+                "toolName": "exit_plan_mode",
                 "summary": "Plan approval is still pending.",
                 "approval": approval,
                 "plan": plan,
@@ -190,6 +194,7 @@ def build_exit_plan_mode_tool(policy_guard: Any, store: Any, *_: Any, **__: Any)
         approval = store.create_approval(task_id=task_id, kind="plan", request=request)
         return {
             "status": "approval_required",
+            "toolName": "exit_plan_mode",
             "summary": "Plan approval required before execution.",
             "approval": approval,
             "plan": plan,

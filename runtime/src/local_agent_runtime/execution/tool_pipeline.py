@@ -1845,7 +1845,7 @@ def _tool_category(tool_name: str, arguments: dict[str, Any]) -> str:
         return "search"
     if tool_name in {"git_status", "git_diff"}:
         return "git"
-    if tool_name in {"agent", "task"}:
+    if tool_name in {"agent", "task", "send_message"}:
         return "subtask"
     if tool_name == "computer_use":
         return "computer_use"

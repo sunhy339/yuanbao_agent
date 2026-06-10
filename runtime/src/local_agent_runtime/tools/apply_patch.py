@@ -41,6 +41,7 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
             patch_text = str(params.get("patchText") or params.get("patch_text") or "")
             return {
                 "status": "validation_failed",
+                "toolName": "apply_patch",
                 "ok": False,
                 "error": str(exc),
                 "summary": "Patch validation failed.",
@@ -97,6 +98,7 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
         except Exception as exc:  # noqa: BLE001
             return {
                 "status": "validation_failed",
+                "toolName": "apply_patch",
                 "ok": False,
                 "error": str(exc),
                 "summary": summary,
@@ -150,6 +152,7 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
             if approval.get("decision") != "approved":
                 return {
                     "status": "approval_required",
+                    "toolName": "apply_patch",
                     "approval": approval,
                     "patch": patch,
                     "patchId": patch["id"],
@@ -178,6 +181,7 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 if decision.decision == "deny":
                     return {
                         "status": "blocked",
+                        "toolName": "apply_patch",
                         "error": decision.reason,
                         "summary": summary,
                         "filesChanged": patch_request["filesChanged"],
@@ -218,6 +222,7 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 )
                 return {
                     "status": "approval_required",
+                    "toolName": "apply_patch",
                     "approval": approval,
                     "patch": patch,
                     "patchId": patch["id"],
@@ -238,6 +243,7 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
         if dry_run:
             return {
                 "status": "dry_run",
+                "toolName": "apply_patch",
                 "patch": patch,
                 "patchId": patch["id"],
                 "summary": patch["summary"],
@@ -269,6 +275,7 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
         )
         return {
             "status": "applied",
+            "toolName": "apply_patch",
             "patch": patch,
             "patchId": patch["id"],
             "summary": patch["summary"],

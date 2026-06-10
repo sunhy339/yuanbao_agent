@@ -162,6 +162,8 @@ def build_code_search_tool(policy_guard: Any, store: Any, subagent_service: Any 
                         })
 
         return {
+            "status": "ok",
+            "toolName": "code_search",
             "query": query,
             "mode": mode,
             "results": results[:max_results],

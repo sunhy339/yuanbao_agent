@@ -202,6 +202,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             if permission_decision.decision == "deny":
                 return {
                     "status": "blocked",
+                    "toolName": "run_command",
                     "error": permission_decision.reason,
                     "command": command,
                     "cwd": cwd_rel,
@@ -271,6 +272,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             else:
                 return {
                     "status": "approval_required",
+                    "toolName": "run_command",
                     "approval": existing_approval,
                     "command": command,
                     "cwd": cwd_rel,
@@ -301,6 +303,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             )
             return {
                 "status": "approval_required",
+                "toolName": "run_command",
                 "approval": approval,
                 "command": command,
                 "cwd": cwd_rel,
@@ -389,6 +392,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             steps.append(_step("execute", "running", "background command started"))
             return {
                 "status": "running",
+                "toolName": "run_command",
                 "background": True,
                 "commandLog": command_log,
                 "stdout": "",
@@ -443,6 +447,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
 
         return {
             "status": status,
+            "toolName": "run_command",
             "commandLog": command_log,
             "stdout": stdout,
             "stderr": stderr,

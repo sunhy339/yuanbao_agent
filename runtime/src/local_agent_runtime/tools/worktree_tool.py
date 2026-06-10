@@ -57,6 +57,7 @@ def build_enter_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: 
         except ValueError as exc:
             return {
                 "status": "failed",
+                "toolName": "enter_worktree",
                 "error": str(exc),
                 "summary": f"Worktree creation failed: {exc}",
             }
@@ -65,6 +66,7 @@ def build_enter_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: 
         git_result = result.get("git", {})
         return {
             "status": "worktree_created",
+            "toolName": "enter_worktree",
             "summary": f"Worktree created at {worktree.get('worktreePath', worktree_path)}",
             "worktreeId": worktree.get("id", ""),
             "branchName": worktree.get("branchName", branch_name),
@@ -111,6 +113,7 @@ def build_exit_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: A
         except ValueError as exc:
             return {
                 "status": "failed",
+                "toolName": "exit_worktree",
                 "error": str(exc),
                 "summary": f"Worktree not found: {exc}",
             }
@@ -129,11 +132,13 @@ def build_exit_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: A
             except ValueError as exc:
                 return {
                     "status": "failed",
+                    "toolName": "exit_worktree",
                     "error": str(exc),
                     "summary": f"Worktree cleanup failed: {exc}",
                 }
             return {
                 "status": "worktree_cleaned",
+                "toolName": "exit_worktree",
                 "summary": f"Worktree cleaned: {worktree_path}",
                 "worktreeId": resolved_worktree_id,
                 "cleaned": cleanup_result.get("cleaned", True),
@@ -164,6 +169,7 @@ def build_exit_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: A
                 except ValueError as exc:
                     return {
                         "status": "failed",
+                        "toolName": "exit_worktree",
                         "error": str(exc),
                         "summary": f"Worktree merge approval request failed: {exc}",
                     }
@@ -171,6 +177,7 @@ def build_exit_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: A
                 approval = approval_result.get("approval", {})
                 return {
                     "status": "approval_required",
+                    "toolName": "exit_worktree",
                     "summary": "Worktree merge requires approval.",
                     "approval": approval,
                     "worktreeId": resolved_worktree_id,
@@ -188,6 +195,7 @@ def build_exit_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: A
             except ValueError as exc:
                 return {
                     "status": "failed",
+                    "toolName": "exit_worktree",
                     "error": str(exc),
                     "summary": f"Worktree merge failed: {exc}",
                 }
@@ -195,6 +203,7 @@ def build_exit_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: A
             merged = merge_result.get("merged", False)
             return {
                 "status": "worktree_merged" if merged else "merge_failed",
+                "toolName": "exit_worktree",
                 "summary": merge_result.get("result", {}).get("message", "") or (
                     f"Worktree merged into {target_branch}" if merged else "Merge failed"
                 ),
@@ -210,6 +219,7 @@ def build_exit_worktree_tool(worktree_service: Any, store: Any, *_: Any, **__: A
 
         return {
             "status": "failed",
+            "toolName": "exit_worktree",
             "error": f"Unknown exit_worktree action: {action}. Use 'cleanup' or 'merge'.",
         }
 

@@ -37,6 +37,8 @@ def build_list_dir_tool(policy_guard: Any, store: Any, subagent_service: Any | N
         )
 
         return {
+            "status": "ok",
+            "toolName": "list_dir",
             "path": relative_path,
             "recursive": recursive,
             "maxDepth": max_depth,

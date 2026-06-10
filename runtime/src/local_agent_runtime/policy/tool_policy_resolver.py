@@ -240,6 +240,8 @@ class ToolPolicyResolver:
                 or name in allowed_names
                 or (name.startswith("mcp__") and "mcp__*" in allowed_names)
             )
+            if name in SUBAGENT_CONTINUATION_TOOLS and phase != "post_task_continuation":
+                phase_allowed = False
             detail: dict[str, Any] = {
                 "toolName": name,
                 "source": self._tool_source(tool, name),

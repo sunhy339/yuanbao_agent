@@ -86,6 +86,7 @@ def build_ask_user_question_tool(*_: Any, **__: Any) -> dict[str, Any]:
         request_id = _text(params.get("requestId") or params.get("request_id"), limit=80, default="")
         result: dict[str, Any] = {
             "status": "waiting_user",
+            "toolName": "ask_user_question",
             "summary": _text(params.get("summary") or primary.get("question"), limit=1000),
             "reason": _text(params.get("reason"), limit=240, default="needs_user_input"),
             "resumePolicy": _text(params.get("resumePolicy") or params.get("resume_policy"), limit=120, default="requires_user_follow_up"),

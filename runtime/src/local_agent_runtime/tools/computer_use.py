@@ -105,6 +105,9 @@ def _blocked_executor_result(
         "approvalId": approval_id,
         "failureKind": failure_kind,
         "recoveryHint": recovery_hint,
+        "toolName": "computer_use",
+        "contentSource": "computer",
+        "contentTrust": "untrusted",
         "steps": [
             {
                 "label": request["action"],
@@ -173,6 +176,9 @@ def _inspect_environment(request: dict[str, Any], approval_id: str | None) -> di
         "summary": summary,
         "request": request,
         "approvalId": approval_id,
+        "toolName": "computer_use",
+        "contentSource": "computer",
+        "contentTrust": "untrusted",
         "environment": {
             "platform": platform_label,
             "system": platform.system(),
@@ -214,19 +220,26 @@ class _PyAutoGuiComputerUseExecutor:
             if x is None or y is None:
                 raise ValueError("click requires x and y coordinates")
             self._pyautogui.click(x=x, y=y, clicks=max(1, amount))
-            return {"coordinates": {"x": x, "y": y}, "clicks": max(1, amount)}
+            return {
+                "coordinates": {"x": x, "y": y},
+                "clicks": max(1, amount),
+            }
         if action == "type":
             text = str(request.get("text") or "")
             if not text:
                 raise ValueError("type requires text")
             self._pyautogui.write(text, interval=0)
-            return {"characters": len(text)}
+            return {
+                "characters": len(text),
+            }
         if action == "key":
             key = str(request.get("text") or request.get("selector") or "").strip()
             if not key:
                 raise ValueError("key requires text or selector naming the key")
             self._pyautogui.press(key)
-            return {"key": key}
+            return {
+                "key": key,
+            }
         if action == "scroll":
             direction = str(request.get("direction") or "down").strip().lower()
             amount = _int_request_value(request, "amount") or 5
@@ -234,7 +247,10 @@ class _PyAutoGuiComputerUseExecutor:
             if direction in {"down", "right"}:
                 clicks = -clicks
             self._pyautogui.scroll(clicks)
-            return {"direction": direction, "amount": abs(amount)}
+            return {
+                "direction": direction,
+                "amount": abs(amount),
+            }
         raise ValueError(f"Unsupported computer_use action for pyautogui: {action}")
 
 
@@ -267,7 +283,10 @@ class _WindowsCtypesComputerUseExecutor:
             for _ in range(max(1, amount)):
                 self._user32.mouse_event(0x0002, 0, 0, 0, 0)
                 self._user32.mouse_event(0x0004, 0, 0, 0, 0)
-            return {"coordinates": {"x": x, "y": y}, "clicks": max(1, amount)}
+            return {
+                "coordinates": {"x": x, "y": y},
+                "clicks": max(1, amount),
+            }
         if action == "scroll":
             direction = str(request.get("direction") or "down").strip().lower()
             amount = _int_request_value(request, "amount") or 5
@@ -275,7 +294,10 @@ class _WindowsCtypesComputerUseExecutor:
             if direction in {"down", "right"}:
                 wheel_delta = -wheel_delta
             self._user32.mouse_event(0x0800, 0, 0, wheel_delta, 0)
-            return {"direction": direction, "amount": abs(amount)}
+            return {
+                "direction": direction,
+                "amount": abs(amount),
+            }
         raise RuntimeError(f"ctypes fallback does not support {action!r}; install pyautogui or provide a custom executor")
 
 
@@ -474,7 +496,9 @@ class _PlaywrightPageComputerUseExecutor:
             if not selector:
                 raise ValueError("playwright_page click requires selector")
             _resolve_awaitable(self._locator(selector).click())
-            return {"selector": selector}
+            return {
+                "selector": selector,
+            }
         if action == "type":
             if not selector:
                 raise ValueError("playwright_page type requires selector")
@@ -490,7 +514,10 @@ class _PlaywrightPageComputerUseExecutor:
                 if not callable(type_text):
                     raise ValueError("playwright_page locator does not support fill/type")
                 _resolve_awaitable(type_text(text))
-            return {"selector": selector, "characters": len(text)}
+            return {
+                "selector": selector,
+                "characters": len(text),
+            }
         if action == "key":
             key = str(request.get("text") or request.get("selector") or "").strip()
             if not key:
@@ -500,7 +527,9 @@ class _PlaywrightPageComputerUseExecutor:
             if not callable(press):
                 raise ValueError("playwright_page keyboard.press is unavailable")
             _resolve_awaitable(press(key))
-            return {"key": key}
+            return {
+                "key": key,
+            }
         if action == "scroll":
             direction = str(request.get("direction") or "down").strip().lower()
             amount = _int_request_value(request, "amount") or 5
@@ -523,7 +552,12 @@ class _PlaywrightPageComputerUseExecutor:
                 if not callable(evaluate):
                     raise ValueError("playwright_page evaluate is unavailable")
                 _resolve_awaitable(evaluate("delta => window.scrollBy(delta.x, delta.y)", {"x": x_delta, "y": y_delta}))
-            return {"selector": selector or None, "direction": direction, "amount": abs(amount), "pixels": {"x": x_delta, "y": y_delta}}
+            return {
+                "selector": selector or None,
+                "direction": direction,
+                "amount": abs(amount),
+                "pixels": {"x": x_delta, "y": y_delta},
+            }
         raise ValueError(f"Unsupported computer_use action for playwright_page: {action}")
 
 
@@ -624,7 +658,13 @@ class _PlaywrightBrowserSessionComputerUseExecutor:
                 "browserContextId": context_id,
                 "headless": self._headless,
             }
-        return {"detail": detail, "url": page_url, "pageId": page_id, "browserContextId": context_id, "headless": self._headless}
+        return {
+            "detail": detail,
+            "url": page_url,
+            "pageId": page_id,
+            "browserContextId": context_id,
+            "headless": self._headless,
+        }
 
     def close(self) -> None:
         pages = list(self._pages.values())
@@ -867,6 +907,9 @@ def _execute_with_executor(request: dict[str, Any], approval_id: str | None, act
         "approvalId": approval_id,
         "executor": _executor_name(active_executor),
         "detail": detail,
+        "toolName": "computer_use",
+        "contentSource": "computer",
+        "contentTrust": "untrusted",
         "steps": [
             {"label": "permission", "status": "completed", "summary": "Computer Use permission approved."},
             {"label": action, "status": "completed", "summary": summary},
@@ -905,6 +948,9 @@ def _capture_screenshot(request: dict[str, Any], approval_id: str | None) -> dic
             "approvalId": approval_id,
             "failureKind": "screenshot_unavailable",
             "recoveryHint": "Attach a screenshot manually or enable a desktop screenshot backend.",
+            "toolName": "computer_use",
+            "contentSource": "computer",
+            "contentTrust": "untrusted",
             "steps": [
                 {"label": "screenshot", "status": "blocked", "summary": "Pillow ImageGrab is unavailable."},
             ],
@@ -919,6 +965,9 @@ def _capture_screenshot(request: dict[str, Any], approval_id: str | None) -> dic
             "approvalId": approval_id,
             "failureKind": "screenshot_unavailable",
             "recoveryHint": "Attach a screenshot manually or enable a desktop screenshot backend.",
+            "toolName": "computer_use",
+            "contentSource": "computer",
+            "contentTrust": "untrusted",
             "steps": [
                 {"label": "screenshot", "status": "blocked", "summary": str(exc)},
             ],
@@ -947,6 +996,9 @@ def _capture_screenshot(request: dict[str, Any], approval_id: str | None) -> dic
         "bytes": len(png),
         "capturedAt": int(time.time() * 1000),
         "imageDataUrl": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+        "toolName": "computer_use",
+        "contentSource": "computer",
+        "contentTrust": "untrusted",
         "steps": [
             {"label": "screenshot", "status": "completed", "summary": summary},
         ],
@@ -975,6 +1027,9 @@ def build_computer_use_tool(
                     "approval": approval,
                     "request": request,
                     "summary": request["permission"],
+                    "toolName": "computer_use",
+                    "contentSource": "computer",
+                    "contentTrust": "untrusted",
                 }
         else:
             decision = permission_engine.evaluate(
@@ -989,6 +1044,9 @@ def build_computer_use_tool(
                     "status": "blocked",
                     "error": decision.reason,
                     "request": request,
+                    "toolName": "computer_use",
+                    "contentSource": "computer",
+                    "contentTrust": "untrusted",
                 }
             if decision is None or decision.decision == "approval_required":
                 approval = store.create_approval(
@@ -1001,6 +1059,9 @@ def build_computer_use_tool(
                     "approval": approval,
                     "request": request,
                     "summary": request["permission"],
+                    "toolName": "computer_use",
+                    "contentSource": "computer",
+                    "contentTrust": "untrusted",
                 }
 
         action = request["action"]
@@ -1013,6 +1074,9 @@ def build_computer_use_tool(
                 ),
                 "request": request,
                 "approvalId": approval_id,
+                "toolName": "computer_use",
+                "contentSource": "computer",
+                "contentTrust": "untrusted",
             }
         if action == "inspect":
             browser_result = _execute_browser_observation_if_available(request, approval_id, computer_use_executor)

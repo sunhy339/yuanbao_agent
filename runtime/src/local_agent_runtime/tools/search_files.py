@@ -112,6 +112,8 @@ def build_search_files_tool(policy_guard: Any, store: Any, subagent_service: Any
 
         steps.append(_step("search", "completed", f"{len(matches)} match(es)"))
         return {
+            "status": "ok",
+            "toolName": "search_files",
             "query": query,
             "mode": mode,
             "backend": backend,

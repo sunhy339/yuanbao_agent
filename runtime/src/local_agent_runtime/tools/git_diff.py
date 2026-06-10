@@ -74,6 +74,8 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
         ]
         if steps[-1]["summary"] == "not git":
             return {
+                "status": "ok",
+                "toolName": "git_diff",
                 "workspaceRoot": str(workspace_root),
                 "cwd": relative_cwd,
                 "isGitRepository": False,
@@ -118,6 +120,8 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
         )
 
         return {
+            "status": "ok",
+            "toolName": "git_diff",
             "workspaceRoot": str(workspace_root),
             "cwd": relative_cwd,
             "isGitRepository": True,

@@ -67,11 +67,14 @@ def build_browser_tool(policy_guard: Any, store: Any, subagent_service: Any | No
                 pass
             return {
                 "status": "http_error",
+                "toolName": "browser",
                 "statusCode": exc.code,
                 "url": url,
                 "action": action,
                 "error": f"HTTP {exc.code}: {exc.reason}",
                 "body": error_body,
+                "contentSource": "web",
+                "contentTrust": "untrusted",
                 "steps": [
                     _step("request", "completed", f"{action} {url}"),
                     _step("response", "blocked", f"HTTP {exc.code}: {exc.reason}"),
@@ -80,9 +83,12 @@ def build_browser_tool(policy_guard: Any, store: Any, subagent_service: Any | No
         except urllib.error.URLError as exc:
             return {
                 "status": "network_error",
+                "toolName": "browser",
                 "url": url,
                 "action": action,
                 "error": str(exc.reason),
+                "contentSource": "web",
+                "contentTrust": "untrusted",
                 "steps": [
                     _step("request", "blocked", f"{action} {url}"),
                     _step("network", "blocked", str(exc.reason)),
@@ -118,6 +124,7 @@ def build_browser_tool(policy_guard: Any, store: Any, subagent_service: Any | No
             steps.append(_step("extract", "completed", f"{len(text)} text characters"))
             return {
                 "status": "ok",
+                "toolName": "browser",
                 "statusCode": status_code,
                 "url": url,
                 "action": action,
@@ -126,6 +133,8 @@ def build_browser_tool(policy_guard: Any, store: Any, subagent_service: Any | No
                 "content": text,
                 "truncated": truncated,
                 "bytesRead": len(raw),
+                "contentSource": "web",
+                "contentTrust": "untrusted",
                 "steps": steps,
             }
 
@@ -133,6 +142,7 @@ def build_browser_tool(policy_guard: Any, store: Any, subagent_service: Any | No
             steps.append(_step("extract", "completed", f"{len(html)} raw HTML characters"))
             return {
                 "status": "ok",
+                "toolName": "browser",
                 "statusCode": status_code,
                 "url": url,
                 "action": action,
@@ -140,6 +150,8 @@ def build_browser_tool(policy_guard: Any, store: Any, subagent_service: Any | No
                 "content": html,
                 "truncated": truncated,
                 "bytesRead": len(raw),
+                "contentSource": "web",
+                "contentTrust": "untrusted",
                 "steps": steps,
             }
 

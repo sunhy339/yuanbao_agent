@@ -644,6 +644,11 @@ class ContextCompactor:
         decisions: list[str] = []
         if summary:
             decisions.append(str(summary)[:300])
+        if task:
+            routing = task.get("routing") or {}
+            skill_id = routing.get("skill_id") or routing.get("skillId")
+            if skill_id:
+                decisions.append(f"skill: {skill_id}")
         return ContextCompactor._dedupe_text(decisions)
 
     @staticmethod

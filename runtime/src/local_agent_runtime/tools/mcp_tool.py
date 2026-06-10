@@ -39,16 +39,20 @@ def build_mcp_tool(mcp_client_manager: Any | None = None) -> dict[str, Any]:
                 "status": "error",
                 "error": str(exc),
                 "toolName": tool_name,
+                "contentSource": "mcp",
+                "contentTrust": "untrusted",
             }
 
         if isinstance(result, dict):
             result["toolName"] = tool_name
+            result["contentTrust"] = "untrusted"
             return result
         return {
             "status": "ok",
             "output": str(result),
             "toolName": tool_name,
             "contentSource": "mcp",
+            "contentTrust": "untrusted",
         }
 
     return {"handler": handler}
@@ -72,6 +76,7 @@ def build_list_mcp_resources_tool(mcp_client_manager: Any | None = None) -> dict
         except Exception as exc:
             return {
                 "status": "error",
+                "toolName": "list_mcp_resources",
                 "error": str(exc),
             }
 
@@ -89,6 +94,7 @@ def build_list_mcp_resources_tool(mcp_client_manager: Any | None = None) -> dict
 
         return {
             "status": "ok",
+            "toolName": "list_mcp_resources",
             "tools": items,
             "count": len(items),
         }
@@ -112,6 +118,7 @@ def build_read_mcp_resource_tool(mcp_client_manager: Any | None = None) -> dict[
             raise ValueError("uri is required for reading MCP resource")
         return {
             "status": "unsupported",
+            "toolName": "read_mcp_resource",
             "uri": uri,
             "error": "MCP resource read is not yet supported by the runtime client manager",
         }

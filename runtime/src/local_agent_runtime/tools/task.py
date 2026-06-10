@@ -160,6 +160,7 @@ def _public_subagent_result(
     title: str,
     status: str,
     steps: list[dict[str, str]],
+    tool_name: str = "task",
 ) -> dict[str, Any]:
     """Project child runner internals into a model/frontend-facing result.
 
@@ -171,6 +172,7 @@ def _public_subagent_result(
 
     public: dict[str, Any] = {
         "status": status,
+        "toolName": tool_name,
         "summary": _compact_text(result.get("summary") or result.get("resultSummary") or status, 600),
         "title": title,
         "steps": steps,
@@ -306,6 +308,7 @@ def _dispatch_subagent_tool(
         if decision.decision == "deny":
             return {
                 "status": "blocked",
+                "toolName": tool_name,
                 "error": decision.reason,
                 "steps": [
                     *steps,
@@ -327,6 +330,7 @@ def _dispatch_subagent_tool(
             )
             return {
                 "status": "approval_required",
+                "toolName": tool_name,
                 "approval": approval,
                 "steps": [
                     *steps,
@@ -344,7 +348,7 @@ def _dispatch_subagent_tool(
     if child_id:
         steps.append(_step("child_task", "completed", _public_child_step_summary(result=result, title=title, status=status)))
     public_steps = [*steps, *result.get("steps", [])] if isinstance(result.get("steps"), list) else steps
-    return _public_subagent_result(result, title=title, status=status, steps=public_steps)
+    return _public_subagent_result(result, title=title, status=status, steps=public_steps, tool_name=tool_name)
 
 
 def _send_message_to_agent(
@@ -372,7 +376,7 @@ def _send_message_to_agent(
             },
         ))
         if decision.decision == "deny":
-            return {"status": "blocked", "error": decision.reason or "send_message denied by permission policy"}
+            return {"status": "blocked", "toolName": "send_message", "error": decision.reason or "send_message denied by permission policy"}
 
     target = _resolve_agent_message_target(params, store=store, to=to)
     task = target["task"]
@@ -401,6 +405,7 @@ def _send_message_to_agent(
     summary = f"Message delivered to {target['recipient']['name']}"
     public = {
         "status": "delivered",
+        "toolName": "send_message",
         "summary": summary,
         "to": target["handle"],
         "recipient": target["recipient"],

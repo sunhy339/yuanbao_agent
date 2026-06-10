@@ -11,6 +11,7 @@ from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools import build_builtin_tools
 from local_agent_runtime.tools.registry import ToolRegistry
+from local_agent_runtime.tools.task import continuation_handle_for_child
 
 
 class RecordingSubagentService:
@@ -239,6 +240,75 @@ def test_execute_tool_lifts_tiny_model_supplied_agent_token_budget(tmp_path: Any
     assert dispatched["budget"]["remainingToolCalls"] >= 12
     assert dispatched["budget"]["normalizedByRuntime"] is True
     assert dispatched["budget"]["childToolAllowlist"] == ["read_file", "search_files"]
+
+
+def test_execute_send_message_uses_subtask_display_category_and_continuation_handle(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Continue delegated review",
+        plan=[],
+    )
+    runtime.orchestrator._tool_registry = ToolRegistry(  # noqa: SLF001
+        build_builtin_tools(policy_guard=PolicyGuard(), store=runtime.store)
+    )
+    worker = runtime.store.upsert_agent_worker({
+        "workerId": "agent_reviewer_1",
+        "name": "Reviewer",
+        "role": "reviewer",
+        "sessionId": session["id"],
+    })["worker"]
+    child_task = runtime.store.create_collaboration_task({
+        "sessionId": session["id"],
+        "parentTaskId": task["id"],
+        "title": "Review docs",
+        "metadata": {"agentType": "reviewer"},
+    })["task"]
+    runtime.store.claim_collaboration_task({"taskId": child_task["id"], "workerId": worker["id"]})
+    handle = continuation_handle_for_child(
+        child_task_id=child_task["id"],
+        worker_id=worker["id"],
+        title=child_task["title"],
+        agent_type="reviewer",
+    )
+
+    tool_result = runtime.orchestrator._execute_tool(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        tool_spec={
+            "id": "call_send_message",
+            "name": "send_message",
+            "arguments": {
+                "to": handle,
+                "message": "Please also check replay coverage.",
+            },
+        },
+    )
+
+    assert tool_result["name"] == "send_message"
+    assert tool_result["toolCategory"] == "subtask"
+    assert tool_result["displayKind"] == "subtask"
+    assert tool_result["target"] == "Reviewer"
+    assert tool_result["result"]["status"] == "delivered"
+    assert tool_result["result"]["to"] == handle
+
+    messages = runtime.store.list_agent_messages({
+        "taskId": child_task["id"],
+        "recipientWorkerId": worker["id"],
+    })["messages"]
+    assert messages[0]["body"] == "Please also check replay coverage."
+    assert messages[0]["payload"]["to"] == handle
+
+    started = next(event for event in runtime.events if event["type"] == "tool.started")
+    completed = next(event for event in runtime.events if event["type"] == "tool.completed")
+    assert started["payload"]["toolName"] == "send_message"
+    assert started["payload"]["toolCategory"] == "subtask"
+    assert started["payload"]["toolPhaseId"] == "subtask"
+    assert started["payload"]["displayKind"] == "subtask"
+    assert completed["payload"]["toolCategory"] == "subtask"
+    assert completed["payload"]["result"]["to"] == handle
 
 
 def test_child_agent_profile_drives_context_hints_and_plan_mode(tmp_path: Any, monkeypatch: Any) -> None:

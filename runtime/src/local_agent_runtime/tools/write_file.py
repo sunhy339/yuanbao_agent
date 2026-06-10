@@ -70,6 +70,7 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
         if not is_new_file and not diff_text:
             return {
                 "status": "unchanged",
+                "toolName": "write_file",
                 "path": relative_path,
                 "filesChanged": 0,
                 "changedPaths": [],
@@ -131,6 +132,7 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             if approval.get("decision") != "approved":
                 return {
                     "status": "approval_required",
+                    "toolName": "write_file",
                     "approval": approval,
                     "path": relative_path,
                     "filesChanged": 1,
@@ -156,6 +158,7 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             if decision.decision == "deny":
                 return {
                     "status": "blocked",
+                    "toolName": "write_file",
                     "error": decision.reason,
                     "path": relative_path,
                     "filesChanged": 1,
@@ -177,6 +180,7 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
                 )
                 return {
                     "status": "approval_required",
+                    "toolName": "write_file",
                     "approval": approval,
                     "path": relative_path,
                     "filesChanged": 1,
@@ -201,6 +205,7 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             )
             return {
                 "status": "approval_required",
+                "toolName": "write_file",
                 "approval": approval,
                 "path": relative_path,
                 "filesChanged": 1,
@@ -227,6 +232,7 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
 
         return {
             "status": "written",
+            "toolName": "write_file",
             "path": relative_path,
             "filesChanged": 1,
             "changedPaths": changed_paths,

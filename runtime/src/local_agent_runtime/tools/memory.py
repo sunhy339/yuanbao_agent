@@ -41,6 +41,7 @@ def build_memory_remember_tool(memory_manager: Any) -> dict[str, Any]:
             steps.append(_step("keywords", "completed", ", ".join(entry.keywords[:10])))
         return {
             "status": "ok",
+            "toolName": "memory.remember",
             "id": entry.id,
             "kind": entry.kind.value,
             "keywords": entry.keywords[:10],
@@ -84,6 +85,7 @@ def build_memory_recall_tool(memory_manager: Any) -> dict[str, Any]:
         ]
         return {
             "status": "ok",
+            "toolName": "memory.recall",
             "count": len(results),
             "memories": results,
             "steps": steps,

@@ -1,4 +1,4 @@
-"""Batch 6 tests: P6 failure observability, P7 dynamic profile, P0.6 dispatch guard.
+"""Batch 6 tests: P6 failure observability, P7 dynamic profile, model-first dispatch.
 
 Covers:
 - Retry trace events (child.retry.attempt)
@@ -6,9 +6,7 @@ Covers:
 - Attempt count persistence in task metadata
 - Dynamic profile persistence on collab tasks
 - Profile name in generation reports
-- Planning mode field in generation reports
-- Dispatch guard rejecting invalid proposals
-- Dispatch guard passing valid proposals
+- Legacy proposal/planning fields no longer control subagent dispatch
 """
 
 from __future__ import annotations
@@ -395,13 +393,13 @@ class TestProfileInReport:
 
 
 # ===========================================================================
-# P0.6: Dispatch Guard
+# Model-first subagent dispatch
 # ===========================================================================
 
 
-class TestDispatchGuard:
-    def test_rejects_invalid_tool_policy_proposal(self) -> None:
-        """Dispatch rejects when proposal has unsafe tools."""
+class TestModelFirstDispatch:
+    def test_legacy_invalid_proposal_is_metadata_not_a_dispatch_gate(self) -> None:
+        """Subagent dispatch follows the model tool call, not a proposal gate."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
@@ -411,13 +409,11 @@ class TestDispatchGuard:
                 "payload": {"allowedTools": ["task"]},
             },
         })
-        assert result["status"] == "rejected"
-        assert any("Unsafe" in r for r in result["rejectionReasons"])
-        assert result["proposalKind"] == "tool_policy"
-        assert len(runner.requests) == 0  # never dispatched
+        assert result["status"] == "completed"
+        assert len(runner.requests) == 1
 
-    def test_rejects_unknown_proposal_kind(self) -> None:
-        """Dispatch rejects when proposal kind is unknown."""
+    def test_legacy_unknown_proposal_is_not_authoritative(self) -> None:
+        """Unknown proposal records are not part of the AgentTool execution path."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
@@ -427,11 +423,11 @@ class TestDispatchGuard:
                 "payload": {},
             },
         })
-        assert result["status"] == "rejected"
-        assert any("Unknown" in r for r in result["rejectionReasons"])
+        assert result["status"] == "completed"
+        assert len(runner.requests) == 1
 
-    def test_passes_valid_proposal(self) -> None:
-        """Dispatch proceeds when proposal is valid."""
+    def test_valid_legacy_proposal_is_ignored_as_control_flow(self) -> None:
+        """A valid proposal may be persisted elsewhere, but dispatch does not depend on it."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
@@ -444,38 +440,16 @@ class TestDispatchGuard:
         assert result["status"] == "completed"
         assert len(runner.requests) == 1
 
-    def test_no_proposal_proceeds_normally(self) -> None:
-        """Dispatch proceeds normally when no proposal is provided."""
-        runner = RecordingRunner()
-        service = SubagentService(object(), object(), runner=runner)
-        result = service.dispatch({
-            "prompt": "normal dispatch",
-        })
-        assert result["status"] == "completed"
-        assert len(runner.requests) == 1
-
-    def test_planning_mode_default(self) -> None:
-        """Rejected proposal defaults to llm planning mode."""
-        runner = RecordingRunner()
-        service = SubagentService(object(), object(), runner=runner)
-        result = service.dispatch({
-            "prompt": "test",
-            "proposal": {
-                "kind": "tool_policy",
-                "payload": {"allowedTools": ["task"]},
-            },
-        })
-        assert result["planningMode"] == "llm"
-
-    def test_planning_mode_custom(self) -> None:
-        """Accepted dispatch carries custom planning mode."""
+    def test_legacy_planning_mode_is_not_returned(self) -> None:
+        """planningMode is no longer surfaced as subagent execution state."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
             "prompt": "test",
             "planningMode": "rule_fallback",
         })
-        assert result["planningMode"] == "rule_fallback"
+        assert result["status"] == "completed"
+        assert "planningMode" not in result
 
     def test_no_planning_mode_when_not_provided(self) -> None:
         """Result has no planningMode when dispatch has no planningMode param."""
@@ -487,9 +461,9 @@ class TestDispatchGuard:
         assert "planningMode" not in result
 
 
-class TestPlanningModeInReport:
-    def test_report_includes_planning_mode(self, tmp_path: Path) -> None:
-        """Generation report includes planningMode from parent task routing."""
+class TestGenerationReportNoPlanningMode:
+    def test_report_omits_planning_mode_even_when_parent_has_legacy_routing(self, tmp_path: Path) -> None:
+        """Generation reports describe durable child work, not router/planner mode."""
         store = SQLiteStore(str(tmp_path / "runtime3.sqlite3"))
         workspace_root = tmp_path / "workspace3"
         workspace_root.mkdir(parents=True, exist_ok=True)
@@ -504,11 +478,11 @@ class TestPlanningModeInReport:
         )
 
         report = build_generation_report(store, parent_task_id=parent_task["id"])
-        assert report["planningMode"] == "llm"
+        assert "planningMode" not in report
         store.close()
 
-    def test_report_defaults_to_rule_fallback(self, tmp_path: Path) -> None:
-        """Generation report defaults planningMode to rule_fallback."""
+    def test_report_without_legacy_routing_omits_planning_mode(self, tmp_path: Path) -> None:
+        """No implicit rule_fallback is created for reports."""
         store = SQLiteStore(str(tmp_path / "runtime4.sqlite3"))
         workspace_root = tmp_path / "workspace4"
         workspace_root.mkdir(parents=True, exist_ok=True)
@@ -522,7 +496,7 @@ class TestPlanningModeInReport:
         )
 
         report = build_generation_report(store, parent_task_id=parent_task["id"])
-        assert report["planningMode"] == "rule_fallback"
+        assert "planningMode" not in report
         store.close()
 
 
@@ -556,24 +530,24 @@ class TestSubagentProfileForwarding:
 
 
 # ===========================================================================
-# P0.6: Fallback paths for planner failure and simple tasks
+# Legacy planner controls are inert for AgentTool dispatch
 # ===========================================================================
 
 
-class TestPlannerFallback:
-    def test_planner_failure_falls_back_to_rule_fallback(self) -> None:
-        """P0.6: When LLM planning mode expected but no proposal, fallback to rule_fallback."""
+class TestLegacyPlannerControls:
+    def test_missing_proposal_does_not_fallback_to_rule_fallback(self) -> None:
+        """No backend fallback planner is injected before dispatch."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
             "prompt": "Explore workspace",
             "planningMode": "llm",
-            # No proposal — simulates planner failure
         })
-        assert result["planningMode"] == "rule_fallback"
+        assert result["status"] == "completed"
+        assert "planningMode" not in result
 
-    def test_planner_failure_with_valid_proposal_stays_llm(self) -> None:
-        """P0.6: When LLM mode with valid proposal, planning mode stays llm."""
+    def test_valid_proposal_does_not_mark_llm_planning_mode(self) -> None:
+        """Proposal metadata does not become a child execution mode."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
@@ -584,10 +558,11 @@ class TestPlannerFallback:
                 "payload": {"allowedTools": ["read_file"]},
             },
         })
-        assert result["planningMode"] == "llm"
+        assert result["status"] == "completed"
+        assert "planningMode" not in result
 
-    def test_simple_task_skip_decomposition(self) -> None:
-        """P0.6: skipDecomposition forces rule_fallback planning mode."""
+    def test_skip_decomposition_does_not_force_rule_fallback(self) -> None:
+        """skipDecomposition is legacy metadata and no longer changes dispatch."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
@@ -595,24 +570,27 @@ class TestPlannerFallback:
             "planningMode": "llm",
             "skipDecomposition": True,
         })
-        assert result["planningMode"] == "rule_fallback"
+        assert result["status"] == "completed"
+        assert "planningMode" not in result
 
-    def test_skip_decomposition_without_planning_mode(self) -> None:
-        """P0.6: skipDecomposition sets rule_fallback even without explicit planningMode."""
+    def test_skip_decomposition_without_planning_mode_is_ignored(self) -> None:
+        """No implicit planning mode is synthesized from skipDecomposition."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
             "prompt": "Simple task",
             "skipDecomposition": True,
         })
-        assert result["planningMode"] == "rule_fallback"
+        assert result["status"] == "completed"
+        assert "planningMode" not in result
 
-    def test_rule_fallback_mode_stays_when_no_proposal(self) -> None:
-        """P0.6: Explicit rule_fallback mode stays even without proposal."""
+    def test_rule_fallback_mode_is_not_returned(self) -> None:
+        """Explicit legacy fallback mode is not part of public child results."""
         runner = RecordingRunner()
         service = SubagentService(object(), object(), runner=runner)
         result = service.dispatch({
             "prompt": "Explore workspace",
             "planningMode": "rule_fallback",
         })
-        assert result["planningMode"] == "rule_fallback"
+        assert result["status"] == "completed"
+        assert "planningMode" not in result

@@ -407,7 +407,7 @@ class TestMusicPlayerGenerationReport:
 
         assert report["parentTaskId"] == data["parent_task"]["id"]
         assert report["sessionId"] == data["session"]["id"]
-        assert report["planningMode"] in {"llm", "rule_fallback", "manual"}
+        assert "planningMode" not in report
 
         child_tasks = report["childTasks"]
         assert len(child_tasks) == 3

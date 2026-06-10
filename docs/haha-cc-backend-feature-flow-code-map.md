@@ -660,6 +660,20 @@ Action:
 - Child task output should publish a clean final result plus compact progress,
   not the raw child transcript.
 
+Current status:
+
+- Subagent dispatch no longer uses legacy `planningMode`, proposal validation,
+  `skipDecomposition`, or `rule_fallback` as an execution gate.
+- `agent` / `task` tool results now leave the backend boundary as a public DTO:
+  status, summary, agent type, task title/status, compact steps, and whitelisted
+  artifacts/evidence only. Internal child task ids, worker ids, runtime task
+  payloads, message objects, approval objects, and execution-mode metadata stay
+  in trace/collaboration storage.
+- Remaining parity work is the richer haha-cc AgentTool ecosystem: background
+  agent launch/completion notification, SendMessage-style continuation, and
+  team member state sourced from explicit model tool calls rather than backend
+  fallback orchestration.
+
 ### 9. Team / Swarm
 
 Reference code:

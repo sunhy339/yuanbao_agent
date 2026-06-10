@@ -330,7 +330,9 @@ def test_subagent_visible_tool_result_hides_internal_completion_evidence() -> No
 
     encoded = json.dumps(visible, ensure_ascii=False)
     assert visible["status"] == "completed"
-    assert visible["message"]["body"] == "Child analysis finished."
+    assert visible["summary"] == "Child analysis finished."
+    assert visible["result"] == {"summary": "Structured summary."}
+    assert "message" not in visible
     assert "ctask_child" not in encoded
     assert "agent_worker" not in encoded
     assert "completionEvidence" not in encoded

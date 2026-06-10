@@ -49,13 +49,18 @@ SUBAGENT_TOOL_NAMES = {"agent", "task"}
 _SUBAGENT_INTERNAL_RESULT_KEYS = {
     "acceptanceCriteria",
     "childTaskId",
+    "collaborationTaskId",
     "completionEvidence",
     "completionGate",
     "completionReview",
     "id",
+    "messageIds",
     "providerRequest",
     "raw",
     "requestJson",
+    "runtimeTask",
+    "runtimeTaskId",
+    "runtimeTaskStatus",
     "senderWorkerId",
     "taskId",
     "workerId",
@@ -128,7 +133,6 @@ _PUBLIC_SUBAGENT_RESULT_KEYS = (
     "status",
     "summary",
     "resultSummary",
-    "message",
     "changedFiles",
     "commands",
     "verification",
@@ -233,6 +237,8 @@ def _public_nested_result(value: Any, *, depth: int = 0) -> Any:
         key_text = str(key)
         if key_text in _SUBAGENT_INTERNAL_RESULT_KEYS or key_text in _INTERNAL_VISIBLE_RESULT_KEYS:
             continue
+        if key_text.startswith("_"):
+            continue
         if item in (None, "", [], {}):
             continue
         public[key_text] = _public_nested_result(item, depth=depth + 1)
@@ -307,7 +313,7 @@ def _public_tool_arguments(arguments: Any, tool_name: str = "") -> Any:
 
 def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     public: dict[str, Any] = {}
-    for key in ("status", "summary", "resultSummary", "planningMode"):
+    for key in ("status", "summary", "resultSummary", "title", "taskTitle", "taskStatus", "agentType"):
         value = result.get(key)
         if value in (None, "", [], {}):
             continue
@@ -315,48 +321,27 @@ def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
     approval = result.get("approval")
     if isinstance(approval, dict):
-        public["approval"] = {
-            key: value
-            for key, value in {
-                "kind": approval.get("kind"),
-                "decision": approval.get("decision"),
-            }.items()
-            if value not in (None, "", [])
-        }
+        approval_kind = approval.get("kind")
+        approval_status = approval.get("decision")
+        if approval_kind not in (None, "", [], {}):
+            public["approvalKind"] = _compact_snippet(approval_kind)
+        if approval_status not in (None, "", [], {}):
+            public["approvalStatus"] = _compact_snippet(approval_status)
 
     subagent = result.get("subagent")
     if isinstance(subagent, dict):
-        public["subagent"] = {
-            key: _compact_snippet(value)
-            for key, value in subagent.items()
-            if key not in _SUBAGENT_INTERNAL_RESULT_KEYS and value not in (None, "", [], {})
-        }
-
-    worker = result.get("worker")
-    if isinstance(worker, dict):
-        public["worker"] = {
-            key: _compact_snippet(worker.get(key))
-            for key in ("name", "role", "status")
-            if worker.get(key) not in (None, "", [], {})
-        }
+        agent_type = subagent.get("agentType") or subagent.get("agent_type")
+        if agent_type not in (None, "", [], {}) and "agentType" not in public:
+            public["agentType"] = _compact_snippet(agent_type)
 
     task = result.get("task")
     if isinstance(task, dict):
-        public["task"] = {
-            key: _compact_snippet(task.get(key))
-            for key in ("title", "status", "description")
-            if task.get(key) not in (None, "", [], {})
-        }
-
-    message = result.get("message")
-    if isinstance(message, dict):
-        public_message = {
-            key: _compact_snippet(message.get(key))
-            for key in ("kind", "body")
-            if message.get(key) not in (None, "", [], {})
-        }
-        if public_message:
-            public["message"] = public_message
+        task_title = task.get("title")
+        task_status = task.get("status")
+        if task_title not in (None, "", [], {}) and "taskTitle" not in public:
+            public["taskTitle"] = _compact_snippet(task_title)
+        if task_status not in (None, "", [], {}) and "taskStatus" not in public:
+            public["taskStatus"] = _compact_snippet(task_status)
 
     structured = result.get("structuredResult")
     if not isinstance(structured, dict):
@@ -375,10 +360,31 @@ def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         public["steps"] = _compact_list_items(steps)
 
     if not public:
-        summary = _compact_snippet(result.get("summary") or result.get("resultSummary") or result.get("status") or "")
+        message = result.get("message")
+        message_body = message.get("body") if isinstance(message, dict) else None
+        summary = _compact_snippet(result.get("summary") or result.get("resultSummary") or message_body or result.get("status") or "")
         if summary:
             public["summary"] = summary
     return public
+
+
+def _sanitize_subagent_runtime_result(result: Any) -> Any:
+    """Return the only shape that leaves the agent/task tool boundary.
+
+    WorkerRunner intentionally keeps rich child-task data for collaboration,
+    approval resume, and trace/debug. The parent model and chat transcript do
+    not need those internal ids or runtime task payloads.
+    """
+
+    if not isinstance(result, dict):
+        return result
+    public = _public_subagent_tool_result(result)
+    if public:
+        return public
+    return {
+        "status": str(result.get("status") or "completed"),
+        "summary": _compact_snippet(result.get("summary") or result.get("resultSummary") or ""),
+    }
 
 
 def _visible_tool_result(
@@ -935,7 +941,7 @@ def _tool_result_preview(tool_name: str, result: dict[str, Any] | None, target: 
             row for row in (
                 _preview_row("状态", result.get("status") or "completed"),
                 _preview_row("摘要", result.get("summary") or result.get("resultSummary") or ""),
-                _preview_row("类型", result.get("agentType") or result.get("role") or result.get("planningMode") or ""),
+                _preview_row("类型", result.get("agentType") or result.get("role") or ""),
             ) if row
         )
     elif tool_name == "computer_use":
@@ -2614,22 +2620,27 @@ class ToolExecutionMixin:
                 )
 
         if tool_spec["name"] in SUBAGENT_TOOL_NAMES:
+            public_result = _sanitize_subagent_runtime_result(result)
+            raw_result = result
+            result = public_result
             tool_result = provider_tool_result()
-            if result.get("status") == "approval_required":
+            tool_result["result"] = public_result
+            tool_result["modelVisibleResult"] = public_result
+            if raw_result.get("status") == "approval_required":
                 event_type = "tool.blocked"
-                extra = {"result": result, "reason": "approval_required"}
+                extra = {"result": public_result, "reason": "approval_required"}
                 tool_status = "blocked"
-            elif result.get("status") == "blocked":
+            elif raw_result.get("status") == "blocked":
                 event_type = "tool.blocked"
-                extra = {"result": result, "reason": result.get("error", "Blocked by permission policy.")}
+                extra = {"result": public_result, "reason": raw_result.get("error", "Blocked by permission policy.")}
                 tool_status = "blocked"
-            elif self._tool_failed(tool_spec["name"], result):
+            elif self._tool_failed(tool_spec["name"], raw_result):
                 event_type = "tool.failed"
-                extra = {"result": result}
+                extra = {"result": public_result}
                 tool_status = "failed"
             else:
                 event_type = "tool.completed"
-                extra = {"result": result}
+                extra = {"result": public_result}
                 tool_status = "completed"
             self._publish(
                 session_id=session_id,

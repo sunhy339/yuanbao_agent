@@ -23,38 +23,6 @@ class SubagentService:
     def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
         prompt = self._require_non_empty(params, "prompt")
 
-        # Determine planning mode
-        explicit_planning_mode = params.get("planningMode")
-        planning_mode = explicit_planning_mode
-
-        # P0.6: Simple task — skip decomposition when explicitly marked
-        if params.get("skipDecomposition") is True:
-            planning_mode = "rule_fallback"
-
-        # P0.6: Dispatch guard — run proposal validation if provided
-        proposal = self._optional_object(params, "proposal")
-        if proposal is not None:
-            from ..policy.proposal_validator import validate_proposal
-            kind = proposal.get("kind", "")
-            payload = proposal.get("payload", {})
-            rejection_reasons = validate_proposal(kind, payload)
-            if rejection_reasons:
-                result = {
-                    "status": "rejected",
-                    "rejectionReasons": rejection_reasons,
-                    "proposalKind": kind,
-                }
-                if planning_mode is not None:
-                    result["planningMode"] = planning_mode
-                else:
-                    result["planningMode"] = "llm"
-                return result
-
-        # P0.6: Fallback path for planner failure — no proposal when LLM mode expected
-        if proposal is None and planning_mode == "llm":
-            planning_mode = "rule_fallback"
-
-        # P7: Dynamic profile from planner output
         profile = normalize_subtask_profile_contract(self._optional_object(params, "profile"))
 
         request = ChildTaskRequest(
@@ -89,11 +57,7 @@ class SubagentService:
             active_worktree=self._optional_object(params, "activeWorktree") or self._optional_object(params, "active_worktree"),
             event_callback=params.get("_eventCallback") if callable(params.get("_eventCallback")) else None,
         )
-        result = self._worker_runner.run_child_task(request)
-        # P0.6: Annotate result with planning mode (may have been overridden by fallback)
-        if planning_mode is not None:
-            result["planningMode"] = planning_mode
-        return result
+        return self._worker_runner.run_child_task(request)
 
     def _title_from_prompt(self, prompt: str) -> str:
         normalized = " ".join(prompt.split())

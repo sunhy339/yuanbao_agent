@@ -43,6 +43,8 @@ def test_task_result_includes_runtime_steps() -> None:
         {"label": "dispatch", "status": "completed", "summary": "Inspected module."},
         {"label": "child_task", "status": "completed", "summary": "Inspected module."},
     ]
+    assert "childTaskId" not in result
+    assert "workerId" not in result
 
 
 def test_agent_tool_normalizes_claude_code_style_arguments() -> None:

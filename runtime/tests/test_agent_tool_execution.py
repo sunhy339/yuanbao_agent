@@ -22,6 +22,33 @@ class RecordingSubagentService:
         return {
             "status": "completed",
             "summary": "Agent reviewed docs.",
+            "subagent": {
+                "agentType": "reviewer",
+                "executionMode": "process-rpc",
+                "taskId": "task_secret_from_subagent",
+            },
+            "task": {
+                "id": "task_secret_nested",
+                "title": "Review docs",
+                "status": "completed",
+                "description": "Internal child task description",
+            },
+            "worker": {
+                "id": "worker_secret_nested",
+                "name": "Reviewer Worker",
+                "role": "reviewer",
+                "status": "idle",
+            },
+            "message": {
+                "id": "msg_secret_nested",
+                "kind": "result",
+                "body": "Agent reviewed docs.",
+            },
+            "result": {
+                "summary": "Agent reviewed docs.",
+                "changedFiles": [{"path": "README.md", "workerId": "nested_worker_secret"}],
+            },
+            "runtimeTaskId": "runtime_task_secret",
             "childTaskId": "ctask_agent_1",
             "workerId": "agent_reviewer_1",
         }
@@ -111,7 +138,33 @@ def test_execute_tool_normalizes_agent_before_subagent_dispatch(tmp_path: Any) -
     assert started["payload"]["toolName"] == "agent"
     assert started["payload"]["arguments"]["agentType"] == "reviewer"
     assert started["payload"]["arguments"]["childToolAllowlist"] == ["read_file", "search_files"]
-    assert completed["payload"]["result"]["childTaskId"] == "ctask_agent_1"
+    assert completed["payload"]["result"]["status"] == "completed"
+    assert completed["payload"]["result"]["summary"] == "Agent reviewed docs."
+    assert completed["payload"]["result"]["agentType"] == "reviewer"
+    assert completed["payload"]["result"]["taskTitle"] == "Review docs"
+    assert completed["payload"]["result"]["taskStatus"] == "completed"
+    assert completed["payload"]["result"]["result"]["changedFiles"] == [{"path": "README.md"}]
+    assert "childTaskId" not in completed["payload"]["result"]
+    assert "workerId" not in completed["payload"]["result"]
+    assert "runtimeTaskId" not in completed["payload"]["result"]
+    assert "subagent" not in completed["payload"]["result"]
+    assert "worker" not in completed["payload"]["result"]
+    assert "task" not in completed["payload"]["result"]
+    assert "message" not in completed["payload"]["result"]
+    assert "executionMode" not in json.dumps(completed["payload"]["result"])
+    assert tool_result["result"]["status"] == "completed"
+    assert tool_result["result"]["summary"] == "Agent reviewed docs."
+    assert tool_result["result"]["agentType"] == "reviewer"
+    assert tool_result["result"]["taskTitle"] == "Review docs"
+    assert tool_result["result"]["taskStatus"] == "completed"
+    assert "childTaskId" not in tool_result["result"]
+    assert "workerId" not in tool_result["result"]
+    assert "runtimeTaskId" not in tool_result["result"]
+    assert "subagent" not in tool_result["result"]
+    assert "worker" not in tool_result["result"]
+    assert "task" not in tool_result["result"]
+    assert "message" not in tool_result["result"]
+    assert "executionMode" not in json.dumps(tool_result["result"])
 
 
 def test_execute_tool_accepts_haha_style_agent_fields(tmp_path: Any) -> None:

@@ -36,10 +36,6 @@ def build_generation_report(
         except Exception:
             pass
 
-    # P0.6: Derive planning mode from parent task routing
-    parent_routing = parent_task.get("routing") or {}
-    planning_mode = parent_routing.get("planningMode", "rule_fallback")
-
     # Gather child collaboration tasks
     collab_result = store.list_collaboration_tasks({
         "parentTaskId": parent_task_id,
@@ -142,7 +138,6 @@ def build_generation_report(
     report: dict[str, Any] = {
         "parentTaskId": parent_task_id,
         "sessionId": session_id,
-        "planningMode": planning_mode,
         "childTasks": child_reports,
         "artifacts": artifact_summaries,
         "counts": {

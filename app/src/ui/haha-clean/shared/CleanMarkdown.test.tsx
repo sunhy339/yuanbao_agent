@@ -155,4 +155,23 @@ describe("CleanMarkdown", () => {
     expect(screen.getByRole("img", { name: "UI screenshot" }).getAttribute("src")).toBe("D:/tmp/preview.png");
     expect(screen.getByText("UI screenshot")).toBeTruthy();
   });
+
+  it("strips complete, incomplete, and trailing thought or thinking tags", () => {
+    const { container } = render(
+      <CleanMarkdown
+        content={
+          "Hello world! <thought>This is some private reasoning.</thought> Here is the final answer. <thinking>More reasoning...</thinking> And some more text. <thou"
+        }
+      />
+    );
+
+    expect(screen.getByText("Hello world!", { exact: false })).toBeTruthy();
+    expect(screen.getByText("Here is the final answer.", { exact: false })).toBeTruthy();
+    expect(screen.getByText("And some more text.", { exact: false })).toBeTruthy();
+    expect(screen.queryByText("This is some private reasoning.", { exact: false })).toBeNull();
+    expect(screen.queryByText("More reasoning...", { exact: false })).toBeNull();
+    expect(container.textContent).not.toContain("<thought>");
+    expect(container.textContent).not.toContain("<thinking>");
+    expect(container.textContent).not.toContain("<thou");
+  });
 });

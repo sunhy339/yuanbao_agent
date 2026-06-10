@@ -42,11 +42,27 @@ function normalizeHeadingMarkerSpacing(line: string) {
   return `${heading[1]}${"#".repeat(level)} ${heading[3]}`;
 }
 
+function stripReasoningTags(content: string): string {
+  let cleaned = content
+    .replace(/<thought(?:[\s\S]*?)>[\s\S]*?<\/thought>/gi, "")
+    .replace(/<thinking(?:[\s\S]*?)>[\s\S]*?<\/thinking>/gi, "");
+
+  cleaned = cleaned
+    .replace(/<thought(?:[\s\S]*?)>[\s\S]*$/gi, "")
+    .replace(/<thinking(?:[\s\S]*?)>[\s\S]*$/gi, "");
+
+  cleaned = cleaned
+    .replace(/<(?:t(?:h(?:o(?:u(?:g(?:h(?:t)?)?)?)?)?|i(?:n(?:k(?:i(?:n(?:g)?)?)?)?)?)?)?$/gi, "");
+
+  return cleaned;
+}
+
 function normalizeMarkdownContent(content: string) {
+  const cleanedContent = stripReasoningTags(content);
   const normalizedLines: string[] = [];
   let inFence = false;
 
-  const lines = content
+  const lines = cleanedContent
     .replace(/\r\n/g, "\n")
     .replace(/^(\s*#{1,6})(?=\S)/gm, "$1 ")
     .split("\n");

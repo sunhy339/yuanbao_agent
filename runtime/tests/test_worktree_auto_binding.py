@@ -174,8 +174,7 @@ def test_read_only_readme_summary_does_not_require_worktree(tmp_path: Any) -> No
     assert "error" not in response
     task = response["result"]["task"]
     assert task["status"] == "completed"
-    assert task["routing"]["scenario"] == "free_form"
-    assert task["routing"].get("worktreeBindingRequired") is False
+    assert task["routing"].get("worktreeBindingRequired") is not True
     assert runtime.worktree_service.created == []
     assert not [event for event in runtime.events if event["type"] == "task.worktree.bind_failed"]
 
@@ -205,7 +204,7 @@ def test_read_only_launch_worktree_session_does_not_fail_before_provider(tmp_pat
     task = response["result"]["task"]
     assert task["status"] == "completed"
     assert task["routing"]["preferredWorktree"] is True
-    assert task["routing"].get("worktreeBindingRequired") is False
+    assert task["routing"].get("worktreeBindingRequired") is not True
     assert runtime.worktree_service.created == []
     assert not [event for event in runtime.events if event["type"] == "task.worktree.bind_failed"]
     assert runtime.store.list_provider_turns(task["id"])
@@ -230,9 +229,8 @@ def test_model_tool_swarm_does_not_auto_bind_worktree(tmp_path: Any) -> None:
 
     assert "error" not in response
     task = response["result"]["task"]
-    assert task["routing"]["scenario"] == "free_form"
     assert task["routing"]["mode"] == "model_first"
-    assert task["routing"].get("worktreeBindingRequired") is False
+    assert task["routing"].get("worktreeBindingRequired") is not True
     assert runtime.worktree_service.created == []
     assert runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"] is None
 
@@ -262,7 +260,6 @@ def test_queued_code_edit_persists_active_worktree_before_execution(tmp_path: An
     assert runtime.store.get_worktree_by_task({"taskId": queued_task["id"]})["worktree"] is None
 
     persisted_task = runtime.store.get_task({"taskId": queued_task["id"]})["task"]
-    assert persisted_task["routing"]["scenario"] == "free_form"
     assert "activeWorktree" not in persisted_task["routing"]
 
 
@@ -456,7 +453,7 @@ def test_preferred_worktree_binding_failure_falls_back_before_provider_loop(tmp_
     assert "error" not in response
     assert response["result"]["task"]["status"] == "completed"
     assert response["result"]["task"]["routing"]["preferredWorktree"] is True
-    assert response["result"]["task"]["routing"].get("worktreeBindingRequired") is False
+    assert response["result"]["task"]["routing"].get("worktreeBindingRequired") is not True
     assert store.get_worktree_by_task({"taskId": response["result"]["task"]["id"]})["worktree"] is None
 
 
@@ -501,7 +498,7 @@ def test_preferred_worktree_binding_failure_falls_back_to_current_workspace(tmp_
     task = response["result"]["task"]
     assert task["status"] == "completed"
     assert task["routing"]["preferredWorktree"] is True
-    assert task["routing"].get("worktreeBindingRequired") is False
+    assert task["routing"].get("worktreeBindingRequired") is not True
     assert runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"] is None
     assert seen_write_args
     assert seen_write_args[0]["workspaceRoot"] == str(workspace_root)

@@ -184,7 +184,10 @@ class ApprovalFlowMixin:
         if comment:
             approval = {**approval, "comment": comment}
         task = self._store.get_task({"taskId": approval["taskId"]})["task"]
-        if task["status"] in {"cancelled", "completed", "failed"}:
+        if (
+            task["status"] in {"cancelled", "completed", "failed"}
+            and approval.get("kind") != "worktree_merge"
+        ):
             self._publish(
                 session_id=task["sessionId"],
                 task=task,

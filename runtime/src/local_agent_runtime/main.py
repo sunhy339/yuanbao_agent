@@ -5,6 +5,7 @@ import sys
 
 from .event_bus import EventBus
 from .git.worktree_adapter import GitWorktreeAdapter
+from .mcp import McpClientManager
 from .memory import MemoryManager, MemoryRetriever, MemoryStore
 from .orchestrator.service import Orchestrator
 from .policy.guard import PolicyGuard
@@ -14,6 +15,7 @@ from .rpc.server import JsonRpcServer
 from .services import CollaborationService, SubagentService
 from .services.hook_service import HookService
 from .services.worktree_service import WorktreeService
+from .skills.registry import SkillRegistry
 from .store.sqlite_store import SQLiteStore
 from .tools import build_builtin_tools
 from .tools.computer_use import build_env_computer_use_executor
@@ -45,6 +47,23 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     from .context.scratchpad import Scratchpad
     scratchpad = Scratchpad(store)
     computer_use_executor = build_env_computer_use_executor()
+    skill_registry = SkillRegistry(store)
+    mcp_client_manager = McpClientManager(store)
+    repo_root = os.environ.get("LOCAL_AGENT_REPO_ROOT")
+    hook_service = HookService(
+        store,
+        event_bus,
+        permission_engine=permission_engine,
+        memory_store=memory_store,
+        refresh_permission_engine=True,
+    )
+    worktree_service = WorktreeService(
+        store,
+        GitWorktreeAdapter(repo_root) if repo_root else None,
+        hook_service=hook_service,
+        policy_guard=policy_guard,
+        permission_engine=permission_engine,
+    )
     tool_registry = ToolRegistry(
         build_builtin_tools(
             policy_guard=policy_guard,
@@ -54,22 +73,10 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
             scratchpad=scratchpad,
             permission_engine=permission_engine,
             computer_use_executor=computer_use_executor,
+            worktree_service=worktree_service,
+            skill_registry=skill_registry,
+            mcp_client_manager=mcp_client_manager,
         )
-    )
-    hook_service = HookService(
-        store,
-        event_bus,
-        permission_engine=permission_engine,
-        memory_store=memory_store,
-        refresh_permission_engine=True,
-    )
-    repo_root = os.environ.get("LOCAL_AGENT_REPO_ROOT")
-    worktree_service = WorktreeService(
-        store,
-        GitWorktreeAdapter(repo_root) if repo_root else None,
-        hook_service=hook_service,
-        policy_guard=policy_guard,
-        permission_engine=permission_engine,
     )
     orchestrator = Orchestrator(
         store=store,

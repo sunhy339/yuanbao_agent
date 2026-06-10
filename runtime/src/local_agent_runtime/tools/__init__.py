@@ -22,6 +22,8 @@ from .ask_user_question import build_ask_user_question_tool
 from .plan_mode import build_enter_plan_mode_tool, build_exit_plan_mode_tool
 from .memory import build_memory_remember_tool, build_memory_recall_tool
 from .scratchpad_tool import build_scratchpad_write_tool, build_scratchpad_read_tool
+from .worktree_tool import build_enter_worktree_tool, build_exit_worktree_tool
+from .skill_tool import build_skill_tool, build_discover_skills_tool
 
 
 def build_builtin_tools(
@@ -33,6 +35,9 @@ def build_builtin_tools(
     scratchpad: Any | None = None,
     permission_engine: Any | None = None,
     computer_use_executor: Any | None = None,
+    worktree_service: Any | None = None,
+    skill_registry: Any | None = None,
+    mcp_client_manager: Any | None = None,
 ) -> dict[str, Any]:
     """Build all built-in tools, returning a name -> handler mapping."""
     builders = [
@@ -81,5 +86,28 @@ def build_builtin_tools(
     if scratchpad is not None:
         tools["scratchpad.write"] = build_scratchpad_write_tool(scratchpad)["handler"]
         tools["scratchpad.read"] = build_scratchpad_read_tool(scratchpad)["handler"]
+
+    # Worktree tools (optional – only registered when worktree_service is provided)
+    if worktree_service is not None:
+        tools["enter_worktree"] = build_enter_worktree_tool(worktree_service, store, permission_engine=permission_engine)["handler"]
+        tools["exit_worktree"] = build_exit_worktree_tool(worktree_service, store, permission_engine=permission_engine)["handler"]
+
+    # Skill tools (optional – only registered when skill_registry is provided)
+    if skill_registry is not None:
+        tools["skill"] = build_skill_tool(
+            policy_guard,
+            store,
+            subagent_service,
+            skill_registry=skill_registry,
+            permission_engine=permission_engine,
+        )["handler"]
+        tools["discover_skills"] = build_discover_skills_tool(skill_registry=skill_registry)["handler"]
+
+    # MCP tools (optional – only registered when mcp_client_manager is provided)
+    if mcp_client_manager is not None:
+        from .mcp_tool import build_mcp_tool, build_list_mcp_resources_tool, build_read_mcp_resource_tool
+        tools["mcp_tool"] = build_mcp_tool(mcp_client_manager=mcp_client_manager)["handler"]
+        tools["list_mcp_resources"] = build_list_mcp_resources_tool(mcp_client_manager=mcp_client_manager)["handler"]
+        tools["read_mcp_resource"] = build_read_mcp_resource_tool(mcp_client_manager=mcp_client_manager)["handler"]
 
     return tools

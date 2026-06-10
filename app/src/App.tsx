@@ -1269,6 +1269,7 @@ export function App() {
       accentColor={generalSettings.accentColor}
       transparency={generalSettings.transparency}
       fontScale={generalSettings.fontScale}
+      externalEditor={generalSettings.externalEditor}
     >
       {error ? (
         <div className="error-banner compact" role="alert">

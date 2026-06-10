@@ -116,6 +116,7 @@ export interface SettingsGeneralConfig {
   language: LanguageMode;
   reasoningEffort: ReasoningEffort;
   webFetchPreflight: boolean;
+  externalEditor?: "system" | "vscode" | "cursor";
 }
 
 export interface SettingsIMConfig {
@@ -462,6 +463,7 @@ export const fallbackGeneral: SettingsGeneralConfig = {
   language: "auto",
   reasoningEffort: "max",
   webFetchPreflight: true,
+  externalEditor: "system",
 };
 
 export const fallbackIM: SettingsIMConfig = {

@@ -127,6 +127,17 @@ export function GeneralPanel({ value, onChange }: { value: SettingsGeneralConfig
           ]}
           onChange={(reasoningEffort) => onChange({ ...value, reasoningEffort: reasoningEffort as ReasoningEffort })}
         />
+        <SegmentedControl
+          label="外部编辑器"
+          name="externalEditor"
+          value={value.externalEditor || "system"}
+          options={[
+            { value: "system", label: "系统默认" },
+            { value: "vscode", label: "VS Code" },
+            { value: "cursor", label: "Cursor" },
+          ]}
+          onChange={(externalEditor) => onChange({ ...value, externalEditor: externalEditor as any })}
+        />
         <label className="settings-toggle-card" htmlFor="webfetch-preflight">
           <input
             id="webfetch-preflight"

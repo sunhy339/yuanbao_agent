@@ -126,6 +126,7 @@ export function useSettings(deps: UseSettingsDeps) {
     language: "en",
     reasoningEffort: "max",
     webFetchPreflight: true,
+    externalEditor: "system",
   });
   const [imSettings, setIMSettings] = useState<SettingsIMConfig>({
     enabled: false,
@@ -167,6 +168,7 @@ export function useSettings(deps: UseSettingsDeps) {
             fontScale: next.fontScale,
             reasoningEffort: next.reasoningEffort,
             webFetchPreflight: next.webFetchPreflight,
+            externalEditor: next.externalEditor,
           },
         },
       });

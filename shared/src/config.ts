@@ -179,6 +179,7 @@ export interface UiConfig {
   fontScale?: number;
   reasoningEffort?: "low" | "medium" | "high" | "max";
   webFetchPreflight?: boolean;
+  externalEditor?: "system" | "vscode" | "cursor";
 }
 
 export type CapabilityMode = "allow" | "ask" | "blocked";
@@ -399,6 +400,7 @@ export const defaultAppConfig: AppConfig = {
     fontScale: 1,
     reasoningEffort: "max",
     webFetchPreflight: true,
+    externalEditor: "system",
   },
 };
 

@@ -250,6 +250,7 @@ export function buildSettingsGeneralConfig(config: RuntimeConfig) {
     language,
     reasoningEffort: ui.reasoningEffort ?? "max",
     webFetchPreflight: ui.webFetchPreflight ?? true,
+    externalEditor: (ui.externalEditor ?? "system") as "system" | "vscode" | "cursor",
   };
 }
 

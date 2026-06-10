@@ -218,6 +218,7 @@ DEFAULT_CONFIG = {
         "fontScale": 1,
         "reasoningEffort": "max",
         "webFetchPreflight": True,
+        "externalEditor": "system",
     },
     "storage": {
         "retention": {

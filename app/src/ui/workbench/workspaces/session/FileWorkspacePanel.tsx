@@ -746,7 +746,7 @@ interface FileWorkspacePanelProps {
   activeFileRequestKey?: number;
   focused?: boolean;
   onToggleFocus?: () => void;
-  onOpenExternalFile?: (absolutePath: string) => void | Promise<void>;
+  onOpenExternalFile?: (absolutePath: string, lineNumber?: number | null) => void | Promise<void>;
   onAddFileToChat?: (path: string) => void;
   onAddSelectionToChat?: (path: string, selection: FileWorkspaceTextSelection) => void;
   onPreviewStateChange?: (hasPreviewTabs: boolean) => void;
@@ -1015,13 +1015,22 @@ export function FileWorkspacePanel({
 
   const openExternalFile = useCallback(() => {
     if (!currentAbsolutePath || !onOpenExternalFile) return;
-    void onOpenExternalFile(currentAbsolutePath);
-  }, [currentAbsolutePath, onOpenExternalFile]);
+    if (activeFileTarget.lineNumber != null) {
+      void onOpenExternalFile(currentAbsolutePath, activeFileTarget.lineNumber);
+    } else {
+      void onOpenExternalFile(currentAbsolutePath);
+    }
+  }, [currentAbsolutePath, onOpenExternalFile, activeFileTarget.lineNumber]);
 
   const openExternalPath = useCallback((path: string) => {
-    const absolutePath = workspaceAbsolutePath(workspaceRoot, path);
+    const target = parseWorkspacePathTarget(path);
+    const absolutePath = workspaceAbsolutePath(workspaceRoot, target.path);
     if (!absolutePath || !onOpenExternalFile) return;
-    void onOpenExternalFile(absolutePath);
+    if (target.lineNumber != null) {
+      void onOpenExternalFile(absolutePath, target.lineNumber);
+    } else {
+      void onOpenExternalFile(absolutePath);
+    }
   }, [onOpenExternalFile, workspaceRoot]);
 
   const addPathToChat = useCallback((path: string) => {

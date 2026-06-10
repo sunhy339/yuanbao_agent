@@ -527,6 +527,7 @@ describe("SettingsWorkspace", () => {
           language: "zh",
           reasoningEffort: "medium",
           webFetchPreflight: true,
+          externalEditor: "system",
         }}
         onGeneralChange={onGeneralChange}
       />,
@@ -547,6 +548,7 @@ describe("SettingsWorkspace", () => {
       language: "zh",
       reasoningEffort: "medium",
       webFetchPreflight: true,
+      externalEditor: "system",
     });
 
     await user.click(
@@ -564,6 +566,7 @@ describe("SettingsWorkspace", () => {
       language: "zh",
       reasoningEffort: "medium",
       webFetchPreflight: false,
+      externalEditor: "system",
     });
 
     await user.click(screen.getByRole("button", { name: "恢复默认" }));
@@ -579,6 +582,7 @@ describe("SettingsWorkspace", () => {
       language: "auto",
       reasoningEffort: "max",
       webFetchPreflight: true,
+      externalEditor: "system",
     });
   });
 

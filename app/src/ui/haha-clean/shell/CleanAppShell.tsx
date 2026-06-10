@@ -190,8 +190,9 @@ export function CleanAppShell({
   activeTaskStatus,
   activeTaskCurrentStep,
   loading,
+  externalEditor = "system",
   children,
-}: AppShellV2Props) {
+}: AppShellV2Props & { externalEditor?: "system" | "vscode" | "cursor" }) {
   const activeKind = resolveTabKind(activeTabId, tabs);
   const shellComposerVisible = composerVisible && (activeKind === "session" || activeKind === "new-session");
   const dirtyCount = worktreeStatus?.dirtyFiles ?? 0;
@@ -304,9 +305,15 @@ export function CleanAppShell({
     setFilePaneHasPreview(false);
   }, []);
 
-  const openExternalFile = useCallback((absolutePath: string) => {
-    void runtimeClient.openPath({ path: absolutePath });
-  }, []);
+  const openExternalFile = useCallback((absolutePath: string, lineNumber?: number | null) => {
+    if (externalEditor === "vscode" || externalEditor === "cursor") {
+      const protocol = externalEditor;
+      const targetUrl = `${protocol}://file/${absolutePath.replace(/\\/g, "/")}${lineNumber ? `:${lineNumber}` : ""}`;
+      window.open(targetUrl);
+    } else {
+      void runtimeClient.openPath({ path: absolutePath });
+    }
+  }, [externalEditor]);
 
   const addFileToChat = useCallback((path: string) => {
     window.dispatchEvent(new CustomEvent(FILE_REFERENCE_EVENT, { detail: { path } }));

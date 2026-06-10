@@ -80,6 +80,7 @@ interface AppShellProps {
   accentColor?: AccentColor;
   transparency?: number;
   fontScale?: number;
+  externalEditor?: "system" | "vscode" | "cursor";
   children: ReactNode;
 }
 
@@ -144,6 +145,7 @@ export function AppShell({
   accentColor = "cyan",
   transparency,
   fontScale,
+  externalEditor,
   children,
 }: AppShellProps) {
   return (
@@ -159,6 +161,7 @@ export function AppShell({
       <CleanAppShell
         tabs={tabs}
         activeTabId={activeTabId}
+        externalEditor={externalEditor}
         sessions={sessions}
         activeSessionId={activeSessionId}
         workspaceName={workspaceName}

@@ -41,7 +41,7 @@ def test_task_result_includes_runtime_steps() -> None:
     assert result["steps"] == [
         {"label": "prepare", "status": "completed", "summary": "Inspect inventory"},
         {"label": "dispatch", "status": "completed", "summary": "Inspected module."},
-        {"label": "child_task", "status": "completed", "summary": "task_child_1"},
+        {"label": "child_task", "status": "completed", "summary": "Inspected module."},
     ]
 
 

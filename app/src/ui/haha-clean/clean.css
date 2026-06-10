@@ -3124,6 +3124,32 @@
   white-space: nowrap;
 }
 
+.hc-tool-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 5px 0 0 28px;
+}
+
+.hc-tool-file-list span {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(100%, 360px);
+  border: 1px solid var(--hc-line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 3px 7px;
+}
+
+.hc-tool-file-list code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--hc-primary);
+  font: 12px/1.35 var(--hc-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hc-patch-meta {
   display: flex;
   flex: 0 0 auto;

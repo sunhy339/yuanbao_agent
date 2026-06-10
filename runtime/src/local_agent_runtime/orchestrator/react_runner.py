@@ -1061,6 +1061,20 @@ class ReactRunnerMixin:
                     context = self._context_with_plan_mode(context, tool_result)
                     tool_results.append(tool_result)
                     messages.append(self._tool_result_message(tool_call, tool_result))
+                    result_payload = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+                    self._publish(
+                        session_id=session_id,
+                        task=task,
+                        event_type="task.planning.started",
+                        payload={
+                            "status": "planning",
+                            "mode": "plan",
+                            "source": "enter_plan_mode",
+                            "summary": result_payload.get("summary") or result_payload.get("reason") or "Plan mode entered.",
+                            "reason": result_payload.get("reason") or result_payload.get("summary"),
+                            "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                        },
+                    )
                     self._publish_context_update(
                         session_id=session_id,
                         task=task,
@@ -2519,6 +2533,19 @@ class ReactRunnerMixin:
             except json.JSONDecodeError:
                 request = {}
         if not already_waiting:
+            public_plan_state = self._public_plan_request_input(request)
+            self._publish(
+                session_id=session_id,
+                task=waiting_task,
+                event_type="task.planning.proposed",
+                payload={
+                    "status": "waiting_approval",
+                    "source": "exit_plan_mode",
+                    "approvalId": approval_id,
+                    "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                    **public_plan_state,
+                },
+            )
             self._publish(
                 session_id=session_id,
                 task=waiting_task,
@@ -2607,6 +2634,24 @@ class ReactRunnerMixin:
         context["_approved_plan"] = plan if decision == "approved" else {}
         context["_plan_approval_decision"] = decision
         state["context"] = context
+        request_payload = request if isinstance(request, dict) else {}
+        public_plan_state = self._public_plan_request_input(request_payload)
+        planning_payload = {
+            "status": "approved" if decision == "approved" else "rejected",
+            "source": "approval.submit",
+            "approvalId": approval.get("id"),
+            "decision": decision,
+            "summary": result_payload["summary"],
+            **public_plan_state,
+        }
+        if comment:
+            planning_payload["comment"] = comment
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.planning.approved" if decision == "approved" else "task.planning.rejected",
+            payload=planning_payload,
+        )
         if decision == "approved":
             self._advance_after_tool(session_id=session_id, task=task, tool_spec=pending_tool_spec)
         self._save_pending_react_state(task["id"], state)

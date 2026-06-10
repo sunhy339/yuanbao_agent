@@ -137,6 +137,9 @@ class ResumeFlowMixin:
     def _resume_cooperative_react(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         """Resume a cooperatively paused ReAct loop from its saved checkpoint."""
         try:
+            task, state = self._drain_remaining_react_tool_calls(task=task, state=state)
+            if task["status"] in {"paused", "waiting_approval", "cancelled"}:
+                return task
             react_result = self._run_react_loop(
                 session_id=state["session_id"],
                 task=task,

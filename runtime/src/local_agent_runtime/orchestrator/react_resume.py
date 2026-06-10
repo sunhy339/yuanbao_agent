@@ -16,6 +16,118 @@ logger = logging.getLogger(__name__)
 class ReactResumeMixin:
     """Mixin providing resume-after-approval and child collaboration helpers."""
 
+    def _drain_remaining_react_tool_calls(
+        self,
+        *,
+        task: dict[str, Any],
+        state: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Execute tool calls already emitted in the paused assistant turn.
+
+        This keeps resume behavior aligned with the normal ReAct turn: once the
+        model has emitted a batch of tool_use blocks, every remaining block must
+        receive a tool_result before we ask the provider for the next turn.
+        """
+
+        runtime_task = {**task, "plan": task.get("plan") or []}
+        remaining_tool_calls = list(state.get("remaining_tool_calls", []))
+        if not remaining_tool_calls:
+            return runtime_task, state
+
+        state = deepcopy(state)
+        for index, tool_call in enumerate(remaining_tool_calls):
+            if state.get("tool_results"):
+                updated_tool_call = self._annotate_tool_call_with_completed_results(tool_call, state["tool_results"])
+                if updated_tool_call is not tool_call:
+                    self._sync_tool_metadata(updated_tool_call, tool_call)
+            tool_spec = self._provider_tool_call_to_spec(tool_call, state["context"])
+            tool_result = self._execute_tool(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                tool_spec=tool_spec,
+                budget=None,
+            )
+            runtime_task = self._latest_runtime_task_snapshot(runtime_task)
+            self._ensure_tool_result_operation(tool_spec, tool_result)
+            if self._tool_result_waits_for_user(tool_spec, tool_result):
+                ask_user_result = self._pause_react_for_user_question_tool(
+                    session_id=task["sessionId"],
+                    task=runtime_task,
+                    goal=state["goal"],
+                    context=state["context"],
+                    messages=state["messages"],
+                    tool_results=state["tool_results"],
+                    steps=state["steps"],
+                    react_started=state["react_started"],
+                    patch_repair_attempts=state["patch_repair_attempts"],
+                    tool_call=tool_call,
+                    tool_spec=tool_spec,
+                    tool_result=tool_result,
+                    remaining_tool_calls=remaining_tool_calls[index + 1 :],
+                )
+                if ask_user_result.get("status") == "defaulted" and isinstance(ask_user_result.get("tool_result"), dict):
+                    tool_result = ask_user_result["tool_result"]
+                else:
+                    return self._latest_runtime_task_snapshot(runtime_task), state
+            if self._tool_result_enters_plan_mode(tool_spec, tool_result):
+                state["context"] = self._context_with_plan_mode(state["context"], tool_result)
+                state["tool_results"].append(tool_result)
+                state["messages"].append(self._tool_result_message(tool_call, tool_result))
+                result_payload = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+                self._publish(
+                    session_id=task["sessionId"],
+                    task=runtime_task,
+                    event_type="task.planning.started",
+                    payload={
+                        "status": "planning",
+                        "mode": "plan",
+                        "source": "enter_plan_mode",
+                        "summary": result_payload.get("summary") or result_payload.get("reason") or "Plan mode entered.",
+                        "reason": result_payload.get("reason") or result_payload.get("summary"),
+                        "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                    },
+                )
+                self._publish_context_update(
+                    session_id=task["sessionId"],
+                    task=runtime_task,
+                    context=state["context"],
+                    messages=state["messages"],
+                )
+                self._advance_after_tool(session_id=task["sessionId"], task=runtime_task, tool_spec=tool_spec)
+                continue
+            if self._tool_result_waits_for_plan_approval(tool_spec, tool_result):
+                pause_result = self._pause_react_for_plan_approval_tool(
+                    session_id=task["sessionId"],
+                    task=runtime_task,
+                    goal=state["goal"],
+                    context=state["context"],
+                    messages=state["messages"],
+                    tool_results=state["tool_results"],
+                    steps=state["steps"],
+                    react_started=state["react_started"],
+                    patch_repair_attempts=state["patch_repair_attempts"],
+                    tool_call=tool_call,
+                    tool_spec=tool_spec,
+                    tool_result=tool_result,
+                    remaining_tool_calls=remaining_tool_calls[index + 1 :],
+                )
+                if pause_result.get("status") == "waiting_approval":
+                    return self._latest_runtime_task_snapshot(runtime_task), state
+            if runtime_task["status"] == "waiting_approval":
+                state["pending_tool_call"] = tool_call
+                state["pending_tool_spec"] = tool_spec
+                state["remaining_tool_calls"] = remaining_tool_calls[index + 1 :]
+                self._save_pending_react_state(task["id"], state)
+                return runtime_task, state
+
+            state["tool_results"].append(tool_result)
+            state["messages"].append(self._tool_result_message(tool_call, tool_result))
+            self._advance_after_tool(session_id=task["sessionId"], task=runtime_task, tool_spec=tool_spec)
+
+        state["remaining_tool_calls"] = []
+        self._save_pending_react_state(task["id"], state)
+        return runtime_task, state
+
     def _resume_react_after_approval(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
         state = self._load_pending_react_state(task["id"])
         if state is None:
@@ -45,32 +157,9 @@ class ReactResumeMixin:
             state["messages"].append(self._tool_result_message(state["pending_tool_call"], tool_result))
             self._advance_after_tool(session_id=task["sessionId"], task=runtime_task, tool_spec=pending_spec)
 
-            for index, tool_call in enumerate(list(state.get("remaining_tool_calls", []))):
-                if state.get("tool_results"):
-                    updated_tool_call = self._annotate_tool_call_with_completed_results(tool_call, state["tool_results"])
-                    if updated_tool_call is not tool_call:
-                        self._sync_tool_metadata(updated_tool_call, tool_call)
-                tool_spec = self._provider_tool_call_to_spec(tool_call, state["context"])
-                tool_result = self._execute_tool(
-                    session_id=task["sessionId"],
-                    task=runtime_task,
-                    tool_spec=tool_spec,
-                    budget=None,
-                )
-                runtime_task = self._latest_runtime_task_snapshot(runtime_task)
-                self._ensure_tool_result_operation(tool_spec, tool_result)
-                if runtime_task["status"] == "waiting_approval":
-                    state["pending_tool_call"] = tool_call
-                    state["pending_tool_spec"] = tool_spec
-                    state["remaining_tool_calls"] = state.get("remaining_tool_calls", [])[index + 1 :]
-                    self._save_pending_react_state(task["id"], state)
-                    return runtime_task
-
-                state["tool_results"].append(tool_result)
-                state["messages"].append(self._tool_result_message(tool_call, tool_result))
-                self._advance_after_tool(session_id=task["sessionId"], task=runtime_task, tool_spec=tool_spec)
-
-            state["remaining_tool_calls"] = []
+            runtime_task, state = self._drain_remaining_react_tool_calls(task=runtime_task, state=state)
+            if runtime_task["status"] in {"paused", "waiting_approval"}:
+                return runtime_task
             result = self._run_react_loop(
                 session_id=task["sessionId"],
                 task=runtime_task,

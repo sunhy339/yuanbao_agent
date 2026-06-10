@@ -1447,6 +1447,8 @@ class PublishingMixin:
         lowered = str(text or "").casefold()
         if not lowered:
             return True
+        if re.search(r"\b(?:ctask|task_child|agent_[a-z0-9]+)[-_][a-z0-9_-]+\b", lowered):
+            return True
         sensitive_markers = (
             "requestjson",
             "workspaceroot",

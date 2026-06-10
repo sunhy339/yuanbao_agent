@@ -2700,6 +2700,20 @@ class ToolExecutionMixin:
                 changed_paths = result.get("changedPaths") or []
                 diff_text = result.get("diffText") or ""
                 files_changed = result.get("filesChanged")
+            if approval_kind == "plan":
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="task.planning.proposed",
+                    payload={
+                        "status": "waiting_approval",
+                        "source": str(tool_spec.get("name") or "tool"),
+                        "approvalId": approval.get("id"),
+                        "toolCallId": tool_call_id,
+                        "toolUseId": tool_call_id,
+                        **self._public_plan_request_input(approval_request_payload),
+                    },
+                )
             self._publish(
                 session_id=session_id,
                 task=task,

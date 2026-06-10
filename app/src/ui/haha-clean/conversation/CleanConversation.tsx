@@ -197,6 +197,112 @@ function cleanInlineDisplayText(value: string) {
   return sanitizeAssistantStatusContent(text, text);
 }
 
+function readRecordStringList(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return [];
+  const values: string[] = [];
+  const visit = (value: unknown, depth = 0) => {
+    if (depth > 3 || values.length >= 16) return;
+    if (typeof value === "string" && value.trim()) {
+      values.push(value.trim());
+      return;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      values.push(String(value));
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    if (value && typeof value === "object") {
+      const entry = value as Record<string, unknown>;
+      const direct = readRecordString(entry, ["path", "file", "name", "target"]);
+      if (direct) values.push(direct);
+    }
+  };
+  keys.forEach((key) => visit(record[key]));
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function diffPathsFromText(value?: string | null) {
+  const text = value?.trim();
+  if (!text) return [];
+  const paths = new Set<string>();
+  const add = (path?: string | null) => {
+    const normalized = path
+      ?.trim()
+      .replace(/^["'`]+|["'`,;:]+$/g, "")
+      .replace(/^[ab]\//, "");
+    if (!normalized || normalized === "/dev/null" || !/[./\\]/.test(normalized)) return;
+    paths.add(normalized);
+  };
+  const gitPattern = /^diff --git\s+a\/(.+?)\s+b\/(.+)$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = gitPattern.exec(text)) !== null) {
+    add(match[2] || match[1]);
+  }
+  const headerPattern = /^(?:---|\+\+\+)\s+([^\r\n]+)$/gm;
+  while ((match = headerPattern.exec(text)) !== null) {
+    add(match[1]);
+  }
+  return Array.from(paths);
+}
+
+function readToolResultRecord(message: SessionWorkspaceMessage) {
+  const rawContent = message.metadata?.rawContent;
+  if (rawContent && typeof rawContent === "object" && !Array.isArray(rawContent)) {
+    return rawContent as Record<string, unknown>;
+  }
+  const resultText = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
+  return parseJson(resultText) || parseJson(message.content);
+}
+
+function toolFileTargets(message: SessionWorkspaceMessage) {
+  const input = readToolInputRecord(message);
+  const result = readToolResultRecord(message);
+  const metadataPaths = readMetadataList(message, ["changedPaths", "paths", "files"])
+    .map((path) => readString(path))
+    .filter(Boolean);
+  const resultText = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
+  const inputText = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
+  return Array.from(new Set([
+    ...metadataPaths,
+    ...readRecordStringList(input, ["path", "paths", "file", "files", "target", "targets", "changedPaths", "changes"]),
+    ...readRecordStringList(result, ["path", "paths", "file", "files", "target", "targets", "changedPaths", "changes"]),
+    ...diffPathsFromText(inputText),
+    ...diffPathsFromText(resultText),
+    ...diffPathsFromText(typeof message.metadata?.diffText === "string" ? message.metadata.diffText : ""),
+  ].map((path) => path.replace(/^[ab]\//, "").trim()).filter((path) => path && path !== "/dev/null")));
+}
+
+function toolDiffText(message: SessionWorkspaceMessage) {
+  const diffText = readMetadataString(message, ["diffText"]);
+  if (diffText) return diffText;
+  const resultText = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
+  return resultText.includes("diff --git") || /^---\s+/m.test(resultText) ? resultText : "";
+}
+
+function toolSummaryRows(message: SessionWorkspaceMessage, files: string[]) {
+  const input = readToolInputRecord(message);
+  const result = readToolResultRecord(message);
+  const rows: Array<{ label: string; value: string }> = [];
+  const add = (label: string, value?: string | null) => {
+    const clean = cleanInlineDisplayText(value ?? "");
+    if (!clean) return;
+    if (rows.some((row) => row.label === label && row.value === clean)) return;
+    rows.push({ label, value: compactText(clean, 180) });
+  };
+  add("目标", readMetadataString(message, ["displayTarget", "target"]) || readRecordString(input, ["path", "file", "target", "cwd", "query", "command", "cmd"]));
+  add("摘要", readMetadataString(message, ["displaySummary", "resultSummary"]) || readRecordString(result, ["summary", "message", "result"]));
+  add("状态", readRecordString(result, ["status", "state"]));
+  const exitCode = readRecordNumber(result, ["exitCode", "exit_code", "code"]);
+  if (exitCode !== null) add("退出码", String(exitCode));
+  const duration = formatDuration(readRecordNumber(message.metadata, ["durationMs"]));
+  add("耗时", duration);
+  if (files.length) add("文件", files.length === 1 ? files[0] : `${files.length} 个文件`);
+  return rows.slice(0, 6);
+}
+
 function toolQuestionText(message: SessionWorkspaceMessage) {
   const input = readToolInputRecord(message);
   const questionRecord =
@@ -305,6 +411,12 @@ function structuredToolDetailText(value: string, fallbackLabel: string) {
   return `${fallbackLabel}\n${lines.join("\n")}`;
 }
 
+function commandDetailText(value: string) {
+  const text = value.trim();
+  if (!text || parseJson(text) || looksLikeInternalPayloadText(text)) return "";
+  return text;
+}
+
 function toolInlineSummary(message: SessionWorkspaceMessage) {
   if (isAskUserToolMessage(message)) {
     return compactText(toolQuestionText(message) || "等待你补充信息", 170);
@@ -384,8 +496,12 @@ function runtimeItemToToolMessage(item: RuntimeTimelineItem): SessionWorkspaceMe
     (item.kind === "command" ? "run_command" : item.kind === "patch" ? "apply_patch" : normalizeRuntimeToolName(item));
   const normalizedStatus = item.status?.toLowerCase() ?? "";
   const needsDiagnostics = ["failed", "error", "blocked", "cancelled", "rejected"].includes(normalizedStatus);
+  const commandOutput = item.kind === "command" ? buildCommandOutput(item) : "";
+  const hasDiff = Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
   const safeInputText = needsDiagnostics && item.code && !looksLikeInternalPayloadText(item.code) ? item.code : "";
-  const safeResultText = needsDiagnostics && item.rawDetail && !looksLikeInternalPayloadText(item.rawDetail) ? item.rawDetail : "";
+  const safeResultText = commandOutput ||
+    (hasDiff ? item.rawDetail || "" : "") ||
+    (needsDiagnostics && item.rawDetail && !looksLikeInternalPayloadText(item.rawDetail) ? item.rawDetail : "");
   const target = runtimeItemToolTarget(item, toolName);
   const content = item.summary || "";
   return {
@@ -413,6 +529,7 @@ function runtimeItemToToolMessage(item: RuntimeTimelineItem): SessionWorkspaceMe
       toolSemanticParentLabel: item.toolSemanticParentLabel,
       inputText: safeInputText,
       resultText: safeResultText || item.summary,
+      ...(hasDiff ? { diffText: item.rawDetail } : {}),
       resultPreview: item.previewRows,
       durationMs: item.durationMs,
       target,
@@ -1353,30 +1470,32 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
   const askUserTool = isAskUserToolMessage(message);
   const question = toolQuestionText(message);
   const input = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
+  const rawInput = typeof message.metadata?.rawInputText === "string" ? message.metadata.rawInputText : "";
   const result = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
   const metadataTarget = cleanInlineDisplayText(readMetadataString(message, ["displayTarget", "target", "inputSummary"]));
   const fallbackInput = metadataTarget ? JSON.stringify({ target: metadataTarget }) : "";
+  const files = toolFileTargets(message);
+  const diffText = toolDiffText(message);
   const previewRows = metadataPreviewRows(message.metadata?.resultPreview);
+  const summaryRows = toolSummaryRows(message, files);
+  const displayRows = [
+    ...previewRows,
+    ...summaryRows.filter((row) => !previewRows.some((preview) => preview.label === row.label && preview.value === row.value)),
+  ].slice(0, 8);
   const safeContent = cleanInlineDisplayText(message.content);
   const extraContent = safeContent && safeContent !== input && safeContent !== result ? safeContent : "";
   const needsDiagnostics = Boolean(blocked || failed || cancelled);
-  const safeInputDetail = needsDiagnostics && input && !looksLikeInternalPayloadText(input) ? `输入\n${input}` : "";
-  const safeResultDetail = needsDiagnostics && result && !looksLikeInternalPayloadText(result) ? `结果\n${result}` : "";
   const safeExtraDetail = needsDiagnostics && extraContent && !looksLikeInternalPayloadText(extraContent) ? extraContent : "";
-  const details = askUserTool
-    ? [
-        question ? `问题\n${question}` : "",
-        result && !looksLikeInternalPayloadText(result) ? `结果\n${result}` : "",
-      ].filter(Boolean).join("\n\n")
-    : [safeInputDetail, safeResultDetail, safeExtraDetail].filter(Boolean).join("\n\n");
+  const toolName = normalizedToolName(message.toolName || readMetadataString(message, ["toolName", "name"]));
+  const commandLike = ["run_command", "command", "bash", "shell", "shell_command", "powershell"].includes(toolName);
   const displayDetails = askUserTool
     ? [
         question ? `Question\n${question}` : "",
         structuredToolDetailText(result, "Result"),
       ].filter(Boolean).join("\n\n")
     : [
-        needsDiagnostics ? structuredToolDetailText(input, "Input") : "",
-        needsDiagnostics ? structuredToolDetailText(result, "Result") : "",
+        needsDiagnostics ? structuredToolDetailText(rawInput || input, "Input") : "",
+        needsDiagnostics ? structuredToolDetailText(result, "Result") : commandLike ? commandDetailText(result) : "",
         safeExtraDetail,
       ].filter(Boolean).join("\n\n");
   const displayTitle = cleanInlineDisplayText(readMetadataString(message, ["displayTitle"]));
@@ -1406,15 +1525,37 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
         <em>{statusText}</em>
         {durationLabel ? <time>{durationLabel}</time> : null}
       </button>
-      {expanded && previewRows.length ? (
+      {expanded && displayRows.length ? (
         <dl className="hc-tool-preview" aria-label="工具结果预览">
-          {previewRows.map((row) => (
+          {displayRows.map((row) => (
             <div key={`${row.label}:${row.value}`}>
               <dt>{row.label}</dt>
               <dd>{row.value}</dd>
             </div>
           ))}
         </dl>
+      ) : null}
+      {expanded && files.length ? (
+        <div className="hc-tool-file-list" aria-label="工具涉及文件">
+          {files.slice(0, 8).map((file) => (
+            <span key={file}>
+              <code>{file}</code>
+            </span>
+          ))}
+          {files.length > 8 ? <span><code>另 {files.length - 8} 个文件</code></span> : null}
+        </div>
+      ) : null}
+      {expanded && diffText ? (
+        <DiffPreview
+          item={{
+            id: `${message.id}:diff`,
+            kind: "tool",
+            title,
+            status: message.status,
+            rawDetail: diffText,
+          }}
+          onCopyRuntimeText={onCopyRuntimeText}
+        />
       ) : null}
       {expanded && displayDetails ? (
         <figure className="hc-tool-detail">

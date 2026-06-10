@@ -221,10 +221,13 @@ class CollaborationService:
         session_id = self._string_or_none(task_record.get("sessionId"))
         task_id = self._string_or_none(task_record.get("id")) or ""
         worker_id = self._string_or_none(task_record.get("assignedWorkerId")) or self._string_or_none(worker_record.get("id"))
+        display_title = title or self._string_or_none(metadata.get("agentName")) or self._string_or_none(metadata.get("agentType"))
         payload_out: dict[str, Any] = {
             "source": "collaboration",
             "taskKind": "collaboration_child",
             "taskId": task_id,
+            "displayTaskId": self._stable_display_id(display_title or progress),
+            "displayTitle": display_title,
             "status": status or event_type.removeprefix("collab.task."),
             "progress": progress,
             "currentStep": progress,
@@ -302,6 +305,8 @@ class CollaborationService:
         return {
             "teamName": session_id,
             "sessionId": session_id,
+            "displayName": self._team_display_name(session_id),
+            "members": self._team_members(tasks=tasks, workers=workers),
             "tasks": tasks,
             "workers": workers,
         }
@@ -329,6 +334,138 @@ class CollaborationService:
             if isinstance(worker, dict):
                 workers.append(self._enrich_worker(worker, now_ms=self._store.now()))
         return workers
+
+    def _team_display_name(self, session_id: str) -> str:
+        try:
+            session = self._store.require_session(session_id)
+        except Exception:
+            return session_id
+        title = self._string_or_none(session.get("title")) if isinstance(session, dict) else None
+        return title or session_id
+
+    def _team_members(self, *, tasks: list[dict[str, Any]], workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        workers_by_id = {
+            self._string_or_empty(worker.get("id") or worker.get("workerId")): worker
+            for worker in workers
+            if isinstance(worker, dict)
+        }
+        members: list[dict[str, Any]] = []
+        assigned_worker_ids: set[str] = set()
+        for task in tasks:
+            worker_id = self._string_or_none(task.get("assignedWorkerId") or task.get("workerId"))
+            worker = workers_by_id.get(worker_id or "") if worker_id else None
+            member = self._team_member_from_task(task, worker=worker)
+            if member:
+                members.append(member)
+            if worker_id:
+                assigned_worker_ids.add(worker_id)
+        for worker in workers:
+            worker_id = self._string_or_none(worker.get("id") or worker.get("workerId"))
+            if worker_id and worker_id in assigned_worker_ids:
+                continue
+            member = self._team_member_from_worker(worker)
+            if member:
+                members.append(member)
+        return self._dedupe_members(members)
+
+    def _team_member_from_task(self, task: dict[str, Any], *, worker: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        worker_record = worker if isinstance(worker, dict) else {}
+        title = self._string_or_none(task.get("title")) or self._string_or_none(task.get("description"))
+        agent_name = (
+            self._string_or_none(worker_record.get("name"))
+            or self._string_or_none(metadata.get("agentName"))
+            or self._string_or_none(task.get("agentName"))
+            or title
+        )
+        role = (
+            self._string_or_none(worker_record.get("role"))
+            or self._string_or_none(worker_record.get("agentType"))
+            or self._string_or_none(metadata.get("agentType"))
+            or self._string_or_none(task.get("agentType"))
+            or "worker"
+        )
+        if not agent_name:
+            agent_name = self._humanize_label(role)
+        current_task = self._task_current_task(task)
+        member = {
+            "agentId": agent_name,
+            "displayName": agent_name,
+            "role": role,
+            "status": self._public_team_status(task.get("status")),
+            "taskId": self._stable_display_id(title or current_task or agent_name),
+            "taskTitle": title,
+            "currentTask": current_task,
+        }
+        return {key: value for key, value in member.items() if value not in (None, "", [], {})}
+
+    def _team_member_from_worker(self, worker: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._string_or_none(worker.get("role")) or self._string_or_none(worker.get("agentType")) or "worker"
+        agent_name = self._string_or_none(worker.get("name")) or self._humanize_label(role)
+        current_task = self._string_or_none(worker.get("currentTask"))
+        member = {
+            "agentId": agent_name,
+            "displayName": agent_name,
+            "role": role,
+            "status": self._public_team_status(worker.get("status")),
+            "currentTask": current_task,
+        }
+        return {key: value for key, value in member.items() if value not in (None, "", [], {})}
+
+    def _task_current_task(self, task: dict[str, Any]) -> str | None:
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        summary = self._string_or_none(result.get("summary")) or self._string_or_none(result.get("resultSummary"))
+        if summary:
+            return summary
+        error = task.get("error") if isinstance(task.get("error"), dict) else {}
+        error_message = self._string_or_none(error.get("message")) or self._string_or_none(error.get("summary"))
+        if error_message:
+            return error_message
+        return self._string_or_none(task.get("title")) or self._string_or_none(task.get("description"))
+
+    def _dedupe_members(self, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: dict[str, dict[str, Any]] = {}
+        for member in members:
+            key = self._string_or_none(member.get("displayName")) or self._string_or_none(member.get("agentId"))
+            if not key:
+                continue
+            deduped[key] = member
+        return list(deduped.values())
+
+    @staticmethod
+    def _public_team_status(value: Any) -> str:
+        status = str(value or "").strip().lower()
+        if status in {"running", "busy", "claimed", "active", "in_progress", "queued", "pending", "planning", "starting", "started", "blocked", "waiting_approval", "verifying"}:
+            return "running"
+        if status in {"completed", "done", "succeeded"}:
+            return "completed"
+        if status in {"failed", "error", "cancelled", "canceled"}:
+            return "error"
+        return "idle"
+
+    @staticmethod
+    def _humanize_label(value: Any) -> str:
+        text = " ".join(str(value or "worker").replace("_", " ").replace("-", " ").split())
+        if not text:
+            return "Worker"
+        return " ".join(word[:1].upper() + word[1:].lower() for word in text.split())
+
+    @staticmethod
+    def _stable_display_id(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        parts: list[str] = []
+        current: list[str] = []
+        for char in text:
+            if char.isalnum():
+                current.append(char)
+                continue
+            if current:
+                parts.append("".join(current))
+                current = []
+        if current:
+            parts.append("".join(current))
+        slug = "-".join(parts)[:80].strip("-")
+        return slug or "task"
 
     def _existing_worker(self, worker_id: str | None) -> dict[str, Any] | None:
         if worker_id is None:

@@ -6240,6 +6240,22 @@ def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any)
     assert permission["payload"]["input"]["subtaskCount"] == 3
     assert "raw" not in permission["payload"]["input"]
     assert "raw" not in permission["payload"]["input"].get("plan", {})
+    planning_started = next(event for event in runtime.events if event["type"] == "task.planning.started")
+    assert planning_started["visibility"] == "panel"
+    assert planning_started["payload"]["source"] == "enter_plan_mode"
+    assert planning_started["payload"]["summary"] == "Need a plan first."
+    assert "yuanbao" not in planning_started
+    planning_proposed = next(event for event in runtime.events if event["type"] == "task.planning.proposed")
+    assert planning_proposed["visibility"] == "panel"
+    assert planning_proposed["payload"]["source"] == "exit_plan_mode"
+    assert planning_proposed["payload"]["subtaskCount"] == 3
+    assert planning_proposed["payload"]["plan"]["subtasks"] == [
+        {"id": "sub-0", "title": "Inspect README"},
+        {"id": "sub-1", "title": "Patch README"},
+        {"id": "sub-2", "title": "Run focused verification"},
+    ]
+    assert "raw" not in json.dumps(planning_proposed["payload"], ensure_ascii=False)
+    assert "yuanbao" not in planning_proposed
 
     _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
     final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
@@ -6255,6 +6271,110 @@ def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any)
     payload = json.loads(exit_tool_messages[0]["content"])
     assert payload["status"] == "plan_approved"
     assert payload["plan"]["steps"] == ["Inspect README", "Patch README", "Run focused verification"]
+    planning_approved = next(event for event in runtime.events if event["type"] == "task.planning.approved")
+    assert planning_approved["visibility"] == "panel"
+    assert planning_approved["payload"]["decision"] == "approved"
+    replay_events = _rpc(runtime, "events.after", {"sessionId": session["id"], "afterSeq": 0})["result"]["events"]
+    replay_planning = [event for event in replay_events if event["type"].startswith("task.planning.")]
+    assert [event["type"] for event in replay_planning] == [
+        "task.planning.started",
+        "task.planning.proposed",
+        "task.planning.approved",
+    ]
+    assert all("yuanbao" not in event for event in replay_planning)
+    assert all("raw" not in json.dumps(event["payload"], ensure_ascii=False) for event in replay_planning)
+
+
+def test_plan_approval_resumes_remaining_agent_tool_call(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {"id": "call_enter", "name": "enter_plan_mode", "arguments": {"reason": "Need a plan first."}},
+                ],
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_exit",
+                        "name": "exit_plan_mode",
+                        "arguments": {
+                            "summary": "Split and delegate the follow-up.",
+                            "steps": [
+                                "Inspect current workflow",
+                                "Implement the selected change",
+                                "Review the result",
+                            ],
+                        },
+                    },
+                    {
+                        "id": "call_agent",
+                        "name": "agent",
+                        "arguments": {
+                            "prompt": "Inspect the workflow after plan approval and summarize the next implementation step.",
+                            "agent_type": "reviewer",
+                            "description": "Review workflow after approval",
+                            "tool_allowlist": ["read_file", "search_files"],
+                        },
+                    },
+                ],
+            },
+            {"final": "Plan approved and the reviewer agent finished."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    dispatched: list[dict[str, Any]] = []
+
+    def dispatch_agent(params: dict[str, Any]) -> dict[str, Any]:
+        dispatched.append(dict(params))
+        return {
+            "status": "completed",
+            "summary": "Reviewer agent inspected workflow.",
+            "childTaskId": "ctask_review_1",
+            "workerId": "worker_review_1",
+            "agentType": params.get("agentType"),
+        }
+
+    runtime.orchestrator._subagent_service.dispatch = dispatch_agent  # noqa: SLF001
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "plan then send reviewer", "mode": "plan"}),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    state = runtime.store.get_pending_react_state(task["id"])
+    assert state is not None
+    assert [call["id"] for call in state["remaining_tool_calls"]] == ["call_agent"]
+    approval_event = next(event for event in runtime.events if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan")
+    approval_id = approval_event["payload"]["approvalId"]
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Plan approved and the reviewer agent finished."
+    assert len(dispatched) == 1
+    assert dispatched[0]["agentType"] == "reviewer"
+    assert dispatched[0]["childToolAllowlist"] == ["read_file", "search_files"]
+    final_tool_messages = [
+        message
+        for message in provider.calls[2]["context"]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert [message["name"] for message in final_tool_messages[-2:]] == ["exit_plan_mode", "agent"]
+    agent_payload = json.loads(final_tool_messages[-1]["content"])
+    assert agent_payload["summary"] == "Reviewer agent inspected workflow."
+    assert agent_payload["status"] == "completed"
+    assert runtime.store.get_pending_react_state(task["id"]) is None
+    agent_started = [
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "agent"
+    ]
+    assert len(agent_started) == 1
+    assert agent_started[0]["payload"]["arguments"]["agentType"] == "reviewer"
 
 
 def test_react_loop_plan_mode_rejection_returns_to_model(tmp_path: Any) -> None:

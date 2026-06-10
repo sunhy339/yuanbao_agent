@@ -138,6 +138,54 @@ describe("CleanConversation parity", () => {
     expect(screen.queryByText(/workspaceRoot/)).not.toBeInTheDocument();
   });
 
+  it("shows successful write-file summaries and diffs without raw result json", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-write",
+          role: "assistant",
+          content: "write src/new.ts",
+          toolName: "write_file",
+          status: "completed",
+          metadata: {
+            kind: "tool_activity",
+            toolUseId: "write_1",
+            inputText: "write src/new.ts",
+            rawInputText: JSON.stringify({ path: "src/new.ts", content: "export const value = 1;", workspaceRoot: "D:/py/yuanbao_agent" }),
+            resultText: "wrote src/new.ts",
+            resultSummary: "wrote src/new.ts",
+            changedPaths: ["src/new.ts"],
+            filesChanged: 1,
+            diffText: [
+              "--- /dev/null",
+              "+++ b/src/new.ts",
+              "@@ -0,0 +1 @@",
+              "+export const value = 1;",
+            ].join("\n"),
+            rawContent: {
+              status: "completed",
+              changedPaths: ["src/new.ts"],
+              diffText: "internal raw diff mirror",
+              workspaceRoot: "D:/py/yuanbao_agent",
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /write src\/new\.ts|写入 src\/new\.ts/i })).toBeInTheDocument();
+    expect(screen.queryByText(/workspaceRoot/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/raw diff mirror/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /write src\/new\.ts|写入 src\/new\.ts/i }));
+    expect(screen.getByLabelText("工具涉及文件")).toHaveTextContent("src/new.ts");
+    expect(screen.getByText("export const value = 1;")).toBeInTheDocument();
+    expect(screen.queryByText(/workspaceRoot/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/rawContent|diffText|changedPaths/)).not.toBeInTheDocument();
+  });
+
   it("renders permission diff inline instead of a raw approval blob", () => {
     render(
       <CleanPermissionMessageBlock

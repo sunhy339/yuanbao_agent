@@ -1346,6 +1346,61 @@ def test_tool_activity_delta_omits_internal_json_logs(tmp_path: Path) -> None:
     assert not any("requestJson" in delta or "workspaceRoot" in delta for delta in deltas)
 
 
+def test_subagent_tool_activity_does_not_stream_raw_child_ids(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(session_id=session["id"], task_type="chat", goal="delegate child work", plan=[])
+    task["role"] = "root"
+
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "tool.started",
+        {
+            "toolCallId": "call_agent",
+            "toolName": "agent",
+            "arguments": {"description": "Inspect backend events", "prompt": "Inspect backend events."},
+            "target": "Inspect backend events",
+            "inputSummary": "Inspect backend events",
+            "toolCategory": "subtask",
+        },
+    )
+    runtime.orchestrator._publish(
+        session["id"],
+        task,
+        "tool.completed",
+        {
+            "toolCallId": "call_agent",
+            "toolName": "agent",
+            "target": "Inspect backend events",
+            "toolCategory": "subtask",
+            "resultSummary": "Backend event inspection finished.",
+            "result": {
+                "status": "completed",
+                "summary": "Backend event inspection finished.",
+                "childTaskId": "ctask_hidden_123",
+                "workerId": "agent_hidden_123",
+                "steps": [
+                    {"label": "child_task", "status": "completed", "summary": "ctask_hidden_123"},
+                    {"label": "report", "status": "completed", "summary": "Backend event inspection finished."},
+                ],
+            },
+        },
+    )
+
+    deltas = [
+        event["payload"].get("toolOutput", "")
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_agent"
+        and event["payload"].get("outputStream") in {"activity", "result_preview"}
+    ]
+    encoded = json.dumps(deltas, ensure_ascii=False)
+    assert "Backend event inspection finished." in encoded
+    assert "ctask_hidden_123" not in encoded
+    assert "agent_hidden_123" not in encoded
+
+
 def test_write_and_patch_public_inputs_hide_large_payloads() -> None:
     write_input = PublishingMixin._public_tool_input(
         "write_file",

@@ -135,7 +135,19 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert created_event["payload"]["task"]["id"] == task["id"]
     assert created_event["payload"]["task"]["title"] == "Publish collaboration events"
     assert created_event["payload"]["team"]["teamName"] == session["id"]
+    assert created_event["payload"]["team"]["displayName"] == "event stream"
     assert created_event["payload"]["team"]["tasks"][0]["id"] == task["id"]
+    assert created_event["payload"]["team"]["members"] == [
+        {
+            "agentId": "Publish collaboration events",
+            "displayName": "Publish collaboration events",
+            "role": "worker",
+            "status": "running",
+            "taskId": "publish-collaboration-events",
+            "taskTitle": "Publish collaboration events",
+            "currentTask": "Publish collaboration events",
+        }
+    ]
     assert created_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],
@@ -157,6 +169,17 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert claimed_event["payload"]["worker"]["id"] == worker["id"]
     assert claimed_event["payload"]["worker"]["currentTaskId"] == task["id"]
     assert claimed_event["payload"]["team"]["teamName"] == session["id"]
+    assert claimed_event["payload"]["team"]["members"] == [
+        {
+            "agentId": "Event Worker",
+            "displayName": "Event Worker",
+            "role": "worker",
+            "status": "running",
+            "taskId": "publish-collaboration-events",
+            "taskTitle": "Publish collaboration events",
+            "currentTask": "Publish collaboration events",
+        }
+    ]
     assert claimed_event["yuanbao"] == {
         "type": "team_update",
         "teamName": session["id"],

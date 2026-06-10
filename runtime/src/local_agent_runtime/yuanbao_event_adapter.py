@@ -637,8 +637,9 @@ def _team_members(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _team_members_from_snapshot(team: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else None
     raw_members = team.get("members")
-    if isinstance(raw_members, list) and raw_members:
+    if message is None and isinstance(raw_members, list) and raw_members:
         return [
             member
             for raw_member in raw_members
@@ -654,7 +655,6 @@ def _team_members_from_snapshot(team: dict[str, Any], payload: dict[str, Any]) -
         for worker in workers
         if worker.get("id") or worker.get("workerId")
     }
-    message = payload.get("message") if isinstance(payload.get("message"), dict) else None
 
     members: list[dict[str, Any]] = []
     assigned_worker_ids: set[str] = set()

@@ -1593,6 +1593,81 @@ describe("chatMessages", () => {
     });
   });
 
+  it("keeps streaming tool argument json out of visible chat content", () => {
+    const started = appendOrUpdateAssistantToolInputDelta([], {
+      toolUseId: "tc_json",
+      toolName: "write_file",
+      target: "src/app.ts",
+      inputSummary: "write src/app.ts",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      delta: "{\"path\":\"src/app.ts\",\"content\":\"export const value = 1;\"}",
+      now: 1,
+    });
+
+    expect(started[0]).toMatchObject({
+      id: "tool_use:tc_json",
+      content: "write src/app.ts",
+      metadata: {
+        inputText: "write src/app.ts",
+        rawInputText: "{\"path\":\"src/app.ts\",\"content\":\"export const value = 1;\"}",
+      },
+    });
+    expect(started[0].content).not.toContain("\"path\"");
+    expect(started[0].content).not.toContain("\"content\"");
+  });
+
+  it("stores structured file result metadata without putting raw json in result text", () => {
+    const withInput = completeAssistantToolUseMessage(
+      appendOrUpdateAssistantToolStartMessage([], {
+        toolUseId: "tc_patch",
+        toolName: "write_file",
+        target: "src/new.ts",
+        inputSummary: "write src/new.ts",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        now: 1,
+      }),
+      {
+        toolUseId: "tc_patch",
+        toolName: "write_file",
+        input: { path: "src/new.ts", contentChars: 23 },
+        target: "src/new.ts",
+        inputSummary: "write src/new.ts",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        now: 2,
+      },
+    );
+    const withResult = appendAssistantToolResultMessage(withInput, {
+      toolUseId: "tc_patch",
+      toolName: "write_file",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: {
+        status: "completed",
+        summary: "wrote src/new.ts",
+        changedPaths: ["src/new.ts"],
+        filesChanged: 1,
+        diffText: "--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1 @@\n+export const value = 1;",
+      },
+      now: 3,
+    });
+
+    expect(withResult[0]).toMatchObject({
+      id: "tool_activity:tc_patch",
+      content: "write src/new.ts",
+      metadata: {
+        resultText: "wrote src/new.ts · 涉及 src/new.ts",
+        changedPaths: ["src/new.ts"],
+        filesChanged: 1,
+        diffText: expect.stringContaining("+++ b/src/new.ts"),
+      },
+    });
+    expect(withResult[0].metadata?.resultText).not.toContain("\"changedPaths\"");
+    expect(withResult[0].metadata?.resultText).not.toContain("diffText");
+  });
+
   it("streams tool output into the matching tool activity block", () => {
     const started = completeAssistantToolUseMessage(
       appendOrUpdateAssistantToolStartMessage([], {

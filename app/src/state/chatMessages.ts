@@ -379,6 +379,14 @@ interface ToolPresentationPayload extends ToolBatchMetadataPayload {
   displayKind?: string | null;
 }
 
+type ToolResultDisplayMetadata = {
+  resultText: string;
+  changedPaths?: string[];
+  filesChanged?: number;
+  diffText?: string;
+  previewRows?: Array<{ label: string; value: string }>;
+};
+
 function toolBatchMetadataFromPayload(
   payload: ToolBatchMetadataPayload,
   current?: Record<string, unknown>,
@@ -467,7 +475,7 @@ function compactDisplayText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function toolDisplayTitle(payload: ToolPresentationPayload, current?: Record<string, unknown>): string {
+function toolInputDisplayText(payload: ToolPresentationPayload, current?: Record<string, unknown>): string {
   return compactDisplayText(payload.displayTitle) ||
     compactDisplayText(current?.displayTitle) ||
     compactDisplayText(payload.inputSummary) ||
@@ -476,6 +484,10 @@ function toolDisplayTitle(payload: ToolPresentationPayload, current?: Record<str
     compactDisplayText(current?.target) ||
     compactDisplayText(payload.displayTarget) ||
     compactDisplayText(current?.displayTarget);
+}
+
+function toolDisplayTitle(payload: ToolPresentationPayload, current?: Record<string, unknown>): string {
+  return toolInputDisplayText(payload, current);
 }
 
 function toolDisplaySummary(payload: ToolPresentationPayload, current?: Record<string, unknown>): string {
@@ -503,6 +515,51 @@ function normalizePreviewRows(value: unknown): Array<{ label: string; value: str
     })
     .filter((row): row is { label: string; value: string } => row !== null);
   return rows.length ? rows.slice(0, 5) : undefined;
+}
+
+function normalizeChangedPathList(value: unknown): string[] | undefined {
+  const paths = readPublicRecordStringList(
+    isPlainRecord({ value }) ? { value } : {},
+    ["value"],
+  )
+    .map((path) => path.replace(/^[ab]\//, "").trim())
+    .filter((path) => path && path !== "/dev/null");
+  const unique = Array.from(new Set(paths));
+  return unique.length ? unique.slice(0, 12) : undefined;
+}
+
+function structuredToolResultDisplay(
+  value: unknown,
+  fallbackText: string,
+  previewRows?: Array<{ label: string; value: string }>,
+  explicit?: {
+    changedPaths?: string[] | null;
+    filesChanged?: number | null;
+    diffText?: string | null;
+  },
+): ToolResultDisplayMetadata {
+  const record = isPlainRecord(value) ? value : undefined;
+  const changedPaths =
+    normalizeChangedPathList(explicit?.changedPaths) ??
+    (record ? normalizeChangedPathList(record.changedPaths ?? record.paths ?? record.files ?? record.targets ?? record.changes) : undefined);
+  const filesChanged =
+    typeof explicit?.filesChanged === "number" && Number.isFinite(explicit.filesChanged)
+      ? explicit.filesChanged
+      :
+    record && typeof record.filesChanged === "number" && Number.isFinite(record.filesChanged)
+      ? record.filesChanged
+      : record && typeof record.fileCount === "number" && Number.isFinite(record.fileCount)
+        ? record.fileCount
+        : changedPaths?.length;
+  const diffText = compactDisplayText(explicit?.diffText) || (record ? readPublicRecordText(record, ["diffText", "patchText", "diff"]) : "");
+  const resultText = compactDisplayText(fallbackText) || (record ? summarizePublicChatObject(record) : "");
+  return {
+    resultText: resultText || "Tool completed.",
+    ...(changedPaths?.length ? { changedPaths } : {}),
+    ...(typeof filesChanged === "number" ? { filesChanged } : {}),
+    ...(diffText ? { diffText } : {}),
+    ...(previewRows?.length ? { previewRows } : {}),
+  };
 }
 
 export function appendUserMessage(
@@ -838,14 +895,25 @@ export function appendOrUpdateAssistantToolInputDelta(
   },
 ): ChatMessageView[] {
   const messageId = `tool_use:${payload.toolUseId}`;
+  const inputDelta = appendAssistantContentDelta(
+    typeof current.find((message) => message.id === messageId)?.metadata?.rawInputText === "string"
+      ? current.find((message) => message.id === messageId)?.metadata?.rawInputText as string
+      : "",
+    payload.delta,
+  );
   const next = [...current];
   const index = next.findIndex((message) => message.id === messageId);
   if (index >= 0) {
     const message = next[index];
+    const rawInputText = appendAssistantContentDelta(
+      typeof message.metadata?.rawInputText === "string" ? message.metadata.rawInputText : "",
+      payload.delta,
+    );
+    const displayContent = toolInputDisplayText(payload, message.metadata);
     next[index] = {
       ...message,
       taskId: payload.taskId ?? message.taskId,
-      content: appendAssistantContentDelta(message.content, payload.delta),
+      content: displayContent || message.content,
       updatedAt: payload.now,
       streaming: true,
       placeholder: false,
@@ -857,11 +925,14 @@ export function appendOrUpdateAssistantToolInputDelta(
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
         ...toolPresentationMetadataFromPayload(payload, message.metadata),
+        rawInputText,
+        ...(displayContent ? { inputText: displayContent } : {}),
       },
     };
     return next;
   }
 
+  const displayContent = toolInputDisplayText(payload);
   return [
     ...next,
     {
@@ -869,7 +940,7 @@ export function appendOrUpdateAssistantToolInputDelta(
       sessionId: payload.sessionId,
       taskId: payload.taskId ?? "pending",
       role: "assistant",
-      content: payload.delta.trimStart(),
+      content: displayContent,
       createdAt: payload.now,
       updatedAt: payload.now,
       streaming: true,
@@ -881,6 +952,8 @@ export function appendOrUpdateAssistantToolInputDelta(
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
         ...toolPresentationMetadataFromPayload(payload),
+        rawInputText: inputDelta.trimStart(),
+        ...(displayContent ? { inputText: displayContent } : {}),
       },
     },
   ];
@@ -1175,6 +1248,9 @@ export function appendAssistantToolResultMessage(
     isError?: boolean;
     resultSummary?: string | null;
     resultPreview?: Array<{ label: string; value: string }> | null;
+    filesChanged?: number | null;
+    changedPaths?: string[] | null;
+    diffText?: string | null;
     durationMs?: number | null;
     status?: MessageStatus;
     lifecycleStatus?: string | null;
@@ -1197,6 +1273,11 @@ export function appendAssistantToolResultMessage(
     const content = compactDisplayText(payload.displaySummary) ||
       compactDisplayText(payload.resultSummary) ||
       formatToolResultSummary(payload.content, payload.isError);
+    const structuredResult = structuredToolResultDisplay(payload.content, content, resultPreview, {
+      changedPaths: payload.changedPaths,
+      filesChanged: payload.filesChanged,
+      diffText: payload.diffText,
+    });
     const inputContent =
       typeof message.metadata?.inputText === "string"
         ? message.metadata.inputText
@@ -1220,11 +1301,14 @@ export function appendAssistantToolResultMessage(
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
         ...toolPresentationMetadataFromPayload(payload, message.metadata),
         inputText: inputContent,
-        resultText: existingOutputText ? `${existingOutputText}\n\n${content}` : content,
+        resultText: existingOutputText ? `${existingOutputText}\n\n${structuredResult.resultText}` : structuredResult.resultText,
         target: payload.target ?? message.metadata?.target,
         inputSummary: payload.inputSummary ?? message.metadata?.inputSummary,
         resultSummary: payload.resultSummary ?? undefined,
-        resultPreview: resultPreview ?? message.metadata?.resultPreview,
+        resultPreview: structuredResult.previewRows ?? message.metadata?.resultPreview,
+        changedPaths: structuredResult.changedPaths ?? message.metadata?.changedPaths,
+        filesChanged: structuredResult.filesChanged ?? message.metadata?.filesChanged,
+        diffText: structuredResult.diffText ?? message.metadata?.diffText,
         output: message.metadata?.output,
         input: message.metadata?.input,
         status: payload.lifecycleStatus ?? message.metadata?.status,
@@ -1239,9 +1323,14 @@ export function appendAssistantToolResultMessage(
   const resultText = compactDisplayText(payload.displaySummary) ||
     compactDisplayText(payload.resultSummary) ||
     formatToolResultSummary(payload.content, payload.isError);
+  const structuredResult = structuredToolResultDisplay(payload.content, resultText, resultPreview, {
+    changedPaths: payload.changedPaths,
+    filesChanged: payload.filesChanged,
+    diffText: payload.diffText,
+  });
   const content = payload.isError
-    ? resultText || toolDisplaySummary(payload, existingMetadata)
-    : toolDisplaySummary(payload, existingMetadata) || resultText;
+    ? structuredResult.resultText || toolDisplaySummary(payload, existingMetadata)
+    : toolDisplaySummary(payload, existingMetadata) || structuredResult.resultText;
   const nextMessage: ChatMessageView = {
     id: messageId,
     sessionId: payload.sessionId,
@@ -1262,7 +1351,11 @@ export function appendAssistantToolResultMessage(
       target: payload.target ?? undefined,
       inputSummary: payload.inputSummary ?? undefined,
       resultSummary: payload.resultSummary ?? undefined,
-      resultPreview,
+      resultText: structuredResult.resultText,
+      resultPreview: structuredResult.previewRows,
+      changedPaths: structuredResult.changedPaths,
+      filesChanged: structuredResult.filesChanged,
+      diffText: structuredResult.diffText,
       durationMs: payload.durationMs,
       status: payload.lifecycleStatus ?? undefined,
       isError: Boolean(payload.isError),

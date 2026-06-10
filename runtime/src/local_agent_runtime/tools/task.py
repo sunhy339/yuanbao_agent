@@ -12,6 +12,21 @@ def _step(label: str, status: str, summary: str) -> dict[str, str]:
     return {"label": label, "status": status, "summary": summary}
 
 
+def _public_child_step_summary(*, result: dict[str, Any], title: str, status: str) -> str:
+    for value in (
+        result.get("summary"),
+        result.get("resultSummary"),
+        title,
+        result.get("agentType"),
+        result.get("agent_type"),
+        status,
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text[:180]
+    return "Child task finished"
+
+
 def build_task_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def task(params: dict[str, Any]) -> dict[str, Any]:
         return _dispatch_subagent_tool(
@@ -112,7 +127,7 @@ def _dispatch_subagent_tool(
     summary = str(result.get("summary") or result.get("resultSummary") or child_id or status).strip()
     steps[-1] = _step("dispatch", "completed" if status == "completed" else status, summary[:180])
     if child_id:
-        steps.append(_step("child_task", "completed", child_id))
+        steps.append(_step("child_task", "completed", _public_child_step_summary(result=result, title=title, status=status)))
     return {
         **result,
         "steps": [*steps, *result.get("steps", [])] if isinstance(result.get("steps"), list) else steps,

@@ -5903,3 +5903,254 @@ button.hc-diff-new-line:hover {
     min-width: 0;
   }
 }
+
+/* Local Command Output and Cloud Launch */
+.hc-local-cmd-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.hc-local-cmd-block {
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background-color: var(--hc-code-bg);
+  overflow: hidden;
+}
+
+.hc-local-cmd-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background-color: var(--hc-soft);
+  border-bottom: 1px solid var(--hc-line);
+  font-size: 11px;
+  color: var(--hc-muted);
+}
+
+.hc-local-cmd-copy {
+  background: none;
+  border: none;
+  color: var(--hc-primary);
+  cursor: pointer;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.hc-local-cmd-copy:hover {
+  background-color: var(--hc-primary-soft);
+}
+
+.hc-local-cmd-pre {
+  margin: 0;
+  padding: 12px;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+  color: var(--hc-text);
+}
+
+.hc-local-cmd-stderr .hc-local-cmd-header {
+  background-color: var(--hc-primary-soft);
+  border-bottom-color: var(--hc-line-strong);
+  color: var(--hc-red);
+}
+
+.hc-local-cmd-stderr {
+  border-color: var(--hc-line-strong);
+  background-color: rgba(178, 59, 47, 0.05);
+}
+
+.hc-local-cmd-stderr .hc-local-cmd-pre {
+  color: var(--hc-red);
+}
+
+/* Cloud Launch styling */
+.hc-cloud-launch {
+  border-left: 3px solid var(--hc-primary);
+  padding-left: 12px;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hc-cloud-launch-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.hc-cloud-launch-diamond {
+  color: var(--hc-primary);
+}
+
+.hc-cloud-launch-title {
+  color: var(--hc-text);
+  font-weight: 600;
+}
+
+.hc-cloud-launch-suffix {
+  color: var(--hc-muted);
+}
+
+.hc-cloud-launch-rest {
+  font-size: 13px;
+  color: var(--hc-muted);
+}
+
+/* Special event subtypes styling */
+.hc-special-event-subtype {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--hc-line);
+  background-color: var(--hc-panel);
+  margin: 6px 0;
+  font-size: 13px;
+  color: var(--hc-muted);
+}
+
+.hc-special-event-subtype[data-subtype="turn_duration"] {
+  flex-direction: row;
+  align-items: center;
+  background-color: rgba(32, 114, 69, 0.05);
+  border-color: var(--hc-line);
+  color: var(--hc-green);
+}
+
+.hc-special-event-subtype[data-subtype="api_error"] {
+  flex-direction: row;
+  align-items: center;
+  background-color: rgba(178, 59, 47, 0.05);
+  border-color: var(--hc-line-strong);
+  color: var(--hc-red);
+}
+
+.hc-special-event-subtype .hc-event-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: currentColor;
+}
+
+.hc-special-event-subtype .hc-event-text {
+  line-height: 1.4;
+}
+
+.hc-event-link {
+  color: var(--hc-primary);
+  text-decoration: underline;
+  margin-left: 4px;
+}
+
+.hc-upgrade-nudge {
+  display: block;
+  font-size: 11px;
+  color: var(--hc-faint);
+  margin-top: 4px;
+}
+
+/* Memory saved files styling */
+.hc-memory-header, .hc-hook-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--hc-text);
+}
+
+.hc-memory-files, .hc-hook-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hc-memory-file-item, .hc-hook-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.hc-memory-file-icon {
+  display: inline-flex;
+  color: var(--hc-faint);
+}
+
+.hc-memory-file-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--hc-primary);
+  font-family: monospace;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.hc-memory-file-link:hover {
+  text-decoration: underline;
+}
+
+.hc-memory-file-path {
+  color: var(--hc-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 400px;
+}
+
+/* Hook info styling */
+.hc-hook-cmd {
+  font-family: monospace;
+  color: var(--hc-text);
+  background-color: var(--hc-code-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.hc-hook-duration {
+  color: var(--hc-faint);
+  font-size: 11px;
+}
+
+.hc-hook-stop-reason {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--hc-line);
+  font-size: 12px;
+}
+
+.hc-hook-errors {
+  margin-top: 8px;
+  padding: 8px;
+  background-color: rgba(178, 59, 47, 0.05);
+  border-radius: 6px;
+  border: 1px solid var(--hc-line-strong);
+  color: var(--hc-red);
+  font-size: 12px;
+}
+
+.hc-hook-errors ul {
+  margin: 4px 0 0 16px;
+  padding: 0;
+}

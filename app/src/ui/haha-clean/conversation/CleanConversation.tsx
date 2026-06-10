@@ -23,6 +23,13 @@ import {
   Target,
   Trash2,
   Wrench,
+  Timer,
+  FileText,
+  Anchor,
+  Radio,
+  AlarmClock,
+  ShieldCheck,
+  XCircle,
 } from "lucide-react";
 import type {
   ConversationActivityItem,
@@ -1394,6 +1401,79 @@ export const CleanAssistantMessage = memo(function CleanAssistantMessage({
   );
 });
 
+function extractTag(html: string, tagName: string): string | null {
+  const match = new RegExp(`<${tagName}(?:\\s+[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, "i").exec(html);
+  return match ? match[1] : null;
+}
+
+export const CleanLocalCommandOutputMessage = memo(function CleanLocalCommandOutputMessage({
+  content,
+  onCopy,
+}: {
+  content: string;
+  onCopy?: (label: string, text: string) => void | Promise<void>;
+}) {
+  const stdout = extractTag(content, "local-command-stdout")?.trim();
+  const stderr = extractTag(content, "local-command-stderr")?.trim();
+
+  if (!stdout && !stderr) {
+    return <div className="hc-empty-note">无输出内容</div>;
+  }
+
+  const renderContent = (text: string, type: "stdout" | "stderr") => {
+    if (text.startsWith("◇") || text.startsWith("◆")) {
+      const diamond = text[0];
+      const nl = text.indexOf("\n");
+      const header = nl === -1 ? text.slice(2) : text.slice(2, nl);
+      const rest = nl === -1 ? "" : text.slice(nl + 1).trim();
+      const sep = header.indexOf(" · ");
+      const label = sep === -1 ? header : header.slice(0, sep);
+      const suffix = sep === -1 ? "" : header.slice(sep);
+
+      return (
+        <div className="hc-cloud-launch" key={type}>
+          <div className="hc-cloud-launch-header">
+            <span className="hc-cloud-launch-diamond">{diamond}</span>
+            <strong className="hc-cloud-launch-title">{label}</strong>
+            {suffix ? <span className="hc-cloud-launch-suffix">{suffix}</span> : null}
+          </div>
+          {rest ? (
+            <div className="hc-cloud-launch-rest">
+              <CleanMarkdown content={rest} />
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    return (
+      <div className={`hc-local-cmd-block hc-local-cmd-${type}`} key={type}>
+        <div className="hc-local-cmd-header">
+          <span>{type === "stdout" ? "标准输出 (stdout)" : "标准错误 (stderr)"}</span>
+          <button
+            type="button"
+            className="hc-local-cmd-copy"
+            onClick={() => {
+              if (onCopy) void onCopy(type === "stdout" ? "stdout" : "stderr", text);
+              else void navigator.clipboard?.writeText(text);
+            }}
+          >
+            复制
+          </button>
+        </div>
+        <pre className="hc-local-cmd-pre">{text}</pre>
+      </div>
+    );
+  };
+
+  return (
+    <div className="hc-local-cmd-wrapper">
+      {stdout ? renderContent(stdout, "stdout") : null}
+      {stderr ? renderContent(stderr, "stderr") : null}
+    </div>
+  );
+});
+
 export const CleanUserMessage = memo(function CleanUserMessage({
   message,
   onCopyRuntimeText,
@@ -1412,10 +1492,15 @@ export const CleanUserMessage = memo(function CleanUserMessage({
   busy?: boolean;
 }) {
   const attachments = messageAttachments(message);
+  const isLocalCmd = message.content.includes("<local-command-stdout") || message.content.includes("<local-command-stderr");
   return (
     <div className="hc-message-stack" data-role="user">
       <article className="hc-message hc-user">
-        <CleanMarkdown content={message.content} />
+        {isLocalCmd ? (
+          <CleanLocalCommandOutputMessage content={message.content} onCopy={onCopyRuntimeText} />
+        ) : (
+          <CleanMarkdown content={message.content} />
+        )}
         <CleanAttachmentGallery attachments={attachments} onCopy={onCopyRuntimeText} />
       </article>
       <MessageActions
@@ -1713,10 +1798,187 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
 export const CleanSpecialEventBlock = memo(function CleanSpecialEventBlock({
   message,
   transcriptKind,
+  onOpenFile,
 }: {
   message: SessionWorkspaceMessage;
   transcriptKind: CleanTranscriptKind;
+  onOpenFile?: (path: string) => void;
 }) {
+  const subtype = message.metadata?.subtype as string | undefined;
+
+  if (subtype) {
+    if (subtype === "turn_duration") {
+      const durationMs = message.metadata?.durationMs as number | undefined;
+      const budgetTokens = message.metadata?.budgetTokens as number | undefined;
+      const budgetLimit = message.metadata?.budgetLimit as number | undefined;
+      const budgetNudges = message.metadata?.budgetNudges as number | undefined;
+
+      const durationStr = durationMs ? formatDuration(durationMs) : "";
+      const hasBudget = budgetLimit !== undefined && budgetTokens !== undefined;
+      let budgetStr = "";
+      if (hasBudget) {
+        const pct = budgetLimit > 0 ? Math.round((budgetTokens / budgetLimit) * 100) : 0;
+        budgetStr = `${budgetTokens.toLocaleString()} / ${budgetLimit.toLocaleString()} tokens (${pct}%)`;
+        if (budgetNudges && budgetNudges > 0) {
+          budgetStr += ` · ${budgetNudges} ${budgetNudges === 1 ? "nudge" : "nudges"}`;
+        }
+      }
+
+      return (
+        <section className="hc-special-event-subtype" data-subtype="turn_duration">
+          <span className="hc-event-icon"><Timer size={14} /></span>
+          <span className="hc-event-text">
+            {durationStr ? `运行完成，耗时 ${durationStr}` : "运行完成"}
+            {budgetStr ? ` · Token 预算: ${budgetStr}` : ""}
+          </span>
+        </section>
+      );
+    }
+
+    if (subtype === "memory_saved") {
+      const writtenPaths = (message.metadata?.writtenPaths as string[]) || [];
+      const verb = (message.metadata?.verb as string) || "已保存记忆";
+      return (
+        <section className="hc-special-event-subtype" data-subtype="memory_saved">
+          <div className="hc-memory-header">
+            <span className="hc-event-icon"><BookMarked size={14} /></span>
+            <strong>{verb} ({writtenPaths.length} 个记忆文件)</strong>
+          </div>
+          {writtenPaths.length > 0 ? (
+            <ul className="hc-memory-files">
+              {writtenPaths.map((path) => {
+                const name = path.split(/[/\\]/).pop() || path;
+                return (
+                  <li key={path} className="hc-memory-file-item">
+                    <span className="hc-memory-file-icon"><FileText size={12} /></span>
+                    <button
+                      type="button"
+                      className="hc-memory-file-link"
+                      title={path}
+                      onClick={() => onOpenFile?.(path)}
+                    >
+                      {name}
+                    </button>
+                    <span className="hc-memory-file-path">{path}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </section>
+      );
+    }
+
+    if (subtype === "stop_hook_summary") {
+      const hookCount = message.metadata?.hookCount as number | undefined;
+      const hookInfos = (message.metadata?.hookInfos as any[]) || [];
+      const hookErrors = (message.metadata?.hookErrors as string[]) || [];
+      const preventedContinuation = message.metadata?.preventedContinuation as boolean | undefined;
+      const stopReason = message.metadata?.stopReason as string | undefined;
+
+      return (
+        <section className="hc-special-event-subtype" data-subtype="stop_hook_summary">
+          <div className="hc-hook-header">
+            <span className="hc-event-icon"><Anchor size={14} /></span>
+            <strong>已运行 {hookCount || hookInfos.length} 个钩子 (Hooks)</strong>
+          </div>
+          {hookInfos.length > 0 ? (
+            <ul className="hc-hook-list">
+              {hookInfos.map((info: any, idx: number) => {
+                const label = info.command === "prompt" ? `Prompt: ${info.promptText || ""}` : info.command;
+                const durStr = info.durationMs !== undefined ? ` (${formatDuration(info.durationMs)})` : "";
+                return (
+                  <li key={idx} className="hc-hook-item">
+                    <span className="hc-hook-cmd">{label}</span>
+                    {durStr ? <span className="hc-hook-duration">{durStr}</span> : null}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+          {preventedContinuation && stopReason ? (
+            <div className="hc-hook-stop-reason">
+              <strong>中止原因:</strong> {stopReason}
+            </div>
+          ) : null}
+          {hookErrors.length > 0 ? (
+            <div className="hc-hook-errors">
+              <strong>钩子执行出错:</strong>
+              <ul>
+                {hookErrors.map((err, idx) => <li key={idx}>{err}</li>)}
+              </ul>
+            </div>
+          ) : null}
+        </section>
+      );
+    }
+
+    if (subtype === "away_summary") {
+      return (
+        <section className="hc-special-event-subtype" data-subtype="away_summary">
+          <span className="hc-event-icon"><HelpCircle size={14} /></span>
+          <span className="hc-event-text">{message.content}</span>
+        </section>
+      );
+    }
+
+    if (subtype === "agents_killed") {
+      return (
+        <section className="hc-special-event-subtype" data-subtype="agents_killed">
+          <span className="hc-event-icon"><CircleAlert size={14} /></span>
+          <span className="hc-event-text">所有后台代理已停止</span>
+        </section>
+      );
+    }
+
+    if (subtype === "bridge_status") {
+      const url = message.metadata?.url as string | undefined;
+      const upgradeNudge = message.metadata?.upgradeNudge as string | undefined;
+      return (
+        <section className="hc-special-event-subtype" data-subtype="bridge_status">
+          <span className="hc-event-icon"><Radio size={14} /></span>
+          <span className="hc-event-text">
+            /remote-control 激活中。代码在 CLI 或浏览器访问：
+            {url ? <a href={url} target="_blank" rel="noreferrer" className="hc-event-link">{url}</a> : null}
+            {upgradeNudge ? <span className="hc-upgrade-nudge">{upgradeNudge}</span> : null}
+          </span>
+        </section>
+      );
+    }
+
+    if (subtype === "scheduled_task_fire") {
+      return (
+        <section className="hc-special-event-subtype" data-subtype="scheduled_task_fire">
+          <span className="hc-event-icon"><AlarmClock size={14} /></span>
+          <span className="hc-event-text">{message.content}</span>
+        </section>
+      );
+    }
+
+    if (subtype === "permission_retry") {
+      const commands = (message.metadata?.commands as string[]) || [];
+      return (
+        <section className="hc-special-event-subtype" data-subtype="permission_retry">
+          <span className="hc-event-icon"><ShieldCheck size={14} /></span>
+          <span className="hc-event-text">
+            已允许执行：<strong>{commands.join(", ")}</strong>
+          </span>
+        </section>
+      );
+    }
+
+    if (subtype === "api_error") {
+      return (
+        <section className="hc-special-event-subtype" data-subtype="api_error">
+          <span className="hc-event-icon"><XCircle size={14} /></span>
+          <span className="hc-event-text hc-error-text">
+            API 错误: {message.content}
+          </span>
+        </section>
+      );
+    }
+  }
+
   const [expanded, setExpanded] = useState(false);
   const content = cleanInlineDisplayText(message.content);
   const title = messageTitleForKind(transcriptKind, message);
@@ -3358,7 +3620,7 @@ export function CleanActivityItem({
     if ((kind === "background_task" || kind === "agent_task_group") && readAgentGroupTasks(message).length) {
       return wrap(<CleanAgentTaskGroupBlock message={message} />);
     }
-    return wrap(<CleanSpecialEventBlock message={message} transcriptKind={transcriptKind} />);
+    return wrap(<CleanSpecialEventBlock message={message} transcriptKind={transcriptKind} onOpenFile={onOpenFile} />);
   }
   if (message.role === "user") {
     return wrap(

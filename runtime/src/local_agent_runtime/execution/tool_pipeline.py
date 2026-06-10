@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from ..services.worker_budget import WorkerBudget
-from ..tools.task import normalize_agent_tool_params
+from ..tools.task import continuation_for_subagent_result, normalize_agent_tool_params
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +342,10 @@ def _public_subagent_tool_result(result: dict[str, Any]) -> dict[str, Any]:
             public["taskTitle"] = _compact_snippet(task_title)
         if task_status not in (None, "", [], {}) and "taskStatus" not in public:
             public["taskStatus"] = _compact_snippet(task_status)
+
+    continuation = continuation_for_subagent_result(result)
+    if continuation:
+        public["continuation"] = _public_nested_result(continuation)
 
     structured = result.get("structuredResult")
     if not isinstance(structured, dict):
@@ -944,6 +948,15 @@ def _tool_result_preview(tool_name: str, result: dict[str, Any] | None, target: 
                 _preview_row("类型", result.get("agentType") or result.get("role") or ""),
             ) if row
         )
+    elif tool_name == "send_message":
+        recipient = result.get("recipient") if isinstance(result.get("recipient"), dict) else {}
+        rows.extend(
+            row for row in (
+                _preview_row("Status", result.get("status") or "delivered"),
+                _preview_row("To", recipient.get("name") or target or result.get("to") or ""),
+                _preview_row("Message", result.get("message") or result.get("summary") or "", limit=220),
+            ) if row
+        )
     elif tool_name == "computer_use":
         detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
         request = result.get("request") if isinstance(result.get("request"), dict) else {}
@@ -1168,6 +1181,15 @@ def _tool_target(tool_name: str, arguments: dict[str, Any], result: dict[str, An
             or "",
             180,
         )
+    if tool_name == "send_message":
+        recipient = result.get("recipient") if isinstance(result.get("recipient"), dict) else {}
+        return _compact_text(
+            recipient.get("name")
+            or arguments.get("to")
+            or result.get("to")
+            or "",
+            180,
+        )
     if tool_name in {"read_file", "write_file", "list_dir", "list_directory"}:
         return _compact_text(result.get("path") or arguments.get("path") or ".", 180)
     if tool_name == "notebook":
@@ -1225,6 +1247,8 @@ def _tool_input_summary(tool_name: str, arguments: dict[str, Any], target: str =
         return _compact_text(arguments.get("command") or target or "run command", 180)
     if tool_name in SUBAGENT_TOOL_NAMES:
         return _compact_text(f"dispatch {target or 'subtask'}", 180)
+    if tool_name == "send_message":
+        return _compact_text(f"send message to {target or arguments.get('to') or 'agent'}", 180)
     if tool_name == "read_file":
         return _compact_text(f"read {target or arguments.get('path') or 'file'}", 180)
     if tool_name == "write_file":
@@ -1301,6 +1325,8 @@ def _tool_display_metadata(
         title = f"修改 {display_target or '文件'}"
     elif tool_name in SUBAGENT_TOOL_NAMES:
         title = f"派发 {display_target or '子任务'}"
+    elif tool_name == "send_message":
+        title = f"Message {display_target or 'agent'}"
     elif tool_name == "computer_use":
         title = f"桌面操作 {display_target or action or ''}".strip()
     elif tool_name == "web_fetch":

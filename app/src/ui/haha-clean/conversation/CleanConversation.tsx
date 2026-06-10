@@ -1528,6 +1528,9 @@ export const CleanThinkingBlock = memo(function CleanThinkingBlock({ message }: 
     <section className="hc-thinking">
       <button type="button" aria-expanded={canExpand ? expanded : false} onClick={() => canExpand && setExpanded((open) => !open)}>
         {canExpand ? (expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : null}
+        {(message.streaming || transient) ? (
+          <span className="hc-thinking-spinner" aria-hidden="true" />
+        ) : null}
         <span>{title}</span>
         <em><CleanInlineMarkdown content={preview} /></em>
       </button>

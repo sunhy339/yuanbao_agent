@@ -6154,3 +6154,96 @@ button.hc-diff-new-line:hover {
   margin: 4px 0 0 16px;
   padding: 0;
 }
+
+/* Queued Prompts Styling */
+.hc-queue {
+  background-color: var(--hc-soft);
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.hc-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--hc-text);
+  padding: 6px 10px;
+  background-color: var(--hc-panel);
+  border: 1px solid var(--hc-line-strong);
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.hc-queue-item:hover {
+  border-color: var(--hc-primary);
+  box-shadow: var(--hc-soft-shadow);
+}
+
+.hc-queue-item span {
+  flex-grow: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-queue-item button {
+  background: none;
+  border: 1px solid var(--hc-line);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--hc-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.hc-queue-item button:hover:not(:disabled) {
+  background-color: var(--hc-soft);
+  border-color: var(--hc-primary);
+  color: var(--hc-primary);
+}
+
+.hc-queue-item button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.hc-queue-item button[aria-label="删除待发送内容"] {
+  border: none;
+  color: var(--hc-red);
+  padding: 4px;
+}
+
+.hc-queue-item button[aria-label="删除待发送内容"]:hover {
+  background-color: var(--hc-primary-soft);
+}
+
+/* Thinking Spinner */
+.hc-thinking-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--hc-primary);
+  border-radius: 50%;
+  border-top-color: transparent;
+  animation: hc-spin 0.8s linear infinite;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+@keyframes hc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+

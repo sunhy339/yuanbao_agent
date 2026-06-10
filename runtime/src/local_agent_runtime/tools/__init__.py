@@ -7,7 +7,7 @@ from typing import Any
 from .list_dir import build_list_dir_tool
 from .search_files import build_search_files_tool
 from .read_file import build_read_file_tool
-from .task import build_agent_tool, build_task_tool
+from .task import build_agent_tool, build_send_message_tool, build_task_tool
 from .run_command import build_run_command_tool
 from .apply_patch import build_apply_patch_tool
 from .git_status import build_git_status_tool
@@ -40,6 +40,7 @@ def build_builtin_tools(
         ("search_files", build_search_files_tool),
         ("read_file", build_read_file_tool),
         ("agent", build_agent_tool),
+        ("send_message", build_send_message_tool),
         ("task", build_task_tool),
         ("run_command", build_run_command_tool),
         ("apply_patch", build_apply_patch_tool),
@@ -56,7 +57,7 @@ def build_builtin_tools(
         ("exit_plan_mode", build_exit_plan_mode_tool),
     ]
     tools: dict[str, Any] = {}
-    _engine_tools = {"run_command", "apply_patch", "write_file", "web_fetch", "agent", "task", "notebook", "computer_use", "exit_plan_mode"}
+    _engine_tools = {"run_command", "apply_patch", "write_file", "web_fetch", "agent", "send_message", "task", "notebook", "computer_use", "exit_plan_mode"}
     for name, builder in builders:
         if name == "computer_use":
             tools[name] = builder(

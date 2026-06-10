@@ -569,6 +569,59 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "send_message",
+        "description": (
+            "Send a follow-up message to a previously launched child agent. Use the continuation.to handle returned "
+            "by the agent or task tool; do not invent internal task or worker ids."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "to": _string_property(
+                    "Continuation handle returned as continuation.to from an agent/task result.",
+                    examples=["agent:review-docs-a1b2c3d4e5"],
+                ),
+                "message": _string_property(
+                    "Follow-up instruction, question, or handoff for the child agent.",
+                    examples=["Please also check whether the replay tests cover this path."],
+                ),
+                "kind": {
+                    "type": "string",
+                    "description": "Collaboration message kind.",
+                    "enum": ["handoff", "note", "broadcast", "system"],
+                    "default": "handoff",
+                },
+                "sessionId": _string_property(
+                    "Runtime session id injected by the orchestrator; models usually omit this.",
+                ),
+                "taskId": _string_property(
+                    "Parent runtime task id injected by the orchestrator; models usually omit this.",
+                ),
+            },
+            "required": ["to", "message"],
+        },
+        "safety": {
+            "level": "medium",
+            "requires_approval": False,
+            "category": "task",
+            "sandboxed": False,
+            "notes": [
+                "Records a collaboration message for an existing child agent.",
+                "Requires a continuation handle produced by agent/task.",
+            ],
+        },
+        "hints": [
+            "Call this after agent/task when you need to continue that same child agent.",
+            "Use the continuation.to value verbatim.",
+        ],
+        "metadata": {
+            "rate_limit": 20,
+            "cost_per_use": 2,
+            "estimated_duration_ms": 1000,
+        },
+    },
+    {
         "name": "task",
         "description": (
             "Create and execute a structured child task inline with task/team progress, retry metadata, "

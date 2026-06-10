@@ -36,6 +36,7 @@ READ_ONLY_TOOLS = frozenset(
 )
 WRITE_TOOLS = frozenset({"write_file", "apply_patch", "run_command"})
 SUBAGENT_TOOLS = frozenset({"agent", "task"})
+SUBAGENT_CONTINUATION_TOOLS = frozenset({"send_message"})
 MEMORY_AND_SCRATCHPAD_TOOLS = frozenset({"memory.recall", "memory.remember", "scratchpad.read", "scratchpad.write"})
 CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question", "enter_plan_mode", "exit_plan_mode"})
 DEFAULT_CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question"})
@@ -164,6 +165,7 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "computer_use": "computerUse",
     "agent": "subagents",
     "task": "subagents",
+    "send_message": "subagents",
     "notebook": "runCommand",
     "memory.remember": "memoryWrite",
     "memory.recall": "readFile",
@@ -486,6 +488,7 @@ class ToolPolicyResolver:
                 names.update({"enter_plan_mode", "exit_plan_mode"})
             if runtime_role in {"root", "planner"}:
                 names.update(SUBAGENT_TOOLS)
+                names.update(SUBAGENT_CONTINUATION_TOOLS)
             if phase == "plan_mode":
                 names.add("exit_plan_mode")
             reasons["*"] = f"read-only user constraint limits tool visibility ({read_only_constraint})"
@@ -498,6 +501,7 @@ class ToolPolicyResolver:
         names = set(READ_ONLY_TOOLS)
         if runtime_role in {"root", "planner"}:
             names.update(SUBAGENT_TOOLS)
+            names.update(SUBAGENT_CONTINUATION_TOOLS)
 
         if phase in {"execution", "recovery"} and runtime_role in {"root", "worker"}:
             names.update(WRITE_TOOLS)
@@ -506,7 +510,7 @@ class ToolPolicyResolver:
             names &= READ_ONLY_TOOLS
 
         if child_allowlist is not None or context.get("_child_worker") is True:
-            child_names = set(child_allowlist or READ_ONLY_TOOLS) - SUBAGENT_TOOLS
+            child_names = set(child_allowlist or READ_ONLY_TOOLS) - SUBAGENT_TOOLS - SUBAGENT_CONTINUATION_TOOLS
             allow_mcp = "mcp__*" in child_names
             names &= {name for name in child_names if name != "mcp__*"}
             if allow_mcp:

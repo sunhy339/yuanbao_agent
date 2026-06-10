@@ -43,19 +43,22 @@
 
 ### 🔄 待实现/低优先级
 
-| 优先级 | 工具 | 说明 |
-|:---:|:---|:---|
-| 🟢 低 | SkillTool | 技能发现 - 需评估使用场景 |
-| 🟢 低 | DiscoverSkillsTool | 技能发现 |
-| 🟢 低 | TeamCreateTool | 团队创建 |
-| 🟢 低 | TeamDeleteTool | 团队删除 |
-| 🟢 低 | ListPeersTool | 列出团队成员 |
-| 🟢 低 | ListMcpResourcesTool | MCP 资源列表 |
-| 🟢 低 | WebSearchTool | 网络搜索 - 可用 web_fetch 替代 |
-| 🟢 低 | TodoWriteTool | 待办事项 |
-| 🟢 低 | MonitorTool | 系统监控 |
-| 🟢 低 | WorkflowTool | 工作流 |
-| 🟢 低 | ToolSearchTool | 工具搜索 |
+| 优先级 | 工具 | 说明 | 状态 |
+|:---:|:---|:---|:---|
+| 🟡 中 | SkillTool | 技能调用工具 - 已实现 SkillRegistry 但未暴露为工具 | 需评估 |
+| 🟡 中 | DiscoverSkillsTool | 技能发现 | 需评估 |
+| 🟢 低 | Skill Registry | 已实现 SkillPreset/SkillRegistry 但仅内部使用 | 功能存在 |
+| 🟢 低 | EnterWorktreeTool/ExitWorktreeTool | Worktree 工具 - 已通过 WorktreeService 实现但未独立暴露 | 功能存在 |
+| 🟢低 | TeamCreateTool | 团队创建 | 需评估 |
+| 🟢 低 | TeamDeleteTool | 团队删除 | 需评估 |
+| 🟢 低 | ListPeersTool | 列出团队成员 | 需评估 |
+| 🟢 低 | MCPTool | MCP 工具调用 - 已有 MCP client 但未包装为工具 | 需评估 |
+| 🟢 低 | ListMcpResourcesTool | MCP 资源列表 | 需评估 |
+| 🟢 低 | WebSearchTool | 网络搜索 - 可用 web_fetch 替代 | ✅ 可替代 |
+| 🟢 低 | TodoWriteTool | 待办事项 | 需评估 |
+| 🟢 低 | MonitorTool | 系统监控 | 需评估 |
+| 🟢 低 | WorkflowTool | 工作流 | 需评估 |
+| 🟢 低 | ToolSearchTool | 工具搜索 | 需评估 |
 
 ### 说明
 

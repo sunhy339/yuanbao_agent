@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from ..execution.cancel_token import CancelToken
 from ..services.runtime_dependencies import resolve_node_executable
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,43 @@ class _StaticAssetReferenceParser(HTMLParser):
 
 
 class TaskLifecycleMixin:
+    # Per-task CancelToken registry. Populated lazily by _ensure_task_cancel_token
+    # when a task first runs. Tokens propagate "user_interrupt" / "hook_prevent"
+    # to children created by ToolBatchExecutor and individual tools.
+    _task_cancel_tokens: dict[str, CancelToken]
+
+    def _ensure_task_cancel_token(self, task: dict[str, Any]) -> CancelToken:
+        """Get or create the root CancelToken for this task.
+
+        The token is keyed by taskId. Subsequent calls for the same task
+        return the same token so child tokens stay connected to the root.
+        """
+        registry = getattr(self, "_task_cancel_tokens", None)
+        if registry is None:
+            registry = {}
+            self._task_cancel_tokens = registry
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            return CancelToken()
+        token = registry.get(task_id)
+        if token is None:
+            token = CancelToken()
+            registry[task_id] = token
+        # If the task is already cancelled in store, propagate to the token
+        if not token.cancelled:
+            status = str(self._latest_task_snapshot(task).get("status") or "").strip().lower()
+            if status in {"cancelled", "canceled"}:
+                token.cancel("user_interrupt")
+        return token
+
+    def _release_task_cancel_token(self, task: dict[str, Any]) -> None:
+        """Remove the token for a terminal task. Called from finalize paths."""
+        registry = getattr(self, "_task_cancel_tokens", None)
+        if not registry:
+            return
+        task_id = str(task.get("id") or "").strip()
+        registry.pop(task_id, None)
+
     def _latest_task_snapshot(self, task: dict[str, Any]) -> dict[str, Any]:
         task_id = str(task.get("id") or "").strip()
         if not task_id:
@@ -87,7 +125,21 @@ class TaskLifecycleMixin:
             return task
 
     def _task_is_cancelled(self, task: dict[str, Any]) -> bool:
-        return str(self._latest_task_snapshot(task).get("status") or "").strip().lower() in {"cancelled", "canceled"}
+        # Fast path: cooperative token has been cancelled in-process.
+        registry = getattr(self, "_task_cancel_tokens", None)
+        if registry is not None:
+            token = registry.get(str(task.get("id") or "").strip())
+            if token is not None and token.cancelled:
+                return True
+        # Slow path: SQLite snapshot (covers cross-process cancel from RPC handler).
+        snapshot_status = str(self._latest_task_snapshot(task).get("status") or "").strip().lower()
+        is_cancelled = snapshot_status in {"cancelled", "canceled"}
+        # Mirror store-side cancel into the in-memory token so child tokens propagate.
+        if is_cancelled and registry is not None:
+            token = registry.get(str(task.get("id") or "").strip())
+            if token is not None and not token.cancelled:
+                token.cancel("user_interrupt")
+        return is_cancelled
 
     def _cancelled_task_result(self, task: dict[str, Any], summary: str | None = None) -> dict[str, Any]:
         latest = self._latest_task_snapshot(task)
@@ -1423,18 +1475,42 @@ class TaskLifecycleMixin:
         if not task_id or not session_id:
             return empty
 
+        collaboration_tasks = self._completion_collaboration_tasks(parent_task_id=task_id, session_id=session_id)
+        collaboration_by_id = {
+            str(collab.get("id") or "").strip(): collab
+            for collab in collaboration_tasks
+            if isinstance(collab, dict) and str(collab.get("id") or "").strip()
+        }
+
         for child in self._completion_child_runtime_tasks(task_id=task_id, root_task_id=root_task_id, session_id=session_id):
             child_id = str(child.get("id") or "").strip()
             if not child_id:
                 continue
             child_status = str(child.get("status") or "").strip().lower()
             child_summary = str(child.get("resultSummary") or child.get("summary") or "").strip()
+            routing = child.get("routing") if isinstance(child.get("routing"), dict) else {}
+            child_collaboration_task_id = str(routing.get("childCollaborationTaskId") or "").strip()
+            linked_collaboration = collaboration_by_id.get(child_collaboration_task_id)
+            linked_collaboration_status = (
+                str(linked_collaboration.get("status") or "").strip().lower()
+                if isinstance(linked_collaboration, dict)
+                else ""
+            )
+            if linked_collaboration_status in {"completed", "success", "failed", "cancelled", "canceled"}:
+                child_status = "cancelled" if linked_collaboration_status == "canceled" else linked_collaboration_status
+                linked_result = linked_collaboration.get("result") if isinstance(linked_collaboration.get("result"), dict) else {}
+                child_summary = (
+                    str(linked_result.get("summary") or "").strip()
+                    or str(linked_collaboration.get("title") or "").strip()
+                    or child_summary
+                )
             child_record = {
                 "id": child_id,
                 "status": child_status,
                 "role": child.get("role") or "root",
                 "summary": child_summary[:500],
                 "source": "child_runtime_task",
+                "collaborationTaskId": child_collaboration_task_id,
             }
             empty["childTasks"].append({key: value for key, value in child_record.items() if value not in (None, "", [])})
             empty["changedFiles"].extend(self._completion_child_items(child, "changedFiles", child_id))
@@ -1457,8 +1533,9 @@ class TaskLifecycleMixin:
                 "source": "child_runtime_task",
                 "role": child.get("role") or "root",
             }
-            routing = child.get("routing") if isinstance(child.get("routing"), dict) else {}
             profile = routing.get("profile") if isinstance(routing.get("profile"), dict) else {}
+            if child_collaboration_task_id:
+                child_tool_result["collaborationTaskId"] = child_collaboration_task_id
             if profile:
                 if isinstance(profile.get("ownedScope"), list):
                     child_tool_result["ownedScope"] = [
@@ -1474,7 +1551,7 @@ class TaskLifecycleMixin:
                 key: value for key, value in child_tool_result.items() if value not in (None, "", [])
             })
 
-        for collab in self._completion_collaboration_tasks(parent_task_id=task_id, session_id=session_id):
+        for collab in collaboration_tasks:
             collab_id = str(collab.get("id") or "").strip()
             if not collab_id:
                 continue
@@ -1577,11 +1654,20 @@ class TaskLifecycleMixin:
         return items
 
     def _dedupe_completion_child_tasks(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        linked_collaboration_ids = {
+            str(item.get("collaborationTaskId") or "").strip()
+            for item in items
+            if isinstance(item, dict)
+            and str(item.get("source") or "").strip() == "child_runtime_task"
+            and str(item.get("collaborationTaskId") or "").strip()
+        }
         seen: set[tuple[str, str]] = set()
         deduped: list[dict[str, Any]] = []
         for item in items:
             item_id = str(item.get("id") or "").strip()
             source = str(item.get("source") or "").strip()
+            if source == "collaboration_task" and item_id in linked_collaboration_ids:
+                continue
             key = (item_id, source)
             if not item_id or key in seen:
                 continue

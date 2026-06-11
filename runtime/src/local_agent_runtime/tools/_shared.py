@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..execution.cancel_token import CancelToken
 from ..services.command_background import BackgroundCommandRequest, get_background_command_service
 from ..services.command_execution import build_shell_command, run_shell_command
 from ._patch import (
@@ -681,8 +682,15 @@ def run_shell(
     *,
     stdout_callback: Callable[[str], None] | None = None,
     stderr_callback: Callable[[str], None] | None = None,
+    cancel_token: Any | None = None,
 ) -> tuple[str, str, int | None, str, int]:
     started = time.perf_counter()
+
+    if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+        reason = getattr(cancel_token, "reason", None) or "cancelled"
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return "", f"cancelled: {reason}", None, "cancelled", duration_ms
+
     if shell_name == "powershell":
         dumped = _run_simple_file_dump(command, cwd)
         if dumped is not None:
@@ -705,6 +713,67 @@ def run_shell(
             stdout_callback=stdout_callback,
             stderr_callback=stderr_callback,
         )
+
+    # Cancellable path: use Popen + poll loop to react to cancel_token mid-run.
+    if cancel_token is not None:
+        try:
+            proc = subprocess.Popen(
+                build_shell_command(shell_name, command),
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            return "", str(exc), None, "failed", duration_ms
+
+        deadline = (started + timeout_ms / 1000.0) if timeout_ms else None
+        poll_interval = 0.1
+        while True:
+            if proc.poll() is not None:
+                break
+            if cancel_token.cancelled:
+                try:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                except Exception:  # noqa: BLE001
+                    pass
+                stdout_bytes, stderr_bytes = proc.communicate()
+                stdout = _decode_command_bytes(stdout_bytes)
+                stderr_extra = _decode_command_bytes(stderr_bytes)
+                reason = getattr(cancel_token, "reason", None) or "cancelled"
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                stderr_out = (stderr_extra + f"\ncancelled: {reason}").strip()
+                return stdout, stderr_out, None, "cancelled", duration_ms
+            if deadline is not None and time.perf_counter() > deadline:
+                try:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                stdout_bytes, stderr_bytes = proc.communicate()
+                stdout = _decode_command_bytes(stdout_bytes)
+                stderr = _decode_command_bytes(stderr_bytes)
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                return stdout, stderr, None, "timeout", duration_ms
+            time.sleep(poll_interval)
+
+        stdout_bytes, stderr_bytes = proc.communicate()
+        stdout = _decode_command_bytes(stdout_bytes)
+        stderr = _decode_command_bytes(stderr_bytes)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        rc = proc.returncode
+        status = "completed" if rc == 0 else "failed"
+        if rc is not None and rc < 0:
+            status = "killed"
+        return stdout, stderr, rc, status, duration_ms
 
     try:
         completed = subprocess.run(

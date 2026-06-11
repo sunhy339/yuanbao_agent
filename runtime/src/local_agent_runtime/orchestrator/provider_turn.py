@@ -21,6 +21,17 @@ class ProviderTurnMixin:
     """Mixin providing provider turn handling, streaming, and response parsing."""
 
     def _raise_if_provider_task_cancelled(self, task: dict[str, Any]) -> None:
+        # Fast path: CancelToken in-process check (no SQLite hit).
+        token_getter = getattr(self, "_ensure_task_cancel_token", None)
+        if callable(token_getter):
+            try:
+                token = token_getter(task)
+            except Exception:
+                token = None
+            if token is not None and getattr(token, "cancelled", False):
+                reason = getattr(token, "reason", None) or "user_interrupt"
+                raise RuntimeError(f"Task was cancelled: {reason}")
+        # Fallback: SQLite-backed cross-process check (worker subagents).
         checker = getattr(self, "_task_is_cancelled", None)
         if callable(checker) and checker(task):
             raise RuntimeError("Task was cancelled.")
@@ -363,10 +374,10 @@ class ProviderTurnMixin:
         _max_stream_retries = 1
         _stream_text_parts: list[str] = []
         _delta_count = 0
-        _content_block_started = False
         _active_tool_streams: dict[int, dict[str, Any]] = {}
         _thinking_parts: list[str] = []
         _thinking_source: str | None = None
+        _published_stream_text = False
 
         def _flush_streaming_thinking(*, force: bool = False) -> None:
             nonlocal _thinking_source
@@ -395,10 +406,10 @@ class ProviderTurnMixin:
             final_response = None
             streamed_content = False
             _stream_text_parts = []
-            _content_block_started = False
             _active_tool_streams = {}
             _thinking_parts = []
             _thinking_source = None
+            _published_stream_text = False
             try:
                 for event in self._provider.stream(goal, provider_context):
                     self._raise_if_provider_task_cancelled(task)
@@ -415,11 +426,13 @@ class ProviderTurnMixin:
                                     _delta_count, task["id"], delta[:80],
                                 )
                             _stream_text_parts.append(delta)
-                            _partial_len = sum(len(p) for p in _stream_text_parts)
-                            if _delta_count % 50 == 0 or _partial_len > 2048:
-                                _active_msg_id = task.get("activeAssistantMessageId")
-                                if _active_msg_id:
-                                    self._store.update_message(_active_msg_id, content="".join(_stream_text_parts))
+                            self._publish(
+                                session_id=session_id,
+                                task=task,
+                                event_type="assistant.token",
+                                payload={"delta": delta, "step": provider_context.get("step")},
+                            )
+                            _published_stream_text = True
                             if self._detect_stream_repetition(_stream_text_parts):
                                 logger.warning(
                                     "Stream repetition detected for task=%s, truncating after %d chars",
@@ -427,23 +440,6 @@ class ProviderTurnMixin:
                                     sum(len(p) for p in _stream_text_parts),
                                 )
                                 break
-                            if not _content_block_started:
-                                self._publish(
-                                    session_id=session_id,
-                                    task=task,
-                                    event_type="content_start",
-                                    payload={
-                                        "blockType": "text",
-                                        "messageId": task.get("activeAssistantMessageId"),
-                                    },
-                                )
-                                _content_block_started = True
-                            self._publish(
-                                session_id=session_id,
-                                task=task,
-                                event_type="assistant.token",
-                                payload={"delta": delta, "step": provider_context.get("step")},
-                            )
                     elif event_type == "final":
                         _flush_streaming_thinking(force=True)
                         response = event.get("response")
@@ -493,7 +489,7 @@ class ProviderTurnMixin:
                 )
                 _flush_streaming_thinking(force=True)
                 self._raise_if_provider_task_cancelled(task)
-                if _stream_text_parts:
+                if _stream_text_parts and _published_stream_text:
                     _active_msg_id = task.get("activeAssistantMessageId")
                     if _active_msg_id:
                         self._store.update_message(_active_msg_id, content="".join(_stream_text_parts))
@@ -635,10 +631,37 @@ class ProviderTurnMixin:
         assistant_message = final_response.get("message", {})
         if not isinstance(assistant_message, dict):
             raise RuntimeError("Provider stream returned invalid final response.")
+        final_tool_calls = assistant_message.get("tool_calls") or []
+        streamed_text = "".join(_stream_text_parts)
+        if streamed_text.strip() and not _published_stream_text:
+            if final_tool_calls:
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="thinking",
+                    payload={
+                        "text": self._streaming_thinking_text(_stream_text_parts),
+                        "messageId": task.get("activeAssistantMessageId"),
+                        "source": "provider_preturn_progress",
+                        "step": provider_context.get("step"),
+                    },
+                )
+            else:
+                for delta in _stream_text_parts:
+                    self._publish(
+                        session_id=session_id,
+                        task=task,
+                        event_type="assistant.token",
+                        payload={"delta": delta, "step": provider_context.get("step")},
+                    )
+                _published_stream_text = True
+                _active_msg_id = task.get("activeAssistantMessageId")
+                if _active_msg_id:
+                    self._store.update_message(_active_msg_id, content=streamed_text)
         response = {
             "message": assistant_message.get("content", ""),
             "assistant_message": assistant_message,
-            "tool_calls": assistant_message.get("tool_calls") or [],
+            "tool_calls": final_tool_calls,
             "finish_reason": final_response.get("finish_reason"),
             "raw": final_response.get("raw", {}),
             "prompt": goal,
@@ -1425,7 +1448,7 @@ class ProviderTurnMixin:
         if api_format == "openai-responses":
             if trimmed.endswith("/responses"):
                 return path
-            return "/v1/responses" if path in {"", "/"} else f"{path.rstrip('/')}/responses"
+            return "/responses" if path in {"", "/"} else f"{path.rstrip('/')}/responses"
         if api_format == "anthropic-messages":
             if trimmed.endswith("/messages"):
                 return path

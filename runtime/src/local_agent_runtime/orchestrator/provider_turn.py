@@ -483,18 +483,26 @@ class ProviderTurnMixin:
                                     "argumentsDeltaChars": len(arguments_delta),
                                 },
                             )
-                            self._publish(
-                                session_id=session_id,
-                                task=task,
-                                event_type="content_delta",
-                                payload={
-                                    "toolInput": arguments_delta,
-                                    "toolUseId": stream_state.get("toolUseId"),
-                                    "toolName": stream_state.get("toolName"),
-                                    **({"parentToolUseId": stream_state.get("parentToolUseId")} if stream_state.get("parentToolUseId") else {}),
-                                    **stream_metadata,
-                                },
-                            )
+                            # Only surface tool_input as a chat-visible content_delta
+                            # when at least one tool is exposed to the model. When
+                            # provider_context has no openai_tools (e.g. tool_calls
+                            # arrived from a server-side tool not in our registry),
+                            # keep the increment as trace-only to match haha-cc's
+                            # behaviour and avoid confusing the chat transcript.
+                            _has_available_tools = bool(provider_context.get("openai_tools"))
+                            if _has_available_tools:
+                                self._publish(
+                                    session_id=session_id,
+                                    task=task,
+                                    event_type="content_delta",
+                                    payload={
+                                        "toolInput": arguments_delta,
+                                        "toolUseId": stream_state.get("toolUseId"),
+                                        "toolName": stream_state.get("toolName"),
+                                        **({"parentToolUseId": stream_state.get("parentToolUseId")} if stream_state.get("parentToolUseId") else {}),
+                                        **stream_metadata,
+                                    },
+                                )
                 logger.info(
                     "Stream completed for task=%s: deltas=%d streamed=%s has_final=%s",
                     task["id"], _delta_count, streamed_content, final_response is not None,

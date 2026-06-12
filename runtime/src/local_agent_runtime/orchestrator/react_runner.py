@@ -298,30 +298,80 @@ class ReactRunnerMixin:
         budget: WorkerBudget | None,
         context: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        if len(tool_specs) <= 1:
+        # Annotate batch metadata onto each tool_spec so tool.started events
+        # can surface batchIndex/batchSize/isConcurrencySafe to the UI.
+        batch_size = len(tool_specs)
+        annotated_specs: list[dict[str, Any]] = []
+        for index, spec in enumerate(tool_specs):
+            annotated = {
+                **spec,
+                "batchIndex": index,
+                "batchSize": batch_size,
+                "isConcurrencySafe": True,
+            }
+            annotated_specs.append(annotated)
+
+        if batch_size <= 1:
             return [
                 self._execute_tool(
                     session_id=session_id,
                     task=task,
-                    tool_spec=tool_specs[0],
+                    tool_spec=annotated_specs[0],
                     budget=budget,
                     context=context,
                 )
             ]
-        max_workers = min(len(tool_specs), self._parallel_tool_batch_size(context))
+
+        # Per-batch CancelToken child: sibling failure cancels the rest.
+        # The parent (root task token) propagates user_interrupt down too.
+        token_getter = getattr(self, "_ensure_task_cancel_token", None)
+        batch_token = None
+        if callable(token_getter):
+            try:
+                root_token = token_getter(task)
+            except Exception:  # noqa: BLE001
+                root_token = None
+            if root_token is not None:
+                try:
+                    batch_token = root_token.create_child()
+                except Exception:  # noqa: BLE001
+                    batch_token = None
+
+        max_workers = min(batch_size, self._parallel_tool_batch_size(context))
+        results: list[dict[str, Any]] = [None] * batch_size  # type: ignore[list-item]
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="yuanbao-tool") as executor:
-            futures = [
+            future_to_index = {
                 executor.submit(
                     self._execute_tool,
                     session_id=session_id,
                     task=task,
-                    tool_spec=tool_spec,
+                    tool_spec=annotated_specs[index],
                     budget=budget,
                     context=context,
-                )
-                for tool_spec in tool_specs
-            ]
-            return [future.result() for future in futures]
+                ): index
+                for index in range(batch_size)
+            }
+            for future in future_to_index:
+                index = future_to_index[future]
+                try:
+                    result = future.result()
+                except BaseException:
+                    if batch_token is not None and not batch_token.cancelled:
+                        try:
+                            batch_token.cancel("sibling_failure")
+                        except Exception:  # noqa: BLE001
+                            pass
+                    raise
+                results[index] = result
+                # Sibling cancel on observed failure status
+                if batch_token is not None and isinstance(result, dict):
+                    status = str(result.get("result", {}).get("status") if isinstance(result.get("result"), dict) else result.get("status") or "").lower()
+                    if status in {"failed", "blocked"} and not batch_token.cancelled:
+                        try:
+                            batch_token.cancel("sibling_failure")
+                        except Exception:  # noqa: BLE001
+                            pass
+        return results
 
     def _blocked_plan_mode_tool_result(self, tool_spec: dict[str, Any]) -> dict[str, Any]:
         tool_call_id = tool_spec.get("id") or self._store.new_id("tc")

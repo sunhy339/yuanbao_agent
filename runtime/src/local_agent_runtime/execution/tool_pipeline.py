@@ -129,6 +129,10 @@ _INTERNAL_TOOL_ARGUMENT_KEYS = {
     "untrustedContentSignals",
     "workspaceRoot",
     "workspace_root",
+    "_cancelToken",
+    "batchIndex",
+    "batchSize",
+    "isConcurrencySafe",
 }
 _PUBLIC_SUBAGENT_RESULT_KEYS = (
     "status",
@@ -2072,6 +2076,14 @@ def _tool_batch_metadata(tool_spec: dict[str, Any]) -> dict[str, Any]:
         value = tool_spec.get(key)
         if isinstance(value, int):
             metadata[key] = value
+    # Concurrency batch metadata for parallel tool execution.
+    for key in ("batchIndex", "batchSize"):
+        value = tool_spec.get(key)
+        if isinstance(value, int):
+            metadata[key] = value
+    is_concurrency_safe = tool_spec.get("isConcurrencySafe")
+    if isinstance(is_concurrency_safe, bool):
+        metadata["isConcurrencySafe"] = is_concurrency_safe
     return metadata
 
 
@@ -2815,7 +2827,7 @@ class ToolExecutionMixin:
             return {
                 "id": tool_call_id,
                 "name": tool_spec["name"],
-                "arguments": tool_arguments,
+                "arguments": _public_tool_arguments(tool_arguments, tool_spec["name"]),
                 **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
                 **operation_metadata,
                 "target": target,

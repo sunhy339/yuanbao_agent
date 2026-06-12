@@ -303,7 +303,7 @@ class TestHookService:
         ws_id = _make_workspace(store, tmp_path)
         _create_hook(
             store, ws_id,
-            action={"type": "run_command", "command": "npm test"},
+            action={"type": "run_command", "command": "rm -rf /tmp/test-build"},
             authority={"requiresApproval": False},
         )
         engine = PermissionEngine(config={

@@ -498,6 +498,9 @@ export interface ToolLifecyclePayload {
   toolPhaseLabel?: string;
   toolSemanticParentId?: string;
   toolSemanticParentLabel?: string;
+  batchIndex?: number;
+  batchSize?: number;
+  isConcurrencySafe?: boolean;
 }
 
 export interface ToolOutputPayload {

@@ -144,6 +144,30 @@ class CancelToken:
         except asyncio.TimeoutError:
             raise TimeoutError("wait_cancelled timed out")
 
+    # ── copy / deepcopy safety ──────────────────────────────────
+
+    def __copy__(self) -> CancelToken:
+        """Shallow copy returns a fresh uncancelled token (parent link lost).
+
+        CancelToken contains threading.Lock which is not picklable.  When
+        structures that hold a CancelToken are deepcopy'd (e.g. resume_flow
+        snapshot), we return a fresh uncancelled token rather than raising.
+        """
+        return CancelToken()
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> CancelToken:
+        """Deep copy returns a fresh uncancelled token (parent link lost).
+
+        Preserves the cancelled state + reason so downstream logic still
+        sees the token as cancelled if the original was.
+        """
+        new = CancelToken()
+        if self._event.is_set():
+            new._reason = self._reason
+            new._event.set()
+        memo[id(self)] = new
+        return new
+
     # ── Internal ────────────────────────────────────────────────
 
     def _add_child(self, child: CancelToken) -> None:

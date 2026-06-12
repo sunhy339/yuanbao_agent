@@ -483,6 +483,18 @@ class ProviderTurnMixin:
                                     "argumentsDeltaChars": len(arguments_delta),
                                 },
                             )
+                            self._publish(
+                                session_id=session_id,
+                                task=task,
+                                event_type="content_delta",
+                                payload={
+                                    "toolInput": arguments_delta,
+                                    "toolUseId": stream_state.get("toolUseId"),
+                                    "toolName": stream_state.get("toolName"),
+                                    **({"parentToolUseId": stream_state.get("parentToolUseId")} if stream_state.get("parentToolUseId") else {}),
+                                    **stream_metadata,
+                                },
+                            )
                 logger.info(
                     "Stream completed for task=%s: deltas=%d streamed=%s has_final=%s",
                     task["id"], _delta_count, streamed_content, final_response is not None,

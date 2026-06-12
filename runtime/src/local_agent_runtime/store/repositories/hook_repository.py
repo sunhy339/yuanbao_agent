@@ -14,6 +14,9 @@ class HookStoreMixin:
         "before_task_start", "after_task_complete", "on_task_failed",
         "on_task_cancel", "on_task_pause", "on_approval_required",
         "before_tool_call", "after_tool_call",
+        # P0: haha-cc aligned hook events (dual-name alongside before_tool_call etc.)
+        "pre_tool_use", "post_tool_use", "post_tool_use_failure",
+        "permission_request",
         # P1: Agent Loop Control
         "before_provider_turn", "after_provider_turn",
         "before_compaction", "after_compaction",
@@ -31,6 +34,10 @@ class HookStoreMixin:
         "audit_note", "notification", "run_command",
         # P2: Advanced integration actions
         "webhook", "memory_write", "auto_verification_suggestion", "external_sync",
+        # haha-cc aligned control-flow actions (consumed by invoke_hooks_with_overrides)
+        "policy_decision",  # {decision: allow|deny|ask, reason?}
+        "input_rewrite",    # {rewrites: {field_path: value}}
+        "script",           # {command}: external script, stdout JSON contains overrides
     })
     VALID_HOOK_FAILURE_MODES = frozenset({"warn", "block", "retry", "ignore", "ask_user"})
 

@@ -19,6 +19,7 @@ from ..event_bus import EventBus
 from ..models import RuntimeEvent
 from ..policy.permission_engine import PermissionEngine, PermissionRequest
 from ..store.sqlite_store import SQLiteStore
+from .hook_overrides import HookOverrides
 
 logger = logging.getLogger(__name__)
 
@@ -42,33 +43,49 @@ class HookService:
         self._refresh_permission_engine = refresh_permission_engine
 
     def invoke_hooks(self, event: str, context: dict[str, Any]) -> list[dict[str, Any]]:
-        """Dispatch all matching hooks for a lifecycle event.
+        """Dispatch all matching hooks for a lifecycle event (legacy — returns raw records).
 
-        Args:
-            event: One of the VALID_HOOK_EVENTS.
-            context: Must contain at least workspaceId. May also contain
-                     sessionId, taskId, taskStatus, triggerEventId, changedFiles.
-
-        Returns:
-            List of hook execution records (serialized).
+        For control-flow-aware hook dispatch, use ``invoke_hooks_with_overrides`` instead.
         """
+        return self._invoke_hooks_impl(event, context, overrides=None)[0]
+
+    def invoke_hooks_with_overrides(
+        self,
+        event: str,
+        context: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], "HookOverrides"]:
+        """Dispatch hooks and aggregate control-flow overrides.
+
+        Returns (execution_records, aggregated_overrides) so that callers can
+        inspect deny / rewrite / prevent-continuation decisions.
+        """
+        from .hook_overrides import HookOverrides
+        records, overrides = self._invoke_hooks_impl(event, context, overrides=HookOverrides())
+        return records, overrides
+
+    def _invoke_hooks_impl(
+        self,
+        event: str,
+        context: dict[str, Any],
+        *,
+        overrides: "HookOverrides | None",
+    ) -> tuple[list[dict[str, Any]], "HookOverrides | None"]:
+        """Core dispatch loop shared by invoke_hooks and invoke_hooks_with_overrides."""
+        from .hook_overrides import HookOverrides
+
         workspace_id = context.get("workspaceId", "")
         if not workspace_id:
-            return []
+            return [], overrides
 
-        # Find enabled hooks for this workspace + event
         hooks_result = self._store.list_hooks({"workspaceId": workspace_id, "event": event})
         hooks = [h for h in hooks_result["hooks"] if h.get("enabled", True)]
-        # Sort by priority ascending (already sorted by list_hooks)
         results: list[dict[str, Any]] = []
 
         for hook in hooks:
-            # Evaluate conditions
             conditions = hook.get("conditions", {})
             condition_result = self._evaluate_conditions(conditions, context)
 
             if condition_result != "matched":
-                # Record skipped execution
                 exec_result = self._record_hook_execution(hook, {
                     "hookId": hook["id"],
                     "event": event,
@@ -83,14 +100,33 @@ class HookService:
                 results.append(exec_result)
                 continue
 
-            # Execute action
             action = hook.get("action", {})
             authority = hook.get("authority", {})
             on_failure = hook.get("onFailure", "warn")
 
+            # Short-circuit: if a previous hook already denied, skip remaining.
+            if overrides is not None and overrides.denied:
+                results.append(self._record_hook_execution(hook, {
+                    "hookId": hook["id"],
+                    "event": event,
+                    "sessionId": context.get("sessionId"),
+                    "taskId": context.get("taskId"),
+                    "triggerEventId": context.get("triggerEventId"),
+                    "conditionResult": "matched",
+                    "policyOutcome": "skipped",
+                    "status": "skipped",
+                    "inputSummary": "Skipped: previous hook denied",
+                }, context=context))
+                continue
+
             try:
                 exec_result = self._execute_action(hook, action, authority, event, context)
                 results.append(exec_result)
+                # Merge control-flow signal from this hook into aggregated overrides.
+                if overrides is not None:
+                    hook_overrides = self._extract_overrides_from_result(exec_result, action)
+                    if hook_overrides is not None:
+                        overrides.merge(hook_overrides)
             except Exception as exc:
                 if on_failure in ("warn", "ignore"):
                     exec_result = self._record_hook_execution(hook, {
@@ -109,7 +145,74 @@ class HookService:
                 else:
                     raise
 
-        return results
+        return results, overrides
+
+    def _extract_overrides_from_result(
+        self,
+        exec_result: dict[str, Any],
+        action: dict[str, Any],
+    ) -> "HookOverrides | None":
+        """Derive a HookOverrides from a single hook execution record + action config."""
+        from .hook_overrides import HookOverrides
+
+        action_type = action.get("type", "audit_note")
+        overrides = HookOverrides()
+
+        if action_type == "policy_decision":
+            decision = action.get("decision")
+            if decision in ("allow", "deny", "ask"):
+                overrides.permission_decision = decision
+                overrides.permission_reason = action.get("reason")
+        elif action_type == "input_rewrite":
+            updated = action.get("updatedInput")
+            if isinstance(updated, dict) and updated:
+                overrides.updated_input = updated
+        elif action_type == "script":
+            # Script actions can return structured output via outputSummary.
+            output_summary = exec_result.get("outputSummary", "")
+            if isinstance(output_summary, str) and output_summary.startswith("{"):
+                try:
+                    import json
+                    parsed = json.loads(output_summary)
+                    if isinstance(parsed, dict):
+                        if "decision" in parsed and parsed["decision"] in ("allow", "deny", "ask"):
+                            overrides.permission_decision = parsed["decision"]
+                            overrides.permission_reason = parsed.get("reason")
+                        if "updatedInput" in parsed and isinstance(parsed["updatedInput"], dict):
+                            overrides.updated_input = parsed["updatedInput"]
+                        if "replaceOutput" in parsed and isinstance(parsed["replaceOutput"], dict):
+                            overrides.replace_output = parsed["replaceOutput"]
+                        if parsed.get("preventContinuation"):
+                            overrides.prevent_continuation = True
+                        if parsed.get("retry"):
+                            overrides.retry = True
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+        # Any action can signal preventContinuation via action config.
+        if action.get("preventContinuation"):
+            overrides.prevent_continuation = True
+        if action.get("blockingError"):
+            overrides.blocking_error = action["blockingError"]
+        if action.get("additionalContext"):
+            ctx = action["additionalContext"]
+            if isinstance(ctx, list):
+                overrides.additional_contexts = [str(c) for c in ctx if c]
+            elif isinstance(ctx, str):
+                overrides.additional_contexts = [ctx]
+
+        # Only return non-trivial overrides.
+        if (
+            overrides.permission_decision is not None
+            or overrides.updated_input is not None
+            or overrides.replace_output is not None
+            or overrides.additional_contexts
+            or overrides.prevent_continuation
+            or overrides.blocking_error is not None
+            or overrides.retry
+        ):
+            return overrides
+        return None
 
     def _evaluate_conditions(self, conditions: dict[str, Any], context: dict[str, Any]) -> str:
         """Return 'matched' if all conditions pass, otherwise a reason string."""

@@ -162,6 +162,152 @@ def is_verification_command(command: Any) -> bool:
     return bool(_VERIFY_COMMAND_RE.search(str(command or "")))
 
 
+def _strip_bash_comment_label(command: Any) -> str:
+    text = str(command or "").strip()
+    if not text.startswith("#") or text.startswith("#!"):
+        return text
+    first, _, rest = text.partition("\n")
+    return rest.strip() if rest else first.strip()
+
+
+def _bash_comment_label(command: Any) -> str:
+    text = str(command or "").strip()
+    if not text.startswith("#") or text.startswith("#!"):
+        return ""
+    first = text.splitlines()[0].strip()
+    return first.lstrip("#").strip()
+
+
+def _path_basename(value: Any) -> str:
+    text = str(value or "").strip().strip("'\"`;,").replace("\\", "/")
+    if not text:
+        return ""
+    parts = [part for part in text.split("/") if part]
+    return parts[-1] if parts else text
+
+
+def _first_command_target(command: str, patterns: tuple[_re.Pattern[str], ...]) -> str:
+    for pattern in patterns:
+        match = pattern.search(command)
+        if not match:
+            continue
+        target = next((group for group in match.groups() if group), "")
+        target = str(target or "").strip().strip("'\"`;,")
+        if target and not target.startswith("-"):
+            return target
+    return ""
+
+
+_READ_COMMAND_TARGET_PATTERNS = (
+    _re.compile(r"\b(?:get-content|gc|cat|type|head|tail|more)\b(?:\s+-\S+)*\s+['\"]?([^'\"\r\n|;]+)", _re.IGNORECASE),
+)
+_LIST_COMMAND_TARGET_PATTERNS = (
+    _re.compile(r"\b(?:get-childitem|gci|ls|dir|tree)\b(?:\s+-\S+)*\s+['\"]?([^'\"\r\n|;]+)", _re.IGNORECASE),
+)
+_SEARCH_COMMAND_TARGET_PATTERNS = (
+    _re.compile(r"\b(?:rg|grep|ag|ack|findstr)\b(?:\s+-\S+)*\s+['\"]?([^'\"\s|;]+)", _re.IGNORECASE),
+    _re.compile(r"\bselect-string\b.*?(?:-pattern|-path|-literalpath)\s+['\"]?([^'\"\r\n|;]+)", _re.IGNORECASE),
+)
+_PYTHON_COMMAND_RE = _re.compile(
+    r"^(?:&\s*)?(?:"
+    r"\"[^\"\r\n]*(?:python|py)(?:\.exe)?\"|"
+    r"'[^'\r\n]*(?:python|py)(?:\.exe)?'|"
+    r"[\w:./\\-]*(?:python\d*(?:\.\d+)?|py)(?:\.exe)?"
+    r")(?:\s|$)",
+    _re.IGNORECASE,
+)
+_PYTHON_READ_PROBE_RE = _re.compile(
+    r"\b(read_text|read_bytes)\s*\(|\bopen\s*\([^)]*,\s*['\"]r|\.open\s*\([^)]*['\"]r",
+    _re.IGNORECASE,
+)
+_PYTHON_LIST_PROBE_RE = _re.compile(
+    r"\b(iterdir|listdir|scandir|walk)\s*\(|\bPath\s*\([^)]*\)\.(?:glob|rglob)\s*\(",
+    _re.IGNORECASE,
+)
+_PYTHON_SEARCH_PROBE_RE = _re.compile(
+    r"\b(rglob|glob)\s*\(|\bre\.search\s*\(|\bfnmatch\s*\.",
+    _re.IGNORECASE,
+)
+_QUOTED_FILE_PATH_RE = _re.compile(r"['\"]([^'\"\r\n]+\.[A-Za-z0-9]{1,12})['\"]")
+
+
+def _first_quoted_file_path(command: str) -> str:
+    for match in _QUOTED_FILE_PATH_RE.finditer(command):
+        candidate = str(match.group(1) or "").strip()
+        if (
+            candidate
+            and not _re.fullmatch(r"utf-?8|ascii|latin-?1", candidate, _re.IGNORECASE)
+            and not _re.search(r"(^|[\\/])(?:python|py)(?:\d+(?:\.\d+)*)?\.exe$", candidate, _re.IGNORECASE)
+        ):
+            return candidate
+    return ""
+
+
+def _python_context_command_kind(command: Any) -> str:
+    text = str(command or "").strip()
+    if not _PYTHON_COMMAND_RE.search(text):
+        return ""
+    if _PYTHON_READ_PROBE_RE.search(text):
+        return "read"
+    if _PYTHON_LIST_PROBE_RE.search(text):
+        return "list"
+    if _PYTHON_SEARCH_PROBE_RE.search(text):
+        return "search"
+    return ""
+
+
+def _context_command_kind(command: Any) -> str:
+    executable_command = _strip_bash_comment_label(command)
+    normalized = " ".join(str(executable_command or "").replace("\\", "/").split()).lower()
+    if not normalized:
+        return ""
+    if normalized == "git status" or normalized.startswith("git status ") or normalized.startswith("git diff"):
+        return "git"
+    if _re.search(r"(^|[;&|]\s*)(rg|grep|ag|ack|findstr|select-string)\b", executable_command, _re.IGNORECASE):
+        return "search"
+    if _re.search(r"(^|[;&|]\s*)(get-content|gc|cat|type|head|tail|more)\b", executable_command, _re.IGNORECASE):
+        return "read"
+    if _re.search(r"(^|[;&|]\s*)(get-childitem|gci|ls|dir|tree)\b", executable_command, _re.IGNORECASE):
+        return "list"
+    return _python_context_command_kind(executable_command)
+
+
+def _run_command_display_title(command: Any) -> str:
+    raw_command = str(command or "").strip()
+    comment_label = _bash_comment_label(raw_command)
+    if comment_label:
+        return _compact_text(comment_label, 180)
+    executable_command = _strip_bash_comment_label(raw_command)
+    normalized = " ".join(executable_command.replace("\\", "/").split()).lower()
+    if not normalized:
+        return "运行命令"
+    if is_verification_command(executable_command):
+        return "运行测试" if "test" in normalized or "pytest" in normalized else "运行验证"
+    if normalized == "git status" or normalized.startswith("git status "):
+        return "查看 Git 状态"
+    if normalized.startswith("git diff"):
+        return "查看代码差异"
+    if _re.search(r"(^|[;&|]\s*)(rg|grep|ag|ack|findstr|select-string)\b", executable_command, _re.IGNORECASE):
+        target = _first_command_target(executable_command, _SEARCH_COMMAND_TARGET_PATTERNS)
+        return f"搜索 {_path_basename(target)}" if target else "搜索文件"
+    if _re.search(r"(^|[;&|]\s*)(get-content|gc|cat|type|head|tail|more)\b", executable_command, _re.IGNORECASE):
+        target = _first_command_target(executable_command, _READ_COMMAND_TARGET_PATTERNS)
+        return f"读取 {_path_basename(target)}" if target else "读取文件"
+    python_kind = _python_context_command_kind(executable_command)
+    if python_kind:
+        target = _first_quoted_file_path(executable_command)
+        if python_kind == "read":
+            return f"读取 {_path_basename(target)}" if target else "读取文件"
+        if python_kind == "list":
+            return f"查看 {_path_basename(target)}" if target else "查看目录"
+        if python_kind == "search":
+            return f"搜索 {_path_basename(target)}" if target else "搜索文件"
+    if _re.search(r"(^|[;&|]\s*)(get-childitem|gci|ls|dir|tree)\b", executable_command, _re.IGNORECASE):
+        target = _first_command_target(executable_command, _LIST_COMMAND_TARGET_PATTERNS)
+        return f"查看 {_path_basename(target)}" if target else "查看目录"
+    return "运行命令"
+
+
 def _compact_text(value: Any, limit: int = 180) -> str:
     text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
     return text if len(text) <= limit else text[: limit - 1] + "..."
@@ -1308,7 +1454,7 @@ def _tool_display_metadata(
     action = _compact_text(arguments.get("action") or result.get("action") if result else arguments.get("action"), 80)
 
     if tool_name == "run_command":
-        title = "运行命令"
+        title = _run_command_display_title(arguments.get("command") or target)
     elif tool_name == "read_file":
         title = f"读取 {display_target or '文件'}"
     elif tool_name == "write_file":
@@ -1349,7 +1495,10 @@ def _tool_display_metadata(
     else:
         title = f"调用 {tool_name}{f' {display_target}' if display_target else ''}"
 
-    summary = _compact_text(result_summary or input_summary or display_target or title, 220)
+    if tool_name == "run_command" and title != "运行命令" and not result_summary:
+        summary = _compact_text(input_summary or title, 220)
+    else:
+        summary = _compact_text(result_summary or input_summary or display_target or title, 220)
     metadata = {
         "displayTitle": _compact_text(title, 180),
         "displaySummary": summary,
@@ -1385,7 +1534,10 @@ def _tool_runtime_progress_message(
 ) -> str:
     if tool_name == "run_command":
         command = target or arguments.get("command") or "command"
-        return _compact_text(f"正在运行命令：{command}", 220)
+        title = _run_command_display_title(command)
+        if title and title != "运行命令":
+            return _compact_text(f"正在{title}", 220)
+        return _compact_text(f"正在运行命令：{_strip_bash_comment_label(command)}", 220)
     if tool_name == "read_file":
         return _compact_text(f"正在读取文件：{target or arguments.get('path') or 'file'}", 220)
     if tool_name in {"list_dir", "list_directory"}:
@@ -1836,7 +1988,17 @@ def _tool_result_summary(tool_name: str, result: dict[str, Any] | None, target: 
 
 def _tool_category(tool_name: str, arguments: dict[str, Any]) -> str:
     if tool_name == "run_command":
-        return "verification" if is_verification_command(arguments.get("command")) else "command"
+        command = arguments.get("command")
+        if is_verification_command(command):
+            return "verification"
+        context_kind = _context_command_kind(command)
+        if context_kind == "git":
+            return "git"
+        if context_kind == "search":
+            return "search"
+        if context_kind in {"read", "list"}:
+            return "context_read"
+        return "command"
     if tool_name in {"apply_patch", "write_file"}:
         return "file_change"
     if tool_name in {"read_file", "list_dir", "list_directory"}:
@@ -1863,7 +2025,7 @@ def _tool_category(tool_name: str, arguments: dict[str, Any]) -> str:
 _TOOL_PHASES: dict[str, tuple[str, str]] = {
     "command": ("command", "命令"),
     "computer_use": ("computer_use", "桌面操作"),
-    "context_read": ("context_read", "读取上下文"),
+    "context_read": ("context_read", "读取"),
     "file_change": ("file_change", "文件改动"),
     "git": ("git", "Git 检查"),
     "memory": ("memory", "记忆"),
@@ -2316,9 +2478,43 @@ class ToolExecutionMixin:
                     "outputStream": "activity",
                 },
             )
-        self._fire_hooks("before_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"]})
+        _, pre_overrides = self._fire_hooks("before_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"]}, with_overrides=True)
+        if pre_overrides.denied:
+            result = {
+                "status": "blocked",
+                "ok": False,
+                "error": pre_overrides.permission_reason or "Blocked by pre_tool_use hook.",
+            }
+            failure = self._annotate_failed_tool_recovery(
+                session_id=session_id, task=task, tool_call_id=tool_call_id,
+                tool_name=tool_spec["name"], arguments=tool_arguments, result=result,
+            )
+            self._publish(
+                session_id=session_id, task=task, event_type="tool.blocked",
+                payload=tool_event_payload({
+                    "reason": result.get("error", "Blocked by hook."),
+                    "failureKind": failure.get("failureKind"),
+                    "recoveryHint": failure.get("recoveryHint"),
+                }),
+            )
+            return provider_tool_result()
+        if pre_overrides.updated_input:
+            tool_arguments.update(pre_overrides.updated_input)
         if tool_spec["name"] == "apply_patch":
-            self._fire_hooks("before_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchArguments": tool_spec.get("arguments", {})})
+            _, patch_overrides = self._fire_hooks("before_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchArguments": tool_spec.get("arguments", {})}, with_overrides=True)
+            if patch_overrides.denied:
+                result = {
+                    "status": "blocked",
+                    "ok": False,
+                    "error": patch_overrides.permission_reason or "Blocked by before_patch_apply hook.",
+                }
+                self._publish(
+                    session_id=session_id, task=task, event_type="tool.blocked",
+                    payload=tool_event_payload({"reason": result.get("error", "Blocked by hook.")}),
+                )
+                return provider_tool_result()
+            if patch_overrides.updated_input:
+                tool_arguments.update(patch_overrides.updated_input)
         # MCP-specific lifecycle event
         is_mcp_tool = tool_spec["name"].startswith("mcp__")
         if is_mcp_tool:
@@ -2389,24 +2585,33 @@ class ToolExecutionMixin:
             if worktree_binding_failure is not None:
                 result = worktree_binding_failure
             elif tool_spec["name"] in SUBAGENT_TOOL_NAMES:
-                self._fire_hooks("before_subagent_start", session_id, task, extra_context={"toolArguments": tool_arguments})
-                try:
-                    result = self._subagent_service.dispatch(tool_arguments)
-                    if isinstance(result, dict):
-                        task_steps = _task_dispatch_steps(tool_arguments, result)
-                        existing_steps = result.get("steps")
-                        result = {
-                            **result,
-                            "steps": [*task_steps, *existing_steps] if isinstance(existing_steps, list) else task_steps,
-                        }
-                    sub_status = result.get("status", "")
-                    if sub_status == "failed":
-                        self._fire_hooks("on_subagent_failed", session_id, task, extra_context={"subagentResult": result})
-                    else:
-                        self._fire_hooks("after_subagent_complete", session_id, task, extra_context={"subagentResult": result})
-                except Exception as sub_exc:
-                    self._fire_hooks("on_subagent_failed", session_id, task, extra_context={"subagentError": str(sub_exc)})
-                    raise
+                _, subagent_overrides = self._fire_hooks("before_subagent_start", session_id, task, extra_context={"toolArguments": tool_arguments}, with_overrides=True)
+                if subagent_overrides.denied:
+                    result = {
+                        "status": "blocked",
+                        "ok": False,
+                        "error": subagent_overrides.permission_reason or "Blocked by before_subagent_start hook.",
+                    }
+                else:
+                    if subagent_overrides.updated_input:
+                        tool_arguments.update(subagent_overrides.updated_input)
+                    try:
+                        result = self._subagent_service.dispatch(tool_arguments)
+                        if isinstance(result, dict):
+                            task_steps = _task_dispatch_steps(tool_arguments, result)
+                            existing_steps = result.get("steps")
+                            result = {
+                                **result,
+                                "steps": [*task_steps, *existing_steps] if isinstance(existing_steps, list) else task_steps,
+                            }
+                        sub_status = result.get("status", "")
+                        if sub_status == "failed":
+                            self._fire_hooks("on_subagent_failed", session_id, task, extra_context={"subagentResult": result})
+                        else:
+                            self._fire_hooks("after_subagent_complete", session_id, task, extra_context={"subagentResult": result})
+                    except Exception as sub_exc:
+                        self._fire_hooks("on_subagent_failed", session_id, task, extra_context={"subagentError": str(sub_exc)})
+                        raise
             elif tool_spec["name"] == "run_command":
                 execution_arguments = dict(tool_arguments)
                 execution_arguments["_commandLogIdSink"] = command_log_id_holder
@@ -2674,7 +2879,7 @@ class ToolExecutionMixin:
                 event_type=event_type,
                 payload=tool_event_payload(extra),
             )
-            self._fire_hooks(
+            _, post_overrides = self._fire_hooks(
                 "after_tool_call",
                 session_id,
                 task,
@@ -2683,7 +2888,11 @@ class ToolExecutionMixin:
                     "toolName": tool_spec["name"],
                     "toolStatus": tool_status,
                 },
+                with_overrides=True,
             )
+            if post_overrides.replace_output and tool_status == "completed":
+                result.update(post_overrides.replace_output)
+                tool_result["result"] = result
             return tool_result
 
         if result.get("status") == "blocked":
@@ -2778,18 +2987,34 @@ class ToolExecutionMixin:
                     "diffText": diff_text,
                 },
             )
-            self._fire_hooks("on_approval_required", session_id, task, extra_context={"approvalId": approval.get("id"), "kind": approval.get("kind", tool_spec["name"])})
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type="task.waiting_approval",
-                payload={
-                    "status": "waiting_approval",
-                    "detail": "执行前需要先审批补丁。"
-                    if tool_spec["name"] == "apply_patch"
-                    else "执行前需要先审批命令。",
-                },
-            )
+            _, perm_overrides = self._fire_hooks("on_approval_required", session_id, task, extra_context={"approvalId": approval.get("id"), "kind": approval.get("kind", tool_spec["name"])}, with_overrides=True)
+            if perm_overrides.denied:
+                result = {
+                    "status": "blocked",
+                    "ok": False,
+                    "error": perm_overrides.permission_reason or "Denied by permission_request hook.",
+                }
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="tool.blocked",
+                    payload=tool_event_payload({"reason": result.get("error", "Denied by hook.")}),
+                )
+                return provider_tool_result()
+            if perm_overrides.allowed:
+                logger.info("permission_request hook auto-approved %s, skipping approval gate", tool_spec["name"])
+            else:
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="task.waiting_approval",
+                    payload={
+                        "status": "waiting_approval",
+                        "detail": "执行前需要先审批补丁。"
+                        if tool_spec["name"] == "apply_patch"
+                        else "执行前需要先审批命令。",
+                    },
+                )
             tool_result = provider_tool_result()
             public_blocked_result = _public_approval_blocked_result(tool_spec["name"], result, tool_result.get("target") or tool_target)
             self._publish(
@@ -2864,7 +3089,10 @@ class ToolExecutionMixin:
                 event_type="tool.completed",
                 payload=tool_event_payload({"result": result}),
             )
-            self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
+            _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
+            if post_overrides.replace_output:
+                result.update(post_overrides.replace_output)
+                tool_result["result"] = result
             return tool_result
 
         if tool_spec["name"] in {"apply_patch", "write_file"}:
@@ -2876,7 +3104,10 @@ class ToolExecutionMixin:
                 event_type="tool.completed",
                 payload=tool_event_payload({"result": result}),
             )
-            self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
+            _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
+            if post_overrides.replace_output:
+                result.update(post_overrides.replace_output)
+                tool_result["result"] = result
             if tool_spec["name"] == "apply_patch":
                 self._fire_hooks("after_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchResult": result})
             return tool_result
@@ -2896,7 +3127,10 @@ class ToolExecutionMixin:
                 "ok": result.get("ok", True),
                 "durationMs": tool_duration_ms,
             })
-        self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
+        _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
+        if post_overrides.replace_output:
+            result.update(post_overrides.replace_output)
+            tool_result["result"] = result
         if tool_spec["name"] == "memory.remember" and result.get("ok", True):
             self._fire_hooks("on_memory_write", session_id, task, extra_context={"toolCallId": tool_call_id, "memoryResult": result})
         return tool_result

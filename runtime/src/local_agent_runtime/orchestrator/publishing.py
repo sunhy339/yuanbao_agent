@@ -2349,6 +2349,12 @@ class PublishingMixin:
             visible_payload["_chatCompat"] = True
             token_delta_payload = {**visible_payload}
             token_delta_payload.setdefault("messageId", active_msg_id or "")
+            token_delta_payload["_bridge"] = {
+                **(token_delta_payload.get("_bridge") if isinstance(token_delta_payload.get("_bridge"), dict) else {}),
+                "persistTraceMirror": True,
+                "suppressRealtimeFlat": True,
+                "suppressChatReplay": True,
+            }
         chat_compat_visibility = self._chat_compat_event_visibility(event_type, task, effective_visibility)
         if event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES and self._should_drop_event_after_terminal_task(
             task=task,
@@ -2395,9 +2401,18 @@ class PublishingMixin:
         task: dict[str, Any],
         *,
         extra_context: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Fire matching hooks for a lifecycle event. No-op if no hook service."""
+        with_overrides: bool = False,
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], "HookOverrides"]:
+        """Fire matching hooks for a lifecycle event. No-op if no hook service.
+
+        When *with_overrides* is True, returns (records, HookOverrides) so the
+        caller can inspect deny / rewrite / stop decisions.  Otherwise returns
+        just the records list (backward-compatible).
+        """
         if self._hook_service is None:
+            if with_overrides:
+                from ..services.hook_overrides import HookOverrides
+                return [], HookOverrides()
             return []
         # Resolve workspaceId from session. Hook dispatch must not break the
         # task lifecycle if the session has already disappeared.
@@ -2405,6 +2420,9 @@ class PublishingMixin:
             session = self._store.require_session(session_id)
         except Exception:
             logger.warning("Hook context session lookup failed for %s", session_id, exc_info=True)
+            if with_overrides:
+                from ..services.hook_overrides import HookOverrides
+                return [], HookOverrides()
             return []
         workspace_id = ""
         if isinstance(session, dict):
@@ -2419,7 +2437,12 @@ class PublishingMixin:
         if extra_context:
             context.update(extra_context)
         try:
+            if with_overrides:
+                return self._hook_service.invoke_hooks_with_overrides(hook_event, context)
             return self._hook_service.invoke_hooks(hook_event, context)
         except Exception:
             logger.warning("Hook execution failed for %s", hook_event, exc_info=True)
+            if with_overrides:
+                from ..services.hook_overrides import HookOverrides
+                return [], HookOverrides()
             return []

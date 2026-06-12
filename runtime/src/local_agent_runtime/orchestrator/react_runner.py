@@ -40,6 +40,9 @@ _PARALLEL_READ_ONLY_TOOL_NAMES = frozenset({
     "code_search",
     "git_status",
     "git_diff",
+    "web_fetch",
+    "memory.recall",
+    "scratchpad.read",
 })
 _PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset({
     "read_file",

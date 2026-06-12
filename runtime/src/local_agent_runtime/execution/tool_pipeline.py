@@ -2398,6 +2398,16 @@ class ToolExecutionMixin:
             tool_arguments.setdefault("toolUseId", tool_call_id)
             if parent_tool_use_id:
                 tool_arguments.setdefault("parentToolUseId", parent_tool_use_id)
+        # Inject CancelToken so tools (run_command, web_fetch) can cooperatively
+        # abort when the task is cancelled or a hook fires prevent_continuation.
+        token_getter = getattr(self, "_ensure_task_cancel_token", None)
+        if callable(token_getter):
+            try:
+                cancel_token = token_getter(task)
+            except Exception:  # noqa: BLE001
+                cancel_token = None
+            if cancel_token is not None:
+                tool_arguments["_cancelToken"] = cancel_token
         if isinstance(context, dict):
             untrusted_signals = context.get("untrustedContentSignals")
             if isinstance(untrusted_signals, list) and untrusted_signals:

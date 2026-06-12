@@ -412,6 +412,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         command_error: Exception | None = None
         steps.append(_step("execute", "running", command))
         try:
+            cancel_token = params.get("_cancelToken")
             stdout, stderr, exit_code, status, duration_ms = run_shell(
                 shell_name,
                 execution_command,
@@ -419,6 +420,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 timeout_ms,
                 stdout_callback=stdout_callback if callable(stdout_callback) else None,
                 stderr_callback=stderr_callback if callable(stderr_callback) else None,
+                cancel_token=cancel_token,
             )
         except Exception as exc:  # noqa: BLE001
             command_error = exc

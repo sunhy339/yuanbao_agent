@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.request
 import urllib.error
 from typing import Any
@@ -12,10 +13,55 @@ from ..policy.permission_engine import PermissionRequest as PermRequest
 
 _DEFAULT_TIMEOUT = 30
 _MAX_RESPONSE_BYTES = 512 * 1024  # 512 KB
+_CANCEL_POLL_INTERVAL = 0.1
 
 
 def _step(label: str, status: str, summary: str) -> dict[str, str]:
     return {"label": label, "status": status, "summary": summary}
+
+
+def _open_with_cancel(request: urllib.request.Request, timeout: int, cancel_token: Any | None):
+    """urlopen wrapped so a CancelToken can interrupt it cooperatively.
+
+    Returns (response_or_None, cancelled, reason). Raises original urllib errors.
+    """
+    if cancel_token is None:
+        return urllib.request.urlopen(request, timeout=timeout), False, None
+
+    if getattr(cancel_token, "cancelled", False):
+        reason = getattr(cancel_token, "reason", None) or "cancelled"
+        return None, True, reason
+
+    holder: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            holder["response"] = urllib.request.urlopen(request, timeout=timeout)
+        except BaseException as exc:  # noqa: BLE001
+            holder["error"] = exc
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        worker.join(_CANCEL_POLL_INTERVAL)
+        if getattr(cancel_token, "cancelled", False):
+            reason = getattr(cancel_token, "reason", None) or "cancelled"
+
+            def _drain() -> None:
+                worker.join(timeout=2)
+                resp = holder.get("response")
+                if resp is not None:
+                    try:
+                        resp.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            threading.Thread(target=_drain, daemon=True).start()
+            return None, True, reason
+
+    if "error" in holder:
+        raise holder["error"]
+    return holder.get("response"), False, None
 
 
 def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
@@ -81,8 +127,35 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
 
         request = urllib.request.Request(url, data=req_data, headers=headers, method=method)
 
+        cancel_token = params.get("_cancelToken")
+        if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+            reason = getattr(cancel_token, "reason", None) or "cancelled"
+            return {
+                "status": "cancelled",
+                "toolName": "web_fetch",
+                "url": url,
+                "error": f"cancelled: {reason}",
+                "contentSource": "web",
+                "contentTrust": "untrusted",
+                "steps": [
+                    _step("request", "cancelled", f"{method} {url}"),
+                ],
+            }
+
         try:
-            response = urllib.request.urlopen(request, timeout=timeout)
+            response, was_cancelled, cancel_reason = _open_with_cancel(request, timeout, cancel_token)
+            if was_cancelled:
+                return {
+                    "status": "cancelled",
+                    "toolName": "web_fetch",
+                    "url": url,
+                    "error": f"cancelled: {cancel_reason}",
+                    "contentSource": "web",
+                    "contentTrust": "untrusted",
+                    "steps": [
+                        _step("request", "cancelled", f"{method} {url}"),
+                    ],
+                }
         except urllib.error.HTTPError as exc:
             error_body = ""
             try:

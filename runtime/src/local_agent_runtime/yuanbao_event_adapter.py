@@ -84,6 +84,7 @@ _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
         "toolName",
         "toolUseId",
         "parentToolUseId",
+        "mediaType",
         *_TOOL_PRESENTATION_FIELDS,
     },
     "content_delta": {
@@ -95,6 +96,9 @@ _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
         "toolName",
         "toolUseId",
         "parentToolUseId",
+        "imageData",
+        "mediaType",
+        "sourceType",
         *_TOOL_PRESENTATION_FIELDS,
     },
     "tool_use_complete": {
@@ -138,7 +142,7 @@ _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
     },
     "computer_use_permission_request": {"type", "requestId", "request"},
     "message_complete": {"type", "usage"},
-    "thinking": {"type", "text"},
+    "thinking": {"type", "text", "source"},
     "status": {"type", "state", "verb", "elapsed", "tokens"},
     "api_retry": {
         "type",
@@ -184,6 +188,9 @@ _SERVER_MESSAGE_REQUIRED_FIELDS: dict[str, set[str]] = {
 
 def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
     """Return the Yuanbao flat ServerMessage for compatible runtime events."""
+
+    if event.visibility in {"panel", "trace"}:
+        return None
 
     payload = event.payload if isinstance(event.payload, dict) else {}
     message: dict[str, Any] | None = None
@@ -237,7 +244,7 @@ def should_emit_yuanbao_server_message(event: RuntimeEvent, *, mode: str = "live
     flag used for each mode.
     """
 
-    if event.visibility == "trace":
+    if event.visibility in {"panel", "trace"}:
         return False
     payload = event.payload if isinstance(event.payload, dict) else {}
     bridge = payload.get("_bridge")
@@ -246,6 +253,8 @@ def should_emit_yuanbao_server_message(event: RuntimeEvent, *, mode: str = "live
     if normalized_mode == "live":
         if event.type == "message.completed" and payload.get("_chatCompat") is True:
             return False
+        if event.type == "message.delta" and payload.get("_chatCompat") is True:
+            return True
         return bridge_payload.get("suppressRealtimeFlat") is not True
     if normalized_mode == "replay":
         return bridge_payload.get("suppressChatReplay") is not True
@@ -510,7 +519,7 @@ def _public_task_key(payload: dict[str, Any], event: RuntimeEvent) -> str:
 def _should_emit_task_update(event: RuntimeEvent, payload: dict[str, Any]) -> bool:
     if event.type in {"task.routing.decided", "runtime.context.prepared"}:
         return False
-    if event.type in {"task.failed", "task.cancelled", "task.runtime_work_waiting"}:
+    if event.type in {"task.failed", "task.cancelled"}:
         return True
     if event.type == "task.created":
         return _is_collaboration_child_task_event(event, payload)

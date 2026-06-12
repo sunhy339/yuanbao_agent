@@ -31,7 +31,6 @@ const SILENT_FLAT_MESSAGE_TYPES = new Set([
   "connected",
   "pong",
   "session_title_updated",
-  "status",
 ]);
 
 const LEGACY_SUPPRESSED_FLAT_MESSAGE_TYPES = new Set([
@@ -79,7 +78,7 @@ function looksLikeInternalDisplayText(value: string): boolean {
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
   if (
     lines.length >= 3 &&
-    /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|fingerprint|provider|rawJson|toolProgress|tool_progress|trace|uiReplayScope|visibility|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
+    /(^|\n)\s*(_chatCompat|activeStep|currentStep|completedSteps|completionEvidence|completionGate|fingerprint|provider|rawJson|toolProgress|tool_progress|trace|uiReplayScope|visibility|tool_results|workspaceRoot|sessionId|taskId|eventId|payload|metadata)\s*[:=]/.test(text)
   ) {
     return true;
   }
@@ -90,6 +89,8 @@ function looksLikeInternalDisplayText(value: string): boolean {
     const keys = Object.keys(parsed as Record<string, unknown>);
     return keys.some((key) => [
       "_chatCompat",
+      "completionEvidence",
+      "completionGate",
       "context",
       "currentTaskId",
       "eventId",
@@ -203,7 +204,24 @@ export function applyYuanbaoServerMessageToChat(
     });
 
   switch (message.type) {
+    case "status": {
+      // Match haha-cc: status drives the running indicator, not transcript
+      // ThinkingBlock content. Only explicit `thinking` messages are rendered.
+      return {
+        handled: true,
+        messages: removeAssistantThinkingMessage(current, {
+          sessionId: event.sessionId,
+          taskId,
+          now,
+        }),
+      };
+    }
+
     case "content_start": {
+      if (message.blockType === "image") {
+        // Image block start: no-op; the complete image arrives in content_delta.imageData
+        return { handled: true, messages: current };
+      }
       if (message.blockType !== "tool_use" || !message.toolUseId) {
         return { handled: true, messages: current };
       }
@@ -231,6 +249,23 @@ export function applyYuanbaoServerMessageToChat(
           sessionId: event.sessionId,
           taskId,
           delta: message.text,
+          now,
+        });
+      }
+      if (typeof message.imageData === "string" && message.imageData) {
+        // Render as a markdown image — base64 or URL
+        const sourceType = flatString("sourceType") ?? "base64";
+        const mediaType = flatString("mediaType") ?? "image/png";
+        const imageMarkdown = sourceType === "url"
+          ? `\n![image](${message.imageData})\n`
+          : `\n![image](data:${mediaType};base64,${message.imageData})\n`;
+        next = appendOrUpdateAssistantMessageDelta(next, {
+          messageId: flatString("messageId") || `assistant_${taskId}`,
+          contentBlockId: flatString("contentBlockId"),
+          blockIndex: flatNumber("blockIndex"),
+          sessionId: event.sessionId,
+          taskId,
+          delta: imageMarkdown,
           now,
         });
       }
@@ -532,14 +567,18 @@ function appendTeamEvent(
 }
 
 function systemNotificationKind(subtype: string): string {
+  if (subtype === "compact_boundary") return "compact_boundary";
   if (subtype === "compact_summary") return "compact_summary";
+  if (subtype === "api_error") return "system_api_error";
   if (subtype === "goal_event") return "goal_event";
   if (subtype === "memory_saved") return "memory_event";
   return "system";
 }
 
 function systemNotificationTitle(subtype: string): string {
+  if (subtype === "compact_boundary") return "Conversation compacted";
   if (subtype === "compact_summary") return "Context compacted";
+  if (subtype === "api_error") return "API error";
   if (subtype === "memory_saved") return "Memory updated";
   if (subtype === "task_progress" || subtype === "task_started") return "Task update";
   return subtype.replace(/_/g, " ");

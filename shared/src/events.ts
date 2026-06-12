@@ -194,10 +194,11 @@ export type YuanbaoServerMessage =
   | { type: "connected"; sessionId: string }
   | ({
       type: "content_start";
-      blockType: "text" | "tool_use";
+      blockType: "text" | "tool_use" | "image";
       toolName?: string;
       toolUseId?: string;
       parentToolUseId?: string;
+      mediaType?: string;
     } & Partial<ToolPresentationFields>)
   | ({
       type: "content_delta";
@@ -208,6 +209,9 @@ export type YuanbaoServerMessage =
       toolName?: string;
       toolUseId?: string;
       parentToolUseId?: string;
+      imageData?: string;
+      mediaType?: string;
+      sourceType?: "base64" | "url" | string;
     } & Partial<ToolPresentationFields>)
   | ({
       type: "tool_use_complete";
@@ -274,12 +278,13 @@ export interface ToolPresentationFields {
 }
 
 export interface ContentStartPayload {
-  blockType: "text" | "tool_use";
+  blockType: "text" | "tool_use" | "image";
   messageId?: Identifier;
   contentBlockId?: Identifier;
   blockIndex?: number;
   toolName?: string;
   toolUseId?: Identifier;
+  mediaType?: string;
   target?: string;
   inputSummary?: string;
   displayTitle?: string;
@@ -327,6 +332,9 @@ export interface ContentDeltaPayload {
   toolSemanticParentId?: string;
   toolSemanticParentLabel?: string;
   step?: number;
+  imageData?: string;
+  mediaType?: string;
+  sourceType?: "base64" | "url" | string;
 }
 
 export interface ThinkingPayload {

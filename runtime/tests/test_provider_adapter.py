@@ -674,7 +674,44 @@ def test_openai_responses_api_format_posts_responses_payload(monkeypatch: pytest
     assert call["headers"]["Authorization"] == "Bearer sk-test"
     payload = json.loads(call["body"].decode("utf-8"))
     assert payload["model"] == "test-chat"
+    assert payload["instructions"] == "You are a helpful assistant."
     assert payload["input"] == [{"role": "user", "content": "hi"}]
+
+
+def test_openai_responses_naked_base_url_posts_to_responses_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"id":"resp_1","status":"completed","output_text":"responses ok","output":[]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "responses ok"
+    assert calls[0]["url"] == "https://llm.example.test/responses"
 
 
 def test_openai_responses_includes_reasoning_from_ui_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -757,6 +794,70 @@ def test_openai_responses_retries_without_reasoning_when_proxy_rejects_it() -> N
     assert "reasoning" not in json.loads(calls[1]["body"].decode("utf-8"))
 
 
+def test_openai_responses_retries_without_temperature_when_proxy_rejects_it() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        payload = json.loads(kwargs["body"].decode("utf-8"))
+        if "temperature" in payload:
+            return 400, b'{"detail":"Unsupported parameter: temperature"}'
+        return 200, b'{"id":"resp_1","status":"completed","output_text":"ok","output":[]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+                "temperature": 0.2,
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "ok"
+    assert len(calls) == 2
+    assert json.loads(calls[0]["body"].decode("utf-8"))["temperature"] == 0.2
+    assert "temperature" not in json.loads(calls[1]["body"].decode("utf-8"))
+
+
+def test_openai_responses_retries_without_max_output_tokens_when_proxy_rejects_it() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        payload = json.loads(kwargs["body"].decode("utf-8"))
+        if "max_output_tokens" in payload:
+            return 400, b'{"detail":"Unsupported parameter: max_output_tokens"}'
+        return 200, b'{"id":"resp_1","status":"completed","output_text":"ok","output":[]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+                "maxTokens": 512,
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "ok"
+    assert len(calls) == 2
+    assert json.loads(calls[0]["body"].decode("utf-8"))["max_output_tokens"] == 512
+    assert "max_output_tokens" not in json.loads(calls[1]["body"].decode("utf-8"))
+
+
 def test_openai_responses_serializes_image_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "LOCAL_AGENT_PROVIDER_MODEL",
@@ -819,7 +920,7 @@ def test_openai_responses_serializes_image_attachments(monkeypatch: pytest.Monke
     ]
 
 
-def test_openai_responses_preserves_context_prefix_message_boundaries() -> None:
+def test_openai_responses_merges_adjacent_context_user_messages() -> None:
     calls: list[dict[str, Any]] = []
 
     def fake_post(**kwargs: Any) -> tuple[int, bytes]:
@@ -849,11 +950,16 @@ def test_openai_responses_preserves_context_prefix_message_boundaries() -> None:
     )
 
     payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["instructions"] == "sys"
     assert payload["input"] == [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "Stable context prefix:\nstable"},
-        {"role": "user", "content": "Dynamic context tail:\ndynamic"},
-        {"role": "user", "content": "Current user request:\ncontinue"},
+        {
+            "role": "user",
+            "content": (
+                "Stable context prefix:\nstable\n\n"
+                "Dynamic context tail:\ndynamic\n\n"
+                "Current user request:\ncontinue"
+            ),
+        },
     ]
 
 
@@ -1020,7 +1126,7 @@ def test_anthropic_messages_api_format_posts_messages_payload(monkeypatch: pytes
     payload = json.loads(call["body"].decode("utf-8"))
     assert payload["model"] == "claude-test"
     assert payload["max_tokens"] == 777
-    assert payload["system"] == "be brief"
+    assert payload["system"] == [{"type": "text", "text": "be brief", "cache_control": {"type": "ephemeral"}}]
     assert payload["messages"] == [{"role": "user", "content": "hi"}]
 
 
@@ -1132,7 +1238,7 @@ def test_anthropic_messages_preserves_context_prefix_message_boundaries() -> Non
     )
 
     payload = json.loads(calls[0]["body"].decode("utf-8"))
-    assert payload["system"] == "sys"
+    assert payload["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
     assert payload["messages"] == [
         {"role": "user", "content": "Stable context prefix:\nstable"},
         {"role": "user", "content": "Dynamic context tail:\ndynamic"},
@@ -1969,6 +2075,183 @@ def test_openai_responses_stream_retries_without_reasoning_when_proxy_rejects_it
     ]
 
 
+def test_openai_responses_stream_retries_without_temperature_when_proxy_rejects_it() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        payload = json.loads(kwargs["body"].decode("utf-8"))
+        if "temperature" in payload:
+            return 400, iter([b'{"detail":"Unsupported parameter: temperature"}'])
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"Done"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Done","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+                "temperature": 0.2,
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+            "temperature": 0.2,
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "hi"}], context=context))
+
+    assert len(stream_calls) == 2
+    assert json.loads(stream_calls[0]["body"].decode("utf-8"))["temperature"] == 0.2
+    assert "temperature" not in json.loads(stream_calls[1]["body"].decode("utf-8"))
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Done"},
+    ]
+
+
+def test_openai_responses_stream_retries_without_max_output_tokens_when_proxy_rejects_it() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        payload = json.loads(kwargs["body"].decode("utf-8"))
+        if "max_output_tokens" in payload:
+            return 400, iter([b'{"detail":"Unsupported parameter: max_output_tokens"}'])
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"Done"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Done","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+                "maxTokens": 512,
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+            "maxTokens": 512,
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "hi"}], context=context))
+
+    assert len(stream_calls) == 2
+    assert json.loads(stream_calls[0]["body"].decode("utf-8"))["max_output_tokens"] == 512
+    assert "max_output_tokens" not in json.loads(stream_calls[1]["body"].decode("utf-8"))
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Done"},
+    ]
+
+
+def test_openai_responses_relaylink_omits_unsupported_request_parameters() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"Done"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Done","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://api.relaylink.cloud",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+                "maxTokens": 512,
+                "temperature": 0.2,
+                "reasoningEffort": "high",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+
+    events = list(adapter.chat_stream(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    ))
+
+    assert events[-1]["type"] == "final"
+    payload = json.loads(stream_calls[0]["body"].decode("utf-8"))
+    assert payload["stream"] is True
+    assert payload["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert payload["tools"][0]["name"] == "read_file"
+    assert "temperature" not in payload
+    assert "max_output_tokens" not in payload
+
+
 def test_openai_responses_stream_routes_reasoning_text_to_thinking_delta() -> None:
     def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
         raise AssertionError("non-streaming transport should not be used")
@@ -2386,6 +2669,19 @@ def test_provider_error_is_readable() -> None:
         adapter.chat(messages=[{"role": "user", "content": "hi"}])
 
 
+def test_provider_error_detail_is_readable() -> None:
+    def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
+        return 400, b'{"detail":"Instructions are required"}'
+
+    adapter = ProviderAdapter(
+        config={"provider": {"mode": "openai-compatible", "apiKey": "sk-test", "model": "test-chat"}},
+        http_post=fake_post,
+    )
+
+    with pytest.raises(ProviderAdapterError, match="Provider request failed with HTTP 400: Instructions are required"):
+        adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+
 def test_provider_retries_malformed_json_response() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -2404,6 +2700,53 @@ def test_provider_retries_malformed_json_response() -> None:
 
     assert response["message"]["content"] == "hello"
     assert len(calls) == 2
+
+
+def test_openai_responses_chat_falls_back_to_stream_when_non_stream_json_is_invalid() -> None:
+    post_calls: list[dict[str, Any]] = []
+    stream_calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        post_calls.append(kwargs)
+        return 200, b""
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        return 200, iter(
+            [
+                b"event: response.created\n",
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b"event: response.output_text.delta\n",
+                b'data: {"type":"response.output_text.delta","delta":"Hel"}\n\n',
+                b"event: response.output_text.delta\n",
+                b'data: {"type":"response.output_text.delta","delta":"lo"}\n\n',
+                b"event: response.completed\n",
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Hello","output":[],"usage":{"total_tokens":5}}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+        http_stream=fake_stream,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}], context=_context())
+
+    assert len(post_calls) == 1
+    assert len(stream_calls) == 1
+    assert json.loads(stream_calls[0]["body"].decode("utf-8"))["stream"] is True
+    assert response["message"]["content"] == "Hello"
+    assert response["finish_reason"] == "completed"
+    assert response["raw"]["usage"] == {"total_tokens": 5}
 
 
 @pytest.mark.parametrize(
@@ -2463,6 +2806,27 @@ def test_provider_trace_records_api_format_and_request_path() -> None:
     assert payload["requestPath"] == "/v1/responses"
     assert payload["messageCount"] == 1
     assert payload["toolCount"] == 1
+    assert probe._should_stream_provider(context) is True
+
+
+def test_provider_trace_records_naked_responses_request_path() -> None:
+    probe = _TraceProbe()
+    context = {
+        "config": {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-responses",
+                "baseUrl": "https://api.openai.test",
+                "model": "gpt-test",
+                "stream": True,
+            }
+        }
+    }
+
+    payload = probe._provider_trace_payload(context)
+
+    assert payload["apiFormat"] == "openai-responses"
+    assert payload["requestPath"] == "/responses"
     assert probe._should_stream_provider(context) is True
 
 

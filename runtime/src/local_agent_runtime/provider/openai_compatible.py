@@ -651,6 +651,12 @@ class OpenAICompatibleChatClient:
             return str(message)
         if error:
             return str(error)
+        detail = response_json.get("detail")
+        if detail:
+            return str(detail)
+        message = response_json.get("message")
+        if message:
+            return str(message)
         return "unknown provider error"
 
     def _normalize_response(self, response_json: dict[str, Any], *, tool_name_map: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1091,8 +1097,8 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         )
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         status, response_body = self._request(settings=settings, body=body)
-        if status >= 400 and self._should_retry_without_reasoning(payload, response_body=response_body):
-            retry_payload = self._without_reasoning(payload)
+        retry_payload = self._responses_retry_payload(payload, response_body=response_body)
+        if status >= 400 and retry_payload is not None:
             body = json.dumps(retry_payload, ensure_ascii=False).encode("utf-8")
             status, response_body = self._request(settings=settings, body=body)
         if status >= 400:
@@ -1112,7 +1118,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
             return trimmed
         parsed = urlsplit(trimmed)
         if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
-            return urlunsplit((parsed.scheme, parsed.netloc, "/v1/responses", "", ""))
+            return urlunsplit((parsed.scheme, parsed.netloc, "/responses", "", ""))
         return f"{trimmed}/responses"
 
     def _prepare_responses_tools_for_request(
@@ -1148,9 +1154,12 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         tool_name_map: dict[str, str],
         stream: bool = False,
     ) -> dict[str, Any]:
+        response_input = self._serialize_responses_input(messages, tool_name_map=tool_name_map)
+        instructions, response_input = self._responses_instructions_and_input(response_input)
         payload: dict[str, Any] = {
             "model": settings.model,
-            "input": self._serialize_responses_input(messages, tool_name_map=tool_name_map),
+            "input": response_input,
+            "instructions": instructions or "You are a helpful assistant.",
         }
         if settings.temperature is not None:
             payload["temperature"] = settings.temperature
@@ -1164,6 +1173,23 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         if stream:
             payload["stream"] = True
         return payload
+
+    @staticmethod
+    def _responses_instructions_and_input(
+        response_input: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        instructions: list[str] = []
+        filtered: list[dict[str, Any]] = []
+        for item in response_input:
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"system", "developer"} and isinstance(content, str):
+                text = content.strip()
+                if text:
+                    instructions.append(text)
+                continue
+            filtered.append(item)
+        return ("\n\n".join(instructions) if instructions else None, filtered)
 
     @staticmethod
     def _responses_reasoning_payload(settings: OpenAICompatibleSettings) -> dict[str, str] | None:
@@ -1207,6 +1233,28 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         return retry_payload
 
     @staticmethod
+    def _without_temperature(payload: dict[str, Any]) -> dict[str, Any]:
+        retry_payload = dict(payload)
+        retry_payload.pop("temperature", None)
+        return retry_payload
+
+    @staticmethod
+    def _without_max_output_tokens(payload: dict[str, Any]) -> dict[str, Any]:
+        retry_payload = dict(payload)
+        retry_payload.pop("max_output_tokens", None)
+        return retry_payload
+
+    @staticmethod
+    def _responses_retry_payload(payload: dict[str, Any], *, response_body: bytes) -> dict[str, Any] | None:
+        if OpenAIResponsesClient._should_retry_without_reasoning(payload, response_body=response_body):
+            return OpenAIResponsesClient._without_reasoning(payload)
+        if OpenAIResponsesClient._should_retry_without_temperature(payload, response_body=response_body):
+            return OpenAIResponsesClient._without_temperature(payload)
+        if OpenAIResponsesClient._should_retry_without_max_output_tokens(payload, response_body=response_body):
+            return OpenAIResponsesClient._without_max_output_tokens(payload)
+        return None
+
+    @staticmethod
     def _should_retry_without_reasoning(payload: dict[str, Any], *, response_body: bytes) -> bool:
         if "reasoning" not in payload:
             return False
@@ -1218,6 +1266,46 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
             return False
         unsupported_markers = (
             "unsupported",
+            "unknown parameter",
+            "unrecognized",
+            "not supported",
+            "extra_forbidden",
+            "invalid_request_error",
+        )
+        return any(marker in message for marker in unsupported_markers)
+
+    @staticmethod
+    def _should_retry_without_temperature(payload: dict[str, Any], *, response_body: bytes) -> bool:
+        if "temperature" not in payload:
+            return False
+        try:
+            message = response_body.decode("utf-8", errors="replace").lower()
+        except Exception:
+            message = ""
+        if "temperature" not in message:
+            return False
+        unsupported_markers = (
+            "unsupported parameter",
+            "unknown parameter",
+            "unrecognized",
+            "not supported",
+            "extra_forbidden",
+            "invalid_request_error",
+        )
+        return any(marker in message for marker in unsupported_markers)
+
+    @staticmethod
+    def _should_retry_without_max_output_tokens(payload: dict[str, Any], *, response_body: bytes) -> bool:
+        if "max_output_tokens" not in payload:
+            return False
+        try:
+            message = response_body.decode("utf-8", errors="replace").lower()
+        except Exception:
+            message = ""
+        if "max_output_tokens" not in message:
+            return False
+        unsupported_markers = (
+            "unsupported parameter",
             "unknown parameter",
             "unrecognized",
             "not supported",
@@ -1245,8 +1333,8 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         status, chunks = self._stream_request(settings=settings, body=body)
         if status >= 400:
             response_body = b"".join(chunks)
-            if self._should_retry_without_reasoning(payload, response_body=response_body):
-                retry_payload = self._without_reasoning(payload)
+            retry_payload = self._responses_retry_payload(payload, response_body=response_body)
+            if retry_payload is not None:
                 body = json.dumps(retry_payload, ensure_ascii=False).encode("utf-8")
                 status, chunks = self._stream_request(settings=settings, body=body)
                 if status < 400:
@@ -1267,6 +1355,20 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         messages = self._drop_orphan_tool_messages(messages)
         serialized: list[dict[str, Any]] = []
         raw_to_safe = {raw: safe for safe, raw in tool_name_map.items()}
+        def append_message(item: dict[str, Any]) -> None:
+            role = item.get("role")
+            content = item.get("content")
+            if (
+                role in {"system", "developer", "user"}
+                and isinstance(content, str)
+                and serialized
+                and serialized[-1].get("role") == role
+                and isinstance(serialized[-1].get("content"), str)
+            ):
+                serialized[-1]["content"] = f"{serialized[-1]['content']}\n\n{content}".strip()
+                return
+            serialized.append(item)
+
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -1298,7 +1400,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                         blocks.extend(image_blocks)
                         serialized.append({"role": role, "content": blocks})
                         continue
-                serialized.append({"role": role, "content": content})
+                append_message({"role": role, "content": content})
         return serialized
 
     def _responses_image_blocks(self, image_attachments: Any) -> list[dict[str, Any]]:
@@ -1792,6 +1894,11 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                     "input_schema": function.get("parameters") or {"type": "object"},
                 }
             )
+        if anthropic_tools:
+            # Anthropic prompt cache: marking the final tool's cache_control
+            # tells the API to cache the serialized tool block prefix so it
+            # can be reused across turns.
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
         return anthropic_tools or None, tool_name_map
 
     def _build_anthropic_payload(
@@ -1812,12 +1919,28 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
         if stream:
             payload["stream"] = True
         if system_parts:
-            payload["system"] = "\n\n".join(system_parts)
+            # Anthropic prompt cache: emit system as content blocks with an
+            # ephemeral cache_control marker on the last block so the API can
+            # reuse the prefix across turns. A plain joined string disables
+            # caching for the system prompt entirely.
+            payload["system"] = self._anthropic_system_blocks(system_parts)
         if settings.temperature is not None:
             payload["temperature"] = settings.temperature
         if tools:
             payload["tools"] = tools
         return payload
+
+    @staticmethod
+    def _anthropic_system_blocks(system_parts: list[str]) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        for part in system_parts:
+            text = part if isinstance(part, str) else str(part or "")
+            if not text:
+                continue
+            blocks.append({"type": "text", "text": text})
+        if blocks:
+            blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        return blocks
 
     def _serialize_anthropic_messages(
         self,
@@ -1878,6 +2001,19 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
         for attachment in self._iter_image_attachments(image_attachments):
             data = attachment.get("data")
             mime_type = attachment.get("mimeType")
+            url = attachment.get("url")
+            # URL source path: prefer when explicit url provided, no inline data needed.
+            if isinstance(url, str) and url.strip():
+                blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "url",
+                            "url": url.strip(),
+                        },
+                    }
+                )
+                continue
             if not isinstance(data, str) or not data.strip():
                 continue
             if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
@@ -1893,6 +2029,27 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                 }
             )
         return blocks
+
+    @staticmethod
+    def _anthropic_image_block_to_text(block: dict[str, Any]) -> str | None:
+        """Convert an Anthropic response image block to a text placeholder.
+
+        Image blocks in Anthropic responses carry source data (base64 or url).
+        We emit a markdown image reference so the downstream pipeline can
+        render it, while keeping the normalized content as plain text.
+        """
+        source = block.get("source") if isinstance(block.get("source"), dict) else {}
+        source_type = source.get("type")
+        media_type = source.get("media_type") or "image/unknown"
+        if source_type == "base64":
+            data = source.get("data", "")
+            # Embed as data URI for direct rendering
+            return f"![image](data:{media_type};base64,{data})"
+        if source_type == "url":
+            url = source.get("url", "")
+            if url:
+                return f"![image]({url})"
+        return None
 
     def _serialize_anthropic_tool_uses(self, tool_calls: Any, *, raw_to_safe: dict[str, str]) -> list[dict[str, Any]]:
         if not isinstance(tool_calls, list):
@@ -1947,6 +2104,11 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                     continue
                 if block_type == "tool_use":
                     tool_calls.append(self._normalize_anthropic_tool_use(block, tool_name_map=tool_name_map))
+                    continue
+                if block_type == "image":
+                    image_repr = self._anthropic_image_block_to_text(block)
+                    if image_repr:
+                        content_parts.append(image_repr)
         normalized_response: dict[str, Any] = {
             "message": {
                 "role": response_json.get("role") if isinstance(response_json.get("role"), str) else "assistant",
@@ -2093,6 +2255,11 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                 yield {"type": "thinking_delta", "delta": thinking, "source": "provider_reasoning_delta"}
             return
         if block_type != "tool_use":
+            # Handle image block start in streaming
+            if block_type == "image":
+                source = block.get("source") if isinstance(block.get("source"), dict) else {}
+                media_type = source.get("media_type") or "image/unknown"
+                yield {"type": "image_block_start", "media_type": media_type, "source": source}
             return
 
         name = block.get("name")
@@ -2152,6 +2319,13 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                 thought_parts.append(thinking)
                 yield {"type": "thinking_delta", "delta": thinking, "source": "provider_reasoning_delta"}
             return
+        if delta_type == "image_delta":
+            # Anthropic streams image blocks as incremental base64 chunks
+            partial_b64 = delta.get("partial_json")
+            if isinstance(partial_b64, str) and partial_b64:
+                yield {"type": "image_block_delta", "delta": partial_b64}
+            return
+
         if delta_type != "input_json_delta":
             return
 

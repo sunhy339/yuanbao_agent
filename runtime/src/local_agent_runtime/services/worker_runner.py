@@ -41,6 +41,10 @@ class ChildTaskRequest:
     mcp_policy: dict[str, Any] | None = None
     active_worktree: dict[str, Any] | None = None
     event_callback: Callable[[dict[str, Any]], None] | None = None
+    # Parent CancelToken bridge — when set, parent cancellation will be
+    # mirrored into the per-attempt cancellation_event so cooperative
+    # cancellation crosses the parent → child boundary (haha-cc AbortController).
+    cancel_token: Any | None = None
 
 
 @dataclass(slots=True)
@@ -116,6 +120,9 @@ class WorkerRunner:
             worker=claimed["worker"],
             cancellation_event=Event(),
         )
+        # Bridge parent CancelToken → context.cancellation_event so user
+        # interrupts at the parent level reach the child worker boundary.
+        token_release = self._bind_cancel_token_to_context(request, context)
 
         if self._cancel_requested(request):
             context.cancellation_event.set()
@@ -148,6 +155,14 @@ class WorkerRunner:
                 worker=claimed["worker"],
                 error=error,
             )
+        finally:
+            # Always unsubscribe to avoid leaking parent-token observers when
+            # the same root task spawns many children sequentially.
+            if token_release is not None:
+                try:
+                    token_release()
+                except Exception:
+                    pass
 
         if execution.get("status") == "waiting_approval":
             return self._block_child_task(
@@ -420,6 +435,12 @@ class WorkerRunner:
         for attempt_number in range(1, policy.retry.max_attempts + 1):
             context.attempt_number = attempt_number
             context.cancellation_event = Event()
+            # If parent CancelToken already fired (e.g. user ESC happened
+            # between attempts), mirror it onto the freshly minted Event so
+            # the next attempt starts in the cancelled state.
+            parent_token = getattr(context.request, "cancel_token", None)
+            if parent_token is not None and getattr(parent_token, "cancelled", False):
+                context.cancellation_event.set()
             try:
                 output = self._execute(
                     context,
@@ -1139,12 +1160,68 @@ class WorkerRunner:
 
     def _cancel_requested(self, request: ChildTaskRequest) -> bool:
         cancellation = request.cancellation
-        if not isinstance(cancellation, dict):
-            return False
-        for key in ("cancelled", "canceled", "cancelRequested", "cancel_requested"):
-            if self._truthy(cancellation.get(key)):
-                return True
+        if isinstance(cancellation, dict):
+            for key in ("cancelled", "canceled", "cancelRequested", "cancel_requested"):
+                if self._truthy(cancellation.get(key)):
+                    return True
+        # Also respect parent CancelToken state when set: a parent
+        # interrupt before executor entry should short-circuit immediately.
+        token = getattr(request, "cancel_token", None)
+        if token is not None and getattr(token, "cancelled", False):
+            return True
         return False
+
+    def _bind_cancel_token_to_context(
+        self,
+        request: ChildTaskRequest,
+        context: ChildTaskExecutionContext,
+    ) -> Callable[[], None] | None:
+        """Mirror parent CancelToken cancellation into ``context.cancellation_event``.
+
+        The parent ``CancelToken`` may live in another asyncio loop or be set
+        from any thread; we use its ``wait_cancelled`` async API when an event
+        loop is available, otherwise fall back to a polling thread. Returns a
+        callable that releases the observer (idempotent, safe to call in a
+        finally block).
+        """
+        token = getattr(request, "cancel_token", None)
+        if token is None:
+            return None
+
+        # Fast path: parent already cancelled before we registered.
+        if getattr(token, "cancelled", False):
+            context.cancellation_event.set()
+            return None
+
+        import asyncio
+        import threading
+
+        stop_flag = threading.Event()
+
+        def _poll_loop() -> None:
+            # Cheap polling loop: parent cancellation should be rare and we
+            # only need millisecond-scale latency to surface ESC to the child.
+            while not stop_flag.is_set():
+                if getattr(token, "cancelled", False):
+                    try:
+                        context.cancellation_event.set()
+                    except Exception:
+                        pass
+                    return
+                if stop_flag.wait(0.05):
+                    return
+
+        poller = threading.Thread(
+            target=_poll_loop,
+            name=f"cancel-token-bridge-{context.task.get('id', '')[:12]}",
+            daemon=True,
+        )
+        poller.start()
+
+        def _release() -> None:
+            stop_flag.set()
+
+        return _release
 
     def _truthy(self, value: Any) -> bool:
         if isinstance(value, bool):

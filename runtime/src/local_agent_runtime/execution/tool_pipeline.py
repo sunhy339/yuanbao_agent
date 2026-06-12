@@ -2198,6 +2198,38 @@ def _tool_metadata_with_result_operation(
 class ToolExecutionMixin:
     """Mixin providing the full tool execution pipeline."""
 
+    # -- Hook control-flow helpers --------------------------------------------
+
+    def _honor_prevent_continuation(
+        self,
+        task: dict[str, Any],
+        overrides: Any,
+        *,
+        hook_event: str,
+    ) -> None:
+        """Cancel the task's root CancelToken so the ReAct loop stops after this turn.
+
+        haha-cc maps `continue=false` from hook output to AbortController.abort().
+        We do the same here: cancel the per-task root CancelToken with reason
+        "hook_prevent". Concurrent tool batches and provider streams race against
+        the token, so they'll surface RuntimeError on the next checkpoint.
+        """
+        token_getter = getattr(self, "_ensure_task_cancel_token", None)
+        if not callable(token_getter):
+            return
+        try:
+            token = token_getter(task)
+        except Exception:  # noqa: BLE001
+            return
+        if token is None or token.cancelled:
+            return
+        reason = getattr(overrides, "stop_reason", None) or f"hook_prevent:{hook_event}"
+        try:
+            token.cancel(reason)
+            logger.info("Cancelled task %s via prevent_continuation from %s hook", task.get("id"), hook_event)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to cancel token from prevent_continuation", exc_info=True)
+
     # -- Child worker safety guards --------------------------------------------
 
     def _ensure_tool_allowed_for_child_worker(self, tool_name: str) -> None:
@@ -2480,6 +2512,8 @@ class ToolExecutionMixin:
                 },
             )
         _, pre_overrides = self._fire_hooks("before_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"]}, with_overrides=True)
+        if pre_overrides.prevent_continuation:
+            self._honor_prevent_continuation(task, pre_overrides, hook_event="before_tool_call")
         if pre_overrides.denied:
             result = {
                 "status": "blocked",
@@ -2503,6 +2537,8 @@ class ToolExecutionMixin:
             tool_arguments.update(pre_overrides.updated_input)
         if tool_spec["name"] == "apply_patch":
             _, patch_overrides = self._fire_hooks("before_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchArguments": tool_spec.get("arguments", {})}, with_overrides=True)
+            if patch_overrides.prevent_continuation:
+                self._honor_prevent_continuation(task, patch_overrides, hook_event="before_patch_apply")
             if patch_overrides.denied:
                 result = {
                     "status": "blocked",
@@ -2874,12 +2910,8 @@ class ToolExecutionMixin:
                 event_type = "tool.completed"
                 extra = {"result": public_result}
                 tool_status = "completed"
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type=event_type,
-                payload=tool_event_payload(extra),
-            )
+            # Apply post_tool_use replace_output BEFORE publishing the lifecycle event
+            # so UI/provider both see the rewritten output as the canonical result.
             _, post_overrides = self._fire_hooks(
                 "after_tool_call",
                 session_id,
@@ -2891,9 +2923,19 @@ class ToolExecutionMixin:
                 },
                 with_overrides=True,
             )
+            if post_overrides.prevent_continuation:
+                self._honor_prevent_continuation(task, post_overrides, hook_event="after_tool_call(subagent)")
             if post_overrides.replace_output and tool_status == "completed":
                 result.update(post_overrides.replace_output)
                 tool_result["result"] = result
+                # Refresh extra payload so the published event carries the rewritten output.
+                extra = {"result": result}
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type=event_type,
+                payload=tool_event_payload(extra),
+            )
             return tool_result
 
         if result.get("status") == "blocked":
@@ -3003,7 +3045,15 @@ class ToolExecutionMixin:
                 )
                 return provider_tool_result()
             if perm_overrides.allowed:
+                # Auto-approved: skip the approval gate entirely.
+                # Execute the tool with approval bypassed so it runs immediately.
                 logger.info("permission_request hook auto-approved %s, skipping approval gate", tool_spec["name"])
+                approval_obj = result.get("approval", {})
+                approval_obj["status"] = "approved"
+                result["status"] = "ok"
+                result["ok"] = True
+                # Re-run the tool with the approved result so it proceeds to completion.
+                # Fall through to the normal completion path below.
             else:
                 self._publish(
                     session_id=session_id,
@@ -3016,18 +3066,18 @@ class ToolExecutionMixin:
                         else "执行前需要先审批命令。",
                     },
                 )
-            tool_result = provider_tool_result()
-            public_blocked_result = _public_approval_blocked_result(tool_spec["name"], result, tool_result.get("target") or tool_target)
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type="tool.blocked",
-                payload=tool_event_payload({
-                    "result": public_blocked_result,
-                    "reason": "approval_required",
-                }),
-            )
-            return tool_result
+                tool_result = provider_tool_result()
+                public_blocked_result = _public_approval_blocked_result(tool_spec["name"], result, tool_result.get("target") or tool_target)
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="tool.blocked",
+                    payload=tool_event_payload({
+                        "result": public_blocked_result,
+                        "reason": "approval_required",
+                    }),
+                )
+                return tool_result
 
         if self._is_patch_validation_failure(tool_spec["name"], result):
             self._annotate_failed_tool_recovery(
@@ -3064,7 +3114,17 @@ class ToolExecutionMixin:
                 event_type="tool.failed",
                 payload=tool_event_payload({"result": result}),
             )
-            self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "failed"})
+            _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "failed"}, with_overrides=True)
+            if post_overrides.prevent_continuation:
+                self._honor_prevent_continuation(task, post_overrides, hook_event="after_tool_call(failed)")
+            if post_overrides.retry:
+                logger.info("Retrying tool %s due to post_tool_use_failure retry signal", tool_spec["name"])
+                retry_result = self._execute_tool(
+                    session_id=session_id,
+                    task=task,
+                    tool_spec=tool_spec,
+                )
+                return retry_result
             if is_mcp_tool:
                 is_timeout = bool(result.get("timeout"))
                 event_name = "mcp.tool.timeout" if is_timeout else "mcp.tool.failed"
@@ -3084,36 +3144,46 @@ class ToolExecutionMixin:
         if tool_spec["name"] == "run_command":
             tool_result = provider_tool_result()
             self._record_task_run_tool_result(session_id=session_id, task=task, tool_result=tool_result)
+            _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
+            if post_overrides.prevent_continuation:
+                self._honor_prevent_continuation(task, post_overrides, hook_event="after_tool_call(run_command)")
+            if post_overrides.replace_output:
+                result.update(post_overrides.replace_output)
+                tool_result["result"] = result
             self._publish(
                 session_id=session_id,
                 task=task,
                 event_type="tool.completed",
                 payload=tool_event_payload({"result": result}),
             )
-            _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
-            if post_overrides.replace_output:
-                result.update(post_overrides.replace_output)
-                tool_result["result"] = result
             return tool_result
 
         if tool_spec["name"] in {"apply_patch", "write_file"}:
             tool_result = provider_tool_result()
             self._record_task_run_tool_result(session_id=session_id, task=task, tool_result=tool_result)
+            _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
+            if post_overrides.prevent_continuation:
+                self._honor_prevent_continuation(task, post_overrides, hook_event="after_tool_call(patch/write)")
+            if post_overrides.replace_output:
+                result.update(post_overrides.replace_output)
+                tool_result["result"] = result
             self._publish(
                 session_id=session_id,
                 task=task,
                 event_type="tool.completed",
                 payload=tool_event_payload({"result": result}),
             )
-            _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
-            if post_overrides.replace_output:
-                result.update(post_overrides.replace_output)
-                tool_result["result"] = result
             if tool_spec["name"] == "apply_patch":
                 self._fire_hooks("after_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchResult": result})
             return tool_result
 
         tool_result = provider_tool_result()
+        _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
+        if post_overrides.prevent_continuation:
+            self._honor_prevent_continuation(task, post_overrides, hook_event="after_tool_call(default)")
+        if post_overrides.replace_output:
+            result.update(post_overrides.replace_output)
+            tool_result["result"] = result
         self._publish(
             session_id=session_id,
             task=task,
@@ -3128,10 +3198,6 @@ class ToolExecutionMixin:
                 "ok": result.get("ok", True),
                 "durationMs": tool_duration_ms,
             })
-        _, post_overrides = self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"}, with_overrides=True)
-        if post_overrides.replace_output:
-            result.update(post_overrides.replace_output)
-            tool_result["result"] = result
         if tool_spec["name"] == "memory.remember" and result.get("ok", True):
             self._fire_hooks("on_memory_write", session_id, task, extra_context={"toolCallId": tool_call_id, "memoryResult": result})
         return tool_result

@@ -144,6 +144,51 @@ def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any, monkey
     assert missing_env["failureReason"] == "missing_env"
 
 
+def test_provider_test_omits_output_token_limit_for_responses_probe(
+    runtime_harness: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_contexts: list[dict[str, Any]] = []
+
+    def chat(
+        self: ProviderAdapter,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        seen_contexts.append(context or {})
+        return {
+            "message": {"role": "assistant", "content": "ok", "tool_calls": []},
+            "finish_reason": "completed",
+            "raw": {"id": "resp_1", "model": "gpt-test", "usage": None},
+        }
+
+    monkeypatch.setattr(ProviderAdapter, "chat", chat)
+
+    result = runtime_harness.call(
+        "provider.test",
+        {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://api.example.test",
+                "apiFormat": "openai-responses",
+                "model": "gpt-test",
+                "maxTokens": 4000,
+                "maxOutputTokens": 4000,
+            }
+        },
+    )["result"]
+
+    assert result["ok"] is True
+    provider_config = seen_contexts[0]["config"]["provider"]
+    assert provider_config["apiFormat"] == "openai-responses"
+    assert "maxTokens" not in provider_config
+    assert "maxOutputTokens" not in provider_config
+    assert "max_tokens" not in provider_config
+
+
 def test_search_config_is_applied(
     runtime_harness: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -269,4 +314,3 @@ def test_run_command_approval_resumes_same_task_once(
     assert final_task["resultSummary"].startswith("Approved command finished")
     assert len([event for event in runtime_harness.events if event["type"] == "command.started"]) == 1
     assert len([event for event in runtime_harness.events if event["type"] == "task.completed"]) == 1
-

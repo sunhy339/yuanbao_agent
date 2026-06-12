@@ -91,8 +91,8 @@ class TestEventCompatAssistantToken:
         assert len(delta_events) == 1
         assert delta_events[0].payload["messageId"] == "msg_42"
 
-    def test_message_delta_replays_as_flat_content_delta(self, tmp_path: Any) -> None:
-        """message.delta is the single live/replay flat text source."""
+    def test_message_delta_persists_for_events_after_without_flat_replay(self, tmp_path: Any) -> None:
+        """message.delta is the recoverable React event source, not a second flat replay stream."""
         runtime = _make_runtime(tmp_path)
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir()
@@ -121,20 +121,19 @@ class TestEventCompatAssistantToken:
         delta_event = next(event for event in raw_events if event["type"] == "message.delta")
         assert delta_event["visibility"] == "chat"
         assert delta_event["payload"]["messageId"] == "msg_42"
-        assert delta_event["yuanbao"] == {"type": "content_delta", "text": "hello"}
+        assert delta_event["payload"]["delta"] == "hello"
+        assert delta_event["payload"]["_bridge"]["persistTraceMirror"] is True
+        assert delta_event["payload"]["_bridge"]["suppressRealtimeFlat"] is True
+        assert delta_event["payload"]["_bridge"]["suppressChatReplay"] is True
+        assert "yuanbao" not in delta_event
         assert "hahaCc" not in delta_event
-        assert "suppressRealtimeFlat" not in delta_event["payload"].get("_bridge", {})
-        assert "suppressChatReplay" not in delta_event["payload"].get("_bridge", {})
 
         replay = _rpc(
             runtime,
             "events.yuanbaoAfter",
             {"sessionId": session["id"], "afterSeq": 0},
         )["result"]
-        assert replay["messages"][:2] == [
-            {"type": "content_start", "blockType": "text"},
-            {"type": "content_delta", "text": "hello"},
-        ]
+        assert replay["messages"] == [{"type": "content_start", "blockType": "text"}]
 
     def test_live_and_replay_flat_text_sequence_match(self, tmp_path: Any) -> None:
         """Refreshing must not introduce a second text stream that live never showed."""
@@ -177,10 +176,14 @@ class TestEventCompatAssistantToken:
             for event in replay_events
             if event["type"] == "assistant.token"
         ] == ["trace"]
-        assert live_flat == replay_flat == [
+        assert live_flat == [
             ("content_start", "content_start", None),
             ("message.delta", "content_delta", "hello"),
         ]
+        assert replay_flat == [("content_start", "content_start", None)]
+        replay_delta = next(event for event in replay_events if event["type"] == "message.delta")
+        assert replay_delta["payload"]["delta"] == "hello"
+        assert replay_delta["payload"]["_bridge"]["persistTraceMirror"] is True
 
     def test_live_event_ids_and_sequences_match_persisted_replay(self, tmp_path: Any) -> None:
         """Live envelopes use the same cursor identity as events.after replay."""

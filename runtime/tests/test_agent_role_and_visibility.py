@@ -346,7 +346,7 @@ class TestEventBusVisibility:
         }
         assert "hahaCc" not in payload
 
-    def test_rpc_writer_emits_single_flat_message_line_when_available(self):
+    def test_rpc_writer_emits_runtime_event_and_flat_message_lines(self):
         server = JsonRpcServer.__new__(JsonRpcServer)
         writer = io.StringIO()
         server._writer = writer  # noqa: SLF001
@@ -367,6 +367,19 @@ class TestEventBusVisibility:
 
         lines = [json.loads(line) for line in writer.getvalue().splitlines()]
         assert lines == [
+            {
+                "kind": "event",
+                "payload": {
+                    "eventId": "evt_1",
+                    "sessionId": "sess_1",
+                    "taskId": "task_1",
+                    "type": "content_delta",
+                    "ts": 1,
+                    "payload": {"text": "hello"},
+                    "visibility": "chat",
+                    "yuanbao": {"type": "content_delta", "text": "hello"},
+                },
+            },
             {
                 "kind": "yuanbao_message",
                 "payload": {"type": "content_delta", "text": "hello"},

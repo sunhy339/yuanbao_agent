@@ -176,6 +176,11 @@ class MemoryFlowMixin:
             "source": source,
             "scope": metadata.get("scope"),
             "confidence": metadata.get("confidence"),
+            "_bridge": {
+                "suppressRealtimeFlat": True,
+                "suppressChatReplay": True,
+                "reason": "routine_memory_event",
+            },
         }
         self._publish(
             session_id=session_id,

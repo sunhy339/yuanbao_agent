@@ -272,8 +272,185 @@ class HookService:
             return self._execute_auto_verification(hook, action, event, context)
         elif action_type == "external_sync":
             return self._execute_external_sync(hook, action, authority, event, context)
+        elif action_type == "policy_decision":
+            return self._execute_policy_decision(hook, action, event, context)
+        elif action_type == "input_rewrite":
+            return self._execute_input_rewrite(hook, action, event, context)
+        elif action_type == "script":
+            return self._execute_script(hook, action, authority, event, context)
         else:
             raise ValueError(f"Unknown action type: {action_type}")
+
+    # -------------------------------------------------------------------
+    # P0 control-flow action executors (haha-cc alignment)
+    # -------------------------------------------------------------------
+
+    def _execute_policy_decision(
+        self,
+        hook: dict[str, Any],
+        action: dict[str, Any],
+        event: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Pure decision action: records the decision intent so _extract_overrides_from_result can pick it up.
+
+        Action config: {type: "policy_decision", decision: "allow"|"deny"|"ask", reason?: str}
+        """
+        now = self._store.now()
+        decision = action.get("decision")
+        reason = action.get("reason", "")
+        summary = f"policy_decision: {decision}"
+        return self._record_hook_execution(hook, {
+            "hookId": hook["id"],
+            "event": event,
+            "sessionId": context.get("sessionId"),
+            "taskId": context.get("taskId"),
+            "triggerEventId": context.get("triggerEventId"),
+            "conditionResult": "matched",
+            "policyOutcome": "allowed",
+            "status": "completed",
+            "startedAt": now,
+            "finishedAt": self._store.now(),
+            "durationMs": self._store.now() - now,
+            "inputSummary": summary,
+            "outputSummary": reason or summary,
+        }, context=context, event_type="hook.policy_decision", payload_extra={
+            "decision": decision, "reason": reason,
+        })
+
+    def _execute_input_rewrite(
+        self,
+        hook: dict[str, Any],
+        action: dict[str, Any],
+        event: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Rewrite tool input. _extract_overrides_from_result reads action["updatedInput"].
+
+        Action config: {type: "input_rewrite", updatedInput: {...}}
+        """
+        now = self._store.now()
+        updated = action.get("updatedInput") if isinstance(action.get("updatedInput"), dict) else {}
+        summary = f"input_rewrite: {len(updated)} field(s)"
+        return self._record_hook_execution(hook, {
+            "hookId": hook["id"],
+            "event": event,
+            "sessionId": context.get("sessionId"),
+            "taskId": context.get("taskId"),
+            "triggerEventId": context.get("triggerEventId"),
+            "conditionResult": "matched",
+            "policyOutcome": "allowed",
+            "status": "completed",
+            "startedAt": now,
+            "finishedAt": self._store.now(),
+            "durationMs": self._store.now() - now,
+            "inputSummary": summary,
+            "outputSummary": summary,
+        }, context=context, event_type="hook.input_rewrite", payload_extra={
+            "updatedKeys": list(updated.keys()),
+        })
+
+    def _execute_script(
+        self,
+        hook: dict[str, Any],
+        action: dict[str, Any],
+        authority: dict[str, Any],
+        event: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run an external script synchronously, parse its JSON stdout into a HookOverrides shape.
+
+        Action config: {type: "script", command: str|list, timeoutMs?: int}
+        Script stdout must be JSON matching haha-cc's syncHookResponseSchema:
+          {permissionDecision?, updatedInput?, replaceOutput?, preventContinuation?, retry?, stopReason?, additionalContext?}
+        """
+        import subprocess
+        now = self._store.now()
+        command = action.get("command", "")
+        timeout_ms = hook.get("timeoutMs") or action.get("timeoutMs") or 5000
+        timeout_s = max(timeout_ms / 1000.0, 0.5)
+        input_summary = f"Script: {command if isinstance(command, str) else ' '.join(command)}"
+
+        permission = self._hook_action_permission_decision(
+            hook=hook,
+            event=event,
+            tool_name="hook.script",
+            context=context,
+            capability="runCommand",
+            extra_context={"command": str(command)},
+        )
+        if permission is not None and permission.decision != "allow":
+            return self._record_permission_outcome(
+                hook, event=event, context=context, decision=permission,
+                input_summary=input_summary, now=now,
+            )
+        if authority.get("requiresApproval", False):
+            return self._record_authority_approval_required(
+                hook, event=event, context=context, input_summary=input_summary, now=now,
+            )
+
+        try:
+            payload = {
+                "event": event,
+                "sessionId": context.get("sessionId"),
+                "taskId": context.get("taskId"),
+                "workspaceId": context.get("workspaceId"),
+                "toolName": context.get("toolName"),
+                "toolInput": context.get("toolInput"),
+                "toolResult": context.get("toolResult"),
+            }
+            proc = subprocess.run(
+                command if isinstance(command, list) else command,
+                input=json.dumps(payload),
+                shell=not isinstance(command, list),
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+            stdout = proc.stdout or ""
+            output_summary = stdout.strip()[:1000]
+            status = "completed" if proc.returncode == 0 else "failed"
+            return self._record_hook_execution(hook, {
+                "hookId": hook["id"], "event": event,
+                "sessionId": context.get("sessionId"), "taskId": context.get("taskId"),
+                "triggerEventId": context.get("triggerEventId"),
+                "conditionResult": "matched",
+                "policyOutcome": "allowed" if status == "completed" else "error",
+                "status": status,
+                "startedAt": now,
+                "finishedAt": self._store.now(),
+                "durationMs": self._store.now() - now,
+                "inputSummary": input_summary,
+                "outputSummary": output_summary,
+                "errorSummary": (proc.stderr or "")[:500] if status == "failed" else None,
+            }, context=context, event_type="hook.script", payload_extra={
+                "exitCode": proc.returncode,
+            })
+        except subprocess.TimeoutExpired as exc:
+            return self._record_hook_execution(hook, {
+                "hookId": hook["id"], "event": event,
+                "sessionId": context.get("sessionId"), "taskId": context.get("taskId"),
+                "triggerEventId": context.get("triggerEventId"),
+                "conditionResult": "matched", "policyOutcome": "error",
+                "status": "failed", "startedAt": now,
+                "finishedAt": self._store.now(),
+                "durationMs": self._store.now() - now,
+                "inputSummary": input_summary,
+                "errorSummary": f"Script timeout after {timeout_s}s",
+            }, context=context)
+        except Exception as exc:
+            logger.warning("Script hook failed for hook %s: %s", hook["id"], exc)
+            return self._record_hook_execution(hook, {
+                "hookId": hook["id"], "event": event,
+                "sessionId": context.get("sessionId"), "taskId": context.get("taskId"),
+                "triggerEventId": context.get("triggerEventId"),
+                "conditionResult": "matched", "policyOutcome": "error",
+                "status": "failed", "startedAt": now,
+                "finishedAt": self._store.now(),
+                "durationMs": self._store.now() - now,
+                "inputSummary": input_summary,
+                "errorSummary": str(exc),
+            }, context=context)
 
     def _execute_audit_note(
         self,

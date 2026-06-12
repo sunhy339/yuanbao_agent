@@ -220,6 +220,12 @@ class ProviderAdapter:
                 )
             except ProviderAdapterError as exc:
                 last_error = exc
+                if settings.api_format == "openai-responses" and classify_provider_failure(exc).category == "invalid_response":
+                    return self._generate_via_stream(
+                        messages=messages,
+                        tools=tools,
+                        context=context or self._fallback_context(),
+                    )
                 if attempt + 1 >= PROVIDER_RETRY_ATTEMPTS or not _is_retryable_provider_error(exc):
                     raise
 
@@ -471,6 +477,8 @@ class ProviderAdapter:
         settings: OpenAICompatibleSettings,
         tools: list[dict[str, Any]] | None,
     ) -> OpenAICompatibleSettings:
+        if settings.api_format == "openai-responses" and "relaylink.cloud" in settings.base_url.lower():
+            settings = replace(settings, temperature=None, max_tokens=None)
         if not tools:
             return settings
         timeout = max(settings.timeout, 120.0)

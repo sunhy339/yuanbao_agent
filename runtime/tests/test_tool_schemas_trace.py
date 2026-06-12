@@ -22,6 +22,7 @@ EXPECTED_TOOL_NAMES = {
     "enter_plan_mode",
     "exit_plan_mode",
     "agent",
+    "send_message",
     "run_command",
     "apply_patch",
     "git_status",
@@ -111,6 +112,13 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
                 "backgroundJob",
                 "runInBackground",
             }
+            run_command_description = schema["description"].lower()
+            command_description = run_command_properties["command"]["description"].lower()
+            for text in (run_command_description, command_description):
+                assert "read_file" in text
+                assert "search_files" in text
+                assert "list_dir" in text
+            assert "inspection" not in run_command_description
             assert run_command_properties["background"]["type"] == "boolean"
             assert run_command_properties["runInBackground"]["type"] == "boolean"
             assert run_command_properties["backgroundJob"]["oneOf"][0]["type"] == "boolean"
@@ -121,6 +129,7 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
             "enter_plan_mode",
             "exit_plan_mode",
             "agent",
+            "send_message",
             "computer_use",
             "memory.remember",
             "memory.recall",

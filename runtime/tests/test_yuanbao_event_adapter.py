@@ -5,13 +5,14 @@ from local_agent_runtime.models import RuntimeEvent
 from local_agent_runtime.yuanbao_event_adapter import (
     collect_yuanbao_server_messages,
     normalize_yuanbao_usage,
+    should_emit_yuanbao_server_message,
     to_yuanbao_output_frames,
     to_yuanbao_server_message,
     yuanbao_message_from_event_payload,
 )
 
 
-def _event(event_type: str, payload: dict) -> RuntimeEvent:
+def _event(event_type: str, payload: dict, visibility: str = "chat") -> RuntimeEvent:
     return RuntimeEvent(
         event_id="evt_1",
         session_id="sess_1",
@@ -19,7 +20,7 @@ def _event(event_type: str, payload: dict) -> RuntimeEvent:
         type=event_type,
         ts=100,
         payload=payload,
-        visibility="chat",
+        visibility=visibility,
     )
 
 
@@ -85,6 +86,34 @@ def test_yuanbao_adapter_maps_haha_cc_status_states() -> None:
         "state": "thinking",
     }
     assert to_yuanbao_server_message(_event("status", {"state": "retrying_provider", "_chatCompat": True})) is None
+
+
+def test_yuanbao_adapter_keeps_panel_and_trace_events_out_of_flat_chat() -> None:
+    panel_event = _event("content_delta", {"text": "panel-only", "_chatCompat": True}, visibility="panel")
+    trace_event = _event("thinking", {"text": "trace-only", "_chatCompat": True}, visibility="trace")
+
+    assert should_emit_yuanbao_server_message(panel_event) is False
+    assert should_emit_yuanbao_server_message(trace_event) is False
+    assert to_yuanbao_server_message(panel_event) is None
+    assert to_yuanbao_server_message(trace_event) is None
+
+
+def test_yuanbao_adapter_preserves_provider_thinking_source() -> None:
+    assert to_yuanbao_server_message(
+        _event(
+            "thinking",
+            {
+                "text": "Inspecting project files.",
+                "source": "provider_reasoning_summary",
+                "messageId": "msg_1",
+                "_chatCompat": True,
+            },
+        )
+    ) == {
+        "type": "thinking",
+        "text": "Inspecting project files.",
+        "source": "provider_reasoning_summary",
+    }
 
 
 def test_yuanbao_adapter_maps_chat_compat_message_delta_to_content_delta() -> None:
@@ -405,7 +434,6 @@ def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
         to_yuanbao_server_message(_event("collab.team.created", {"teamName": "docs"})),
         to_yuanbao_server_message(_event("collab.task.created", {"task": {"id": "child_1", "sessionId": "sess_1", "title": "Inspect", "status": "queued"}})),
         to_yuanbao_server_message(_event("collab.team.deleted", {"teamName": "docs"})),
-        to_yuanbao_server_message(_event("task.runtime_work_waiting", {"taskId": "task_1", "status": "running", "detail": "Waiting"})),
         to_yuanbao_server_message(_event("session.updated", {"sessionId": "sess_1", "title": "New title", "changedFields": ["title"]})),
     ]
 
@@ -426,13 +454,12 @@ def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
         "team_created",
         "team_update",
         "team_deleted",
-        "task_update",
         "session_title_updated",
     ]
     assert all(message is not None for message in messages)
 
 
-def test_runtime_work_waiting_is_task_update_not_permission_request() -> None:
+def test_runtime_work_waiting_stays_out_of_flat_chat() -> None:
     message = to_yuanbao_server_message(
         _event(
             "task.runtime_work_waiting",
@@ -445,13 +472,7 @@ def test_runtime_work_waiting_is_task_update_not_permission_request() -> None:
         )
     )
 
-    assert message == {
-        "type": "task_update",
-        "taskId": "finish-cleanup",
-        "taskLabel": "Finish cleanup",
-        "status": "running",
-        "progress": "Completion is waiting for runtime work to settle.",
-    }
+    assert message is None
 
 
 def test_root_task_updates_do_not_leak_into_flat_chat_protocol() -> None:

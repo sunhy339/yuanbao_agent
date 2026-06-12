@@ -50,8 +50,13 @@ class PartialStreamFailureProvider:
 
 
 class TextDeltaStreamProvider:
+    def __init__(self, on_after_first_delta: Any | None = None) -> None:
+        self._on_after_first_delta = on_after_first_delta
+
     def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
         yield {"type": "content_delta", "delta": "Hello"}
+        if self._on_after_first_delta:
+            self._on_after_first_delta()
         yield {"type": "content_delta", "delta": " there"}
         yield {
             "type": "final",
@@ -108,6 +113,33 @@ class ToolDeltaStreamProvider:
                             "name": "read_file",
                             "arguments": {"path": "README.md"},
                             "parentToolUseId": "call_parent",
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+                "raw": {},
+            },
+        }
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("Streaming test should not fall back to generate")
+
+
+class PreToolTextStreamProvider:
+    def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        yield {"type": "content_delta", "delta": "I will inspect before answering."}
+        yield {
+            "type": "final",
+            "response": {
+                "message": {
+                    "role": "assistant",
+                    "content": "I will inspect before answering.",
+                    "tool_calls": [
+                        {
+                            "id": "call_read",
+                            "type": "function",
+                            "name": "read_file",
+                            "arguments": {"path": "README.md"},
                         }
                     ],
                 },
@@ -265,7 +297,17 @@ def test_stream_fallback_turn_persists_transport(tmp_path: Any) -> None:
 
 
 def test_stream_text_delta_emits_single_text_start(tmp_path: Any) -> None:
-    provider = TextDeltaStreamProvider()
+    live_delta_seen = False
+
+    def assert_first_delta_was_published() -> None:
+        nonlocal live_delta_seen
+        live_delta_seen = any(
+            event.get("yuanbao", {}).get("type") == "content_delta"
+            and event.get("yuanbao", {}).get("text") == "Hello"
+            for event in runtime.events
+        )
+
+    provider = TextDeltaStreamProvider(on_after_first_delta=assert_first_delta_was_published)
     runtime = _make_runtime(tmp_path, provider)
     task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="answer", plan=[])
     config = {
@@ -295,6 +337,7 @@ def test_stream_text_delta_emits_single_text_start(tmp_path: Any) -> None:
     assert response["final_answer"] == "Hello there"
     assert len(starts) == 1
     assert [event["yuanbao"]["text"] for event in deltas] == ["Hello", " there"]
+    assert live_delta_seen is True
 
 
 def test_stream_thinking_delta_emits_thinking_event(tmp_path: Any) -> None:
@@ -359,6 +402,45 @@ def test_stream_tool_call_delta_is_trace_only_not_chat_tool_input(tmp_path: Any)
     assert not [event for event in runtime.events if event["type"] == "content_delta" and event["payload"].get("toolInput")]
     trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
     assert [event["type"] for event in trace].count("provider.stream.tool_call_delta") == 2
+
+
+def test_stream_text_with_available_tools_still_streams_as_assistant_text(tmp_path: Any) -> None:
+    provider = PreToolTextStreamProvider()
+    runtime = _make_runtime(tmp_path, provider)
+    task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="read", plan=[])
+    config = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-chat",
+            "streamingEnabled": True,
+            "model": "fake-stream",
+        }
+    }
+    runtime.store.update_config({"config": config})
+
+    response = runtime.orchestrator._request_provider_response(
+        session_id="sess_1",
+        task={**task, "role": "root", "activeAssistantMessageId": "msg_1"},
+        goal="read README",
+        provider_context={
+            "config": config,
+            "messages": [{"role": "user", "content": "read README"}],
+            "openai_tools": [{"type": "function", "function": {"name": "read_file"}}],
+            "step": 1,
+        },
+    )
+
+    assert response["tool_calls"][0]["name"] == "read_file"
+    assert [
+        event for event in runtime.events
+        if event["type"] == "message.delta"
+        and event["payload"].get("delta") == "I will inspect before answering."
+    ]
+    assert not [
+        event for event in runtime.events
+        if event["type"] == "thinking"
+        and event["payload"].get("source") == "provider_preturn_progress"
+    ]
 
 
 def test_turn_persists_usage_from_raw_response(tmp_path: Any) -> None:

@@ -903,6 +903,7 @@ class JsonRpcServer:
             return
 
         with self._writer_lock:
+            self._writer.write(json.dumps({"kind": "event", "payload": payload}, ensure_ascii=False) + "\n")
             for frame in to_yuanbao_output_frames(payload):
                 self._writer.write(json.dumps(frame, ensure_ascii=False) + "\n")
             self._writer.flush()

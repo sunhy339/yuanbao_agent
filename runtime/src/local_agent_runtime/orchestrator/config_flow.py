@@ -106,7 +106,10 @@ class ConfigFlowMixin:
             profile_id=params.get("profileId"),
             provider_patch=provider_patch if isinstance(provider_patch, dict) else None,
         )
-        config["provider"] = provider_config
+        provider_request_config = deepcopy(provider_config)
+        for key in ("maxTokens", "max_tokens", "maxOutputTokens"):
+            provider_request_config.pop(key, None)
+        config["provider"] = provider_request_config
 
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip()
         normalized_mode = mode.lower()
@@ -331,7 +334,7 @@ class ConfigFlowMixin:
             if trimmed.endswith("/responses"):
                 return self._path_from_url(trimmed)
             if self._path_from_url(trimmed) in {"", "/"}:
-                return "/v1/responses"
+                return "/responses"
             return f"{self._path_from_url(trimmed).rstrip('/')}/responses"
         if api_format == "anthropic-messages":
             if trimmed.endswith("/messages"):

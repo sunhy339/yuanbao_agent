@@ -186,11 +186,47 @@ _SERVER_MESSAGE_REQUIRED_FIELDS: dict[str, set[str]] = {
 }
 
 
+_COLLABORATION_TASK_EVENT_TYPES = {"task.created", "task.updated"}
+
+_YUANBAO_PROJECTING_EVENT_TYPES = {
+    "session.updated",
+    "task.created",
+    "task.updated",
+}
+
+
+def _has_yuanbao_projection(event: RuntimeEvent) -> bool:
+    """Return True if a panel/trace-visible event still produces a flat
+    yuanbao ServerMessage projection (e.g. team_update / task_update /
+    session_title_updated). UI/replay rely on those projections even when the
+    underlying RuntimeEvent itself is not chat-visible."""
+    if event.type.startswith("collab."):
+        return True
+    if event.type in _YUANBAO_PROJECTING_EVENT_TYPES:
+        return True
+    return False
+
+
+def _is_collaboration_task_event(event: RuntimeEvent) -> bool:
+    """Backward-compat shim — retained for any callers that still ask
+    specifically for the collaboration-task carveout."""
+    if event.type.startswith("collab."):
+        return True
+    if event.type not in _COLLABORATION_TASK_EVENT_TYPES:
+        return False
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    return payload.get("source") == "collaboration"
+
+
 def to_yuanbao_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
     """Return the Yuanbao flat ServerMessage for compatible runtime events."""
 
     if event.visibility in {"panel", "trace"}:
-        return None
+        # Exception: some panel/trace events still need a flat yuanbao
+        # projection (collab.* → team_update, task.* → task_update,
+        # session.updated → session_title_updated). UI/replay rely on those.
+        if not _has_yuanbao_projection(event):
+            return None
 
     payload = event.payload if isinstance(event.payload, dict) else {}
     message: dict[str, Any] | None = None
@@ -245,7 +281,9 @@ def should_emit_yuanbao_server_message(event: RuntimeEvent, *, mode: str = "live
     """
 
     if event.visibility in {"panel", "trace"}:
-        return False
+        # Same yuanbao-projection carveout as to_yuanbao_server_message.
+        if not _has_yuanbao_projection(event):
+            return False
     payload = event.payload if isinstance(event.payload, dict) else {}
     bridge = payload.get("_bridge")
     bridge_payload = bridge if isinstance(bridge, dict) else {}

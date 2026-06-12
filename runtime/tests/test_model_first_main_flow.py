@@ -161,6 +161,70 @@ def test_summary_only_review_hint_does_not_create_completion_gate(tmp_path: Path
     assert "completionReview" not in completed["structuredResult"]
 
 
+def test_linked_failed_collaboration_task_does_not_leave_child_runtime_work_pending(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    parent = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Implement return_book",
+        plan=[],
+        status="running",
+    )
+    collab = runtime.store.create_collaboration_task({
+        "sessionId": session["id"],
+        "parentTaskId": parent["id"],
+        "title": "Reviewer: return_book approach",
+        "metadata": {"agentType": "reviewer"},
+    })["task"]
+    worker = runtime.store.upsert_agent_worker({
+        "name": "Reviewer",
+        "role": "reviewer",
+    })["worker"]
+    runtime.store.claim_collaboration_task({"taskId": collab["id"], "workerId": worker["id"]})
+    runtime.store.fail_collaboration_task({
+        "taskId": collab["id"],
+        "workerId": worker["id"],
+        "error": {"code": "CHILD_TASK_TIMEOUT", "message": "Child task timed out after 120 seconds"},
+    })
+    runtime.store.create_task(
+        session_id=session["id"],
+        task_type="validate",
+        goal="Review return_book",
+        plan=[],
+        status="running",
+        role="reviewer",
+        routing={
+            "parentRuntimeTaskId": parent["id"],
+            "childCollaborationTaskId": collab["id"],
+            "runtimeRole": "reviewer",
+        },
+    )
+
+    completed = runtime.orchestrator._complete_task(
+        session_id=session["id"],
+        task=parent,
+        summary="Implemented return_book and verified tests passed.",
+        context={},
+        tool_results=[],
+        skip_reflection=True,
+    )
+
+    assert completed["status"] == "completed"
+    child_tasks = completed["structuredResult"]["completionEvidence"]["childTasks"]
+    assert child_tasks == [
+        {
+            "id": child_tasks[0]["id"],
+            "status": "failed",
+            "role": "reviewer",
+            "summary": "Reviewer: return_book approach",
+            "source": "child_runtime_task",
+            "collaborationTaskId": collab["id"],
+        }
+    ]
+    assert "task.runtime_work_waiting" not in _event_types(runtime)
+
+
 def test_tool_policy_ignores_legacy_plan_strategy_for_initial_phase() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(

@@ -65,6 +65,8 @@ def test_completed_task_extracts_verified_capability_and_convention_memories(tmp
     assert {"task_learning", "verified_capability", "project_convention"}.issubset(event_categories)
     assert all(event["payload"]["memoryId"] for event in memory_events)
     assert all(event["payload"]["summary"] for event in memory_events)
+    assert all(event["payload"].get("_bridge", {}).get("suppressRealtimeFlat") is True for event in memory_events)
+    assert all(event["payload"].get("_bridge", {}).get("suppressChatReplay") is True for event in memory_events)
 
     verified = next(entry for entry in entries if entry.metadata.get("category") == "verified_capability")
     assert "Verified outcome: Implement backend verification flow" in verified.content

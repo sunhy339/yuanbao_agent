@@ -479,6 +479,57 @@ def test_provider_thinking_surrounds_tool_cycle_in_haha_order(tmp_path: Path) ->
     assert all(event["visibility"] == "chat" for event in events if event["type"] in {"thinking", "content_start", "tool_result", "message.delta", "message_complete"})
 
 
+def test_streamed_pre_tool_text_remains_visible_assistant_text(tmp_path: Path) -> None:
+    provider = ScriptedProvider([
+        {
+            "message": "I will inspect the workspace before editing.",
+            "tool_calls": [
+                {
+                    "id": "call_read",
+                    "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }
+            ],
+        },
+        {"final": "The note says hello."},
+    ])
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "read_file": lambda params: {
+                "path": params["path"],
+                "content": "hello",
+                "bytes": 5,
+            },
+        },
+    )
+    runtime.store.update_config({"config": {"provider": {"streamingEnabled": True}}})
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "read the note"})
+
+    assert response["result"]["task"]["status"] == "completed"
+    assert not [
+        event
+        for event in runtime.events
+        if event["type"] == "thinking"
+        and event["payload"].get("source") == "provider_preturn_progress"
+    ]
+    assert [
+        event
+        for event in runtime.events
+        if event["type"] == "message.delta"
+        and event["payload"].get("delta") == "I will inspect the workspace before editing."
+    ]
+    assistant_messages = [
+        message
+        for message in runtime.store.list_messages({"sessionId": session["id"], "limit": 20})["messages"]
+        if message["role"] == "assistant"
+    ]
+    assert assistant_messages[-1]["content"] == "The note says hello."
+
+
 def test_chat_compat_tool_frames_persist_for_session_replay(tmp_path: Path) -> None:
     provider = ScriptedProvider([
         {

@@ -2242,6 +2242,65 @@ class ToolExecutionMixin:
         except Exception:  # noqa: BLE001
             logger.debug("Failed to cancel token from prevent_continuation", exc_info=True)
 
+    # -- tool_use_summary helpers --------------------------------------------
+
+    def _maybe_emit_tool_summary_ready(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_call_id: str,
+        tool_name: str,
+        tool_arguments: dict[str, Any] | None,
+        result: Any,
+        parent_tool_use_id: str | None,
+        tool_batch_metadata: dict[str, Any],
+    ) -> None:
+        """Generate a concise tool_use summary and emit ``tool.summary_ready``.
+
+        Mirrors haha-cc's deferred summary fan-out. The generator runs the
+        synchronous heuristic path first (no LLM round-trip) so we can publish
+        the event inline; if a provider is configured for LLM-based
+        summarisation, fall back to a thread without blocking the caller.
+        """
+        if not isinstance(result, dict):
+            return
+        try:
+            generator: ToolUseSummaryGenerator | None = getattr(self, "_tool_use_summary_generator", None)
+            if generator is None:
+                generator = ToolUseSummaryGenerator()
+                try:
+                    setattr(self, "_tool_use_summary_generator", generator)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            arguments = tool_arguments if isinstance(tool_arguments, dict) else {}
+            heuristic_summary = generator._heuristic_summary(tool_name, arguments, result)
+        except Exception:  # noqa: BLE001
+            heuristic_summary = None
+        if not heuristic_summary:
+            return
+        payload: dict[str, Any] = {
+            "toolCallId": tool_call_id,
+            "toolName": tool_name,
+            "summary": heuristic_summary,
+        }
+        if parent_tool_use_id:
+            payload["parentToolUseId"] = parent_tool_use_id
+        if tool_batch_metadata:
+            payload.update({k: v for k, v in tool_batch_metadata.items() if v is not None})
+        try:
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="tool.summary_ready",
+                payload=payload,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to emit tool.summary_ready", exc_info=True)
+
     # -- Child worker safety guards --------------------------------------------
 
     def _ensure_tool_allowed_for_child_worker(self, tool_name: str) -> None:
@@ -3178,6 +3237,16 @@ class ToolExecutionMixin:
                 event_type="tool.completed",
                 payload=tool_event_payload({"result": result}),
             )
+            self._maybe_emit_tool_summary_ready(
+                session_id=session_id,
+                task=task,
+                tool_call_id=tool_call_id,
+                tool_name=tool_spec["name"],
+                tool_arguments=tool_arguments,
+                result=result,
+                parent_tool_use_id=parent_tool_use_id,
+                tool_batch_metadata=tool_batch_metadata,
+            )
             return tool_result
 
         if tool_spec["name"] in {"apply_patch", "write_file"}:
@@ -3195,6 +3264,16 @@ class ToolExecutionMixin:
                 event_type="tool.completed",
                 payload=tool_event_payload({"result": result}),
             )
+            self._maybe_emit_tool_summary_ready(
+                session_id=session_id,
+                task=task,
+                tool_call_id=tool_call_id,
+                tool_name=tool_spec["name"],
+                tool_arguments=tool_arguments,
+                result=result,
+                parent_tool_use_id=parent_tool_use_id,
+                tool_batch_metadata=tool_batch_metadata,
+            )
             if tool_spec["name"] == "apply_patch":
                 self._fire_hooks("after_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchResult": result})
             return tool_result
@@ -3211,6 +3290,16 @@ class ToolExecutionMixin:
             task=task,
             event_type="tool.completed",
             payload=tool_event_payload({"result": result}),
+        )
+        self._maybe_emit_tool_summary_ready(
+            session_id=session_id,
+            task=task,
+            tool_call_id=tool_call_id,
+            tool_name=tool_spec["name"],
+            tool_arguments=tool_arguments,
+            result=result,
+            parent_tool_use_id=parent_tool_use_id,
+            tool_batch_metadata=tool_batch_metadata,
         )
         if is_mcp_tool:
             self._publish_mcp_event("mcp.tool.completed", {

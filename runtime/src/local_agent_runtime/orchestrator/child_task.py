@@ -186,6 +186,7 @@ class ChildTaskMixin:
             },
         )
 
+        _finalised = False
         try:
             react_result = self._run_react_loop(
                 session_id=session["id"],
@@ -195,6 +196,7 @@ class ChildTaskMixin:
                 budget=budget,
             )
             if react_result["status"] == "waiting_approval":
+                _finalised = True
                 self._tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_approval"})
                 return self._waiting_child_task_response(
                     task=runtime_task,
@@ -202,6 +204,7 @@ class ChildTaskMixin:
                     budget=budget,
                 )
             if react_result["status"] == "completed":
+                _finalised = True
                 completed_task = self._complete_task(
                     session_id=session["id"],
                     task=runtime_task,
@@ -223,6 +226,7 @@ class ChildTaskMixin:
                     "budget": budget.to_metadata(),
                 }
 
+            _finalised = True
             failed_task = self._fail_task(
                 session_id=session["id"],
                 task=runtime_task,
@@ -242,16 +246,20 @@ class ChildTaskMixin:
                 "summary": failed_task.get("resultSummary") or "Child ReAct loop did not produce a terminal result.",
                 "budget": budget.to_metadata(),
             }
-        except Exception as exc:  # noqa: BLE001
+        except BaseException as exc:
             logger.error("Worker task execution failed: %s", exc, exc_info=True)
             self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
-            self._fail_task(
-                session_id=session["id"],
-                task=runtime_task,
-                summary=str(exc),
-                error_code=str(getattr(exc, "code", "LOOP_EXECUTION_FAILED")),
-                skip_drain=True,
-            )
+            if not _finalised:
+                try:
+                    self._fail_task(
+                        session_id=session["id"],
+                        task=runtime_task,
+                        summary=str(exc),
+                        error_code=str(getattr(exc, "code", "LOOP_EXECUTION_FAILED")),
+                        skip_drain=True,
+                    )
+                except Exception:
+                    logger.exception("Secondary failure while marking child task as failed")
             raise
 
     def _waiting_child_task_response(

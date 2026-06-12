@@ -538,6 +538,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "default": False,
                 },
                 "model": _string_property("Optional child model override."),
+                "isolation": {
+                    "type": "string",
+                    "description": (
+                        "Isolation mode for the child agent. 'worktree' creates a temporary git worktree "
+                        "so the child works on an isolated copy of the repo; 'none' runs in the current workspace."
+                    ),
+                    "enum": ["none", "worktree"],
+                    "default": "none",
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, the child agent runs asynchronously — the parent continues without "
+                        "blocking. The parent can later check status or send follow-up messages via "
+                        "the continuation handle. When false (default), the parent blocks until the "
+                        "child completes."
+                    ),
+                    "default": False,
+                },
                 "sessionId": _string_property(
                     "Runtime session id injected by the orchestrator; models usually omit this.",
                 ),
@@ -752,7 +771,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "run_command",
         "description": (
             "Run a shell command in the workspace after policy approval. This can execute arbitrary code and should "
-            "be used only for inspection, tests, builds, and narrowly-scoped project commands."
+            "be used only for tests, builds, verification, and narrowly-scoped project commands. Do not use it just "
+            "to list, search, or read files; use list_dir, search_files/code_search, and read_file for workspace context."
         ),
         "input_schema": {
             "type": "object",
@@ -765,7 +785,8 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     examples=[".", "runtime", "app"],
                 ),
                 "command": _string_property(
-                    "Shell command to execute. Keep it non-interactive and scoped to the workspace.",
+                    "Shell command to execute. Keep it non-interactive and scoped to the workspace. Prefer read_file, "
+                    "search_files/code_search, or list_dir instead of shell/Python probes for reading context.",
                     examples=["python -m pytest tests/test_context_builder.py -q", "git status --short"],
                 ),
                 "shell": {

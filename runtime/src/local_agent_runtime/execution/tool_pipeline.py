@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from ..services.worker_budget import WorkerBudget
+from ..services.tool_use_summary import ToolUseSummaryGenerator
 from ..tools.task import continuation_for_subagent_result, normalize_agent_tool_params
 
 logger = logging.getLogger(__name__)

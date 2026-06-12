@@ -78,6 +78,7 @@ export type AgentEventType =
   | "tool.completed"
   | "tool.failed"
   | "tool.blocked"
+  | "tool.summary_ready"
   | "command.started"
   | "command.output"
   | "command.completed"
@@ -241,7 +242,7 @@ export type YuanbaoServerMessage =
     } & Partial<ToolPresentationFields>)
   | { type: "computer_use_permission_request"; requestId: string; request: Record<string, unknown> }
   | { type: "message_complete"; usage: YuanbaoTokenUsage }
-  | { type: "thinking"; text: string }
+  | { type: "thinking"; text: string; source?: string }
   | { type: "status"; state: YuanbaoChatState; verb?: string; elapsed?: number; tokens?: number }
   | { type: "api_retry"; attempt: number; maxRetries: number; retryDelayMs: number; errorStatus: number | null; errorType?: string; errorMessage?: string }
   | { type: "error"; message: string; code: string; retryable?: boolean; businessErrorCode?: string }
